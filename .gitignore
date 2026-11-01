@@ -1,0 +1,53 @@
+# Upstream ISDA CDS Standard Model -- NEVER COMMITTED.
+# It is distributed only from cdsmodel.com after accepting the ISDA CDS
+# Standard Model Public License and supplying an email address. Shipping it
+# here would route around that gate. Each developer fetches their own copy.
+# See README.md "Obtaining the reference implementation".
+isda_cds_model_c_v*/
+isda_cds_model_c_v*.zip
+.git.pre-purge/
+
+# build output
+build/
+cmake-build*/
+
+# generated / machine-specific
+compile_commands.json
+CMakeUserPresets.json
+.cache/
+
+# loose compiled artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dSYM/
+*.profraw
+*.profdata
+
+# python
+.venv/
+__pycache__/
+*.egg-info/
+*.whl
+dist/
+
+# editors / agents
+.claude/
+.vscode/
+.vs/
+.idea/
+.DS_Store
+
+# personal context
+CLAUDE.local.md
+
+# GOTCHA: .gitignore has NO inline comments. `*.key  # secrets` matches nothing --
+# it becomes the literal pattern "*.key  # secrets". Comments go on their OWN line.
+*.key
+*.pem
+*.p12
+.env
+.env.*
+credentials
+*.secret

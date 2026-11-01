@@ -1,0 +1,16 @@
+starting...
+CDS version "1.8.3"
+enabling logging...
+building zero curve...
+calling JpmcdsBuildIRZeroCurve...
+
+Discount factor on 3rd Jan 08 = 1.000000
+Discount factor on 3rd Jan 09 = 1.000000
+Discount factor on 3rd Jan 17 = 1.000000
+
+Upfront charge @ cpn = 0bps    =  38651.944609
+Upfront charge @ cpn = 3600bps =  -10682.519172
+Upfront charge @ cpn = 7200bps = -60016.982954
+
+Error log contains:
+------------------:
