@@ -66,8 +66,8 @@ differentially equal to its ancestor across a swept input domain, and the
 sweep is then recorded into tier 1 so CI inherits the guarantee.
 
 ```
-with upstream present:  55 tests  (tier 1 + tier 2 + end-to-end example)
-without upstream:       31 tests  (tier 1 only, replaying 2,132 recorded cases)
+with upstream present:  75 tests  (tier 1 + tier 2 + end-to-end example)
+without upstream:       44 tests  (tier 1 only, replaying 3,354 recorded cases)
 ```
 
 Both configurations also run clean under AddressSanitizer and
@@ -94,7 +94,7 @@ plainly whether the oracle was found.
 | component | state |
 |---|---|
 | CMake build, 3-OS CI, differential test harness | working |
-| C++20 port | layers 1-3 of 11 — `bsearch`, `dateconv`, day count conventions |
+| C++20 port | layers 1-3 of 11 — `bsearch`, `dateconv`, day counts (arithmetic + strings) |
 | Python bindings (nanobind) | not started |
 | Cross-platform spreadsheet interface | not started |
 

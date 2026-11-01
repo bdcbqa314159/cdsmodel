@@ -100,7 +100,7 @@ there is never a big-bang integration.
 | 0 | harness | — | ✅ done: CMake, GoogleTest, two-tier verification, oracle optional |
 | 1 | search / interp | `bsearch` ✅, `lintrp1`, `linterpc`, `interpc` | `interpc` needs a strided overload — one call site, `interpc.c:560`, `sizeof(TRatePt)` |
 | 2 | dates | `cdate` ✅, `dateconv` ✅, `ldate` (partly ✅), `date_sup`, `dateadj` | epoch pinned: TDate 0 = 1601-01-01, proleptic Gregorian, verified every 13th day to 2200 |
-| 3 | day counts | `ldate` (DCF part) ✅, `yearfrac`, `convert` | `enum class DayCount` done; the string parser `JpmcdsStringToDayCountConv` is still outstanding |
+| 3 | day counts | `ldate` (DCF part) ✅, `yearfrac` ✅, `convert` | layer complete except `convert.c`, which is date intervals rather than day counts and moves to layer 5 |
 | 4 | calendars | `busday`, `buscache`, `badday` | kills the `cache` global; 2,253 lines, the biggest single layer |
 | 5 | schedules | `schedule`, `datelist`, `dtlist`, `cxdatelist`, `stub` | |
 | 6 | curves | `tcurve`, `zerocurve`, `cxzerocurve`, `zcall`, `zcswap`, `gtozc` | 3,330 lines; `TCurve` → `std::vector` |
@@ -157,6 +157,9 @@ a comment at the site and listed below.
 | day count convention | `long method` carrying one of six `#define`d codes | `enum class DayCount` | any `long` was accepted at the call site and only rejected at the bottom of a `switch` |
 | `JPMCDS_ACT_ACT` | `#define`d to the same value as `JPMCDS_ACT_365`, so the two are indistinguishable | `kActAct` is an alias of `DayCount::Act365`, not a separate enumerator | preserved, not fixed — splitting them would change results. The conflation is now visible in the type rather than buried in a macro. |
 | ACT/365 leap weighting | walks years by adding 365 or 366 to a running date and re-deriving the year from it | intersects the period with each calendar year directly | same arithmetic, no running date to drift. Verified bit-identical (`EXPECT_DOUBLE_EQ`) across 3,456 pair/convention combinations and every start day of a full leap cycle. |
+| `JpmcdsFormatDayCountConv` | returns `char *` into a string literal, and writes to the global error log as a side effect of formatting | returns `std::string_view`, logs nothing | writing through the returned pointer was undefined; a formatter should not have side effects |
+| convention string parsing | substring matching, so `"GARBAGE365"` is ACT/365 and `"A360"` is ACT/360 | identical, deliberately | observable behaviour at a public API. Tightening it would be a breaking change disguised as a fix. A strict parser can be added alongside. |
+| `"NONE"` round trip | parses to code `0`, which the formatter has no `case` for, so it formats back as `"unrecognized"` | identical, deliberately | an upstream asymmetry, recorded and tested rather than silently repaired |
 | `JpmcdsDate` failure | returns `-1`, a value in the date space | `std::optional<Date>` | `-1` was safe only because valid TDates are non-negative — exactly the coupling optional removes |
 | `JpmcdsDaysInMonth` | `(long year, long month)`, month unvalidated, indexes a 13-element table | `days_in_month(std::chrono::year_month)` | a 13th month becomes unrepresentable instead of an out-of-bounds read |
 | `gDateCacheArray` | 1,500-entry hardcoded table of month starts, 1995–2119, plus a slow path for anything outside | nothing | `std::chrono` covers the whole proleptic Gregorian range. 377 lines deleted, and the dates outside 1995–2119 stop taking a different code path |
@@ -215,6 +218,20 @@ The port is structurally immune: `make_date` range-checks before constructing,
 and `std::chrono::month` cannot hold 13 in a way that reaches a table.
 
 Worth sending to ISDA once there is something to send it with.
+
+### UPSTREAM-2 — `JPMCDS_DEFAULT` collides with `FAILURE`
+
+`cgeneral.h:64` defines `JPMCDS_DEFAULT` as `-1`. `cgeneral.h:56` defines
+`FAILURE` as `-1`. They are the same value.
+
+So a day count code of `-1` means both "the default convention" and "this
+call failed", and `JpmcdsStringToDayCountConv("Default", &type)` writes a
+value indistinguishable from an error sentinel. The same pattern appears in
+`JpmcdsDate`, which returns `FAILURE` as a `TDate`.
+
+Not a live bug — no current caller tests a parsed code against `FAILURE` —
+but it is the reason the port returns `std::optional` everywhere rather than
+reserving values inside the result space.
 
 ## Not doing
 
