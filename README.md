@@ -65,8 +65,15 @@ original implementation, executing. A module counts as ported only once it is
 differentially equal to its ancestor across a swept input domain, and the
 sweep is then recorded into tier 1 so CI inherits the guarantee.
 
+```
+with upstream present:  39 tests  (tier 1 + tier 2 + end-to-end example)
+without upstream:       21 tests  (tier 1 only, replaying 1,268 recorded cases)
+```
+
 Both configurations also run clean under AddressSanitizer and
-UndefinedBehaviorSanitizer (`--preset asan`).
+UndefinedBehaviorSanitizer (`--preset asan`). That combination already found a
+genuine out-of-bounds read in the original model — see UPSTREAM-1 in
+[docs/port-notes.md](docs/port-notes.md).
 
 ## Build
 
@@ -87,7 +94,7 @@ plainly whether the oracle was found.
 | component | state |
 |---|---|
 | CMake build, 3-OS CI, differential test harness | working |
-| C++20 port | layer 1 of 11 — `bsearch` done |
+| C++20 port | layers 1-2 of 11 — `bsearch` and `dateconv` done, epoch pinned |
 | Python bindings (nanobind) | not started |
 | Cross-platform spreadsheet interface | not started |
 
