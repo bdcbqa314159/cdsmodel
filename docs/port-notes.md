@@ -97,7 +97,7 @@ there is never a big-bang integration.
 | # | layer | upstream files | notes |
 |---|---|---|---|
 | 0 | harness | — | ✅ done: CMake, GoogleTest, two-tier verification, oracle optional |
-| 1 | search / interp | `bsearch`, `lintrp1`, `linterpc`, `interpc` | `interpc` needs a strided overload — one call site, `interpc.c:560`, `sizeof(TRatePt)` |
+| 1 | search / interp | `bsearch` ✅, `lintrp1`, `linterpc`, `interpc` | `interpc` needs a strided overload — one call site, `interpc.c:560`, `sizeof(TRatePt)` |
 | 2 | dates | `cdate`, `dateconv`, `ldate`, `date_sup`, `dateadj` | pin the `TDate` epoch first |
 | 3 | day counts | `yearfrac`, `convert` | the conventions table becomes an `enum class` |
 | 4 | calendars | `busday`, `buscache`, `badday` | kills the `cache` global; 2,253 lines, the biggest single layer |
@@ -141,6 +141,15 @@ has the oracle; tier 1 alone can go stale against a behaviour nobody swept.
 
 Where the port deliberately differs from upstream, the difference is named in
 a comment at the site and listed below.
+
+### Deliberate differences so far
+
+| site | upstream | port | why |
+|---|---|---|---|
+| `bsearch` run-of-equals loop | unbounded `while (x[lo] == x[hi]) hi++`, safe only by argument | bounded by `n` | upstream's safety is a comment; this makes it structural. Identical on all valid input. |
+| `bsearch` index type | `int`, allows `hi = mid - 1` to go negative | `std::ptrdiff_t` | `std::size_t` would underflow here and read out of bounds. Signedness is load-bearing. |
+| `bsearch` `skip` stride | byte stride plus a power-of-two shift optimisation | contiguous `std::span` | the 2009 multiply-to-shift trick is strictly worse than what the compiler now emits. A projection overload arrives when layer 1 reaches `interpc`. |
+| order-check selection | `bSearchCheckOrder_g` global flag | `bracket` vs `bracket_checked` | removes process-wide state that changed every caller's behaviour |
 
 ## Not doing
 

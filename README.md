@@ -87,7 +87,7 @@ plainly whether the oracle was found.
 | component | state |
 |---|---|
 | CMake build, 3-OS CI, differential test harness | working |
-| C++20 port | not started — plan in [docs/port-notes.md](docs/port-notes.md) |
+| C++20 port | layer 1 of 11 — `bsearch` done |
 | Python bindings (nanobind) | not started |
 | Cross-platform spreadsheet interface | not started |
 
