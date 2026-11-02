@@ -27,6 +27,8 @@
 #include <cdsmodel/date.hpp>
 
 #include <chrono>
+#include <cstddef>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -86,11 +88,17 @@ struct DateInterval {
 /// Reproduces `JpmcdsStringToDateInterval`: an optional sign, optional
 /// digits defaulting to 1, then a period-type character.
 ///
-/// ONE DELIBERATE DIFFERENCE: upstream copies the digits into a 32-byte stack
-/// buffer with no bounds check (`while (isdigit(*inp)) *nump++ = *inp++;`),
-/// which is a stack buffer overflow for any input with more than 32 digits.
-/// See UPSTREAM-4 in docs/port-notes.md. This bounds the digit count and
-/// rejects anything longer, rather than reproducing the overflow.
+/// TWO DELIBERATE DIFFERENCES, both refusals to reproduce undefined behaviour:
+///
+///   1. Upstream copies the digits into a 32-byte stack buffer with no bounds
+///      check (`while (isdigit(*inp)) *nump++ = *inp++;`), a stack buffer
+///      overflow for any input with more than 31 digits. See UPSTREAM-4.
+///      This bounds the digit count.
+///   2. Upstream converts with `atoi`, whose overflow is undefined and which
+///      silently yields garbage -- `"9999999999M"` parses as 1410065407
+///      months. This rejects any digit run that would not fit an `int`.
+///      Found by auditing the port itself under UBSan, not by differential
+///      testing: both sides were producing garbage, so they "agreed".
 [[nodiscard]] constexpr std::optional<DateInterval>
 parse_date_interval(std::string_view s) noexcept {
   constexpr std::size_t kMaxDigits = 31; // upstream's buffer, minus the NUL
@@ -108,7 +116,14 @@ parse_date_interval(std::string_view s) noexcept {
     if (++digits > kMaxDigits) {
       return std::nullopt; // upstream overflows its buffer here
     }
-    periods = periods * 10 + (s[i] - '0');
+    const int digit = s[i] - '0';
+    // Check before multiplying: signed overflow is undefined, so it cannot be
+    // detected after the fact. Upstream's atoi has the same hole and silently
+    // produces a wrapped value.
+    if (periods > (std::numeric_limits<int>::max() - digit) / 10) {
+      return std::nullopt;
+    }
+    periods = periods * 10 + digit;
     ++i;
   }
   if (digits == 0) {

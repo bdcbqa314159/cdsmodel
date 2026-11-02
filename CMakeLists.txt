@@ -73,6 +73,26 @@ else()
   target_compile_options(cdsmodel PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# Each public header must compile on its own. A missing #include that happens
+# to be satisfied transitively by whatever a .cpp included first is a latent
+# break for any consumer who includes the header before anything else -- and
+# it is invisible to the test suite, which always includes several headers.
+file(GLOB CDSMODEL_PUBLIC_HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/include/cdsmodel/*.hpp")
+set(CDSMODEL_HEADER_SELFTESTS "")
+foreach(header ${CDSMODEL_PUBLIC_HEADERS})
+  get_filename_component(stem "${header}" NAME_WE)
+  set(generated "${CMAKE_CURRENT_BINARY_DIR}/header_selftest/${stem}.cpp")
+  file(WRITE "${generated}" "#include <cdsmodel/${stem}.hpp>\n")
+  list(APPEND CDSMODEL_HEADER_SELFTESTS "${generated}")
+endforeach()
+add_library(cdsmodel_header_selftest OBJECT ${CDSMODEL_HEADER_SELFTESTS})
+target_link_libraries(cdsmodel_header_selftest PRIVATE cdsmodel)
+if(MSVC)
+  target_compile_options(cdsmodel_header_selftest PRIVATE /W4)
+else()
+  target_compile_options(cdsmodel_header_selftest PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 # =========================================================================
 # Tests
 # =========================================================================
