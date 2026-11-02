@@ -16,6 +16,10 @@ import sys
 
 ROOT = pathlib.Path(__file__).parent.resolve()
 
+# Every text read below passes encoding="utf-8" explicitly. Windows Python
+# defaults to cp1252, which cannot decode the em-dashes in the reports, and a
+# cross-OS tree's encoding is not a per-platform guess.
+
 # Floor on tests actually RUN, not merely defined. Carried from pricebook's
 # scar: a green run over a truncated collection is not evidence.
 #
@@ -77,7 +81,7 @@ def gate_provenance() -> None:
     for h in headers:
         if h.name in exempt:
             continue
-        text = h.read_text()
+        text = h.read_text(encoding="utf-8")
         if not re.search(r"[Pp]ort of upstream \w+\.(c|cpp)", text):
             missing.append(h.name)
     if missing:
@@ -120,7 +124,7 @@ def gate_golden_generated() -> None:
         )
 
     for stem, g in goldens.items():
-        text = g.read_text()
+        text = g.read_text(encoding="utf-8")
         if "GENERATED FILE -- DO NOT EDIT" not in text:
             fail(f"{g.name} lacks its generated-file banner")
         if text.count("\n    {") < 50:
@@ -146,7 +150,7 @@ def gate_reports() -> None:
         f = ROOT / name
         if not f.exists():
             fail(f"{name} is missing")
-        surfaces[name] = set(re.findall(r"UPSTREAM-(\d+)", f.read_text()))
+        surfaces[name] = set(re.findall(r"UPSTREAM-(\d+)", f.read_text(encoding="utf-8")))
 
     register = surfaces["docs/port-notes.md"]
     if not register:
@@ -177,7 +181,7 @@ def gate_upstream_unmodified() -> None:
     if not manifest.exists():
         fail(f"no manifest at {manifest.relative_to(ROOT)}; run: python verify.py write-manifest")
     expected = dict(
-        line.split("  ", 1) for line in manifest.read_text().splitlines() if line
+        line.split("  ", 1) for line in manifest.read_text(encoding="utf-8").splitlines() if line
     )
     problems = []
     for rel, want in expected.items():
