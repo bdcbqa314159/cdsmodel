@@ -20,6 +20,7 @@
 //   - the JPMCDS_IS_LEAP macro.
 
 #include <chrono>
+#include <limits>
 #include <optional>
 
 namespace cdsmodel {
@@ -45,12 +46,59 @@ inline constexpr std::chrono::year kMinYear{1601};
 /// exactly the kind of coupling std::optional removes.
 inline constexpr TDate kInvalidTDate = -1;
 
+namespace detail {
+
+/// `std::chrono::days` is only required to hold a signed integer of at least
+/// 25 bits, and is `int` in practice -- not 64 bits, which is the surprise.
+using DayRep = std::chrono::days::rep;
+
+/// The 1601 epoch as a day number relative to `sys_days`'s own 1970 epoch:
+/// -134774. Every conversion carries this offset, which is why the
+/// representable TDate range is NOT symmetric.
+inline constexpr long long kEpochDayNumber = kDateEpoch.time_since_epoch().count();
+
+} // namespace detail
+
+/// Smallest and largest TDate that convert without narrowing.
+///
+/// Two constraints, and they bite at opposite ends:
+///
+///   * `from_tdate(t)` forms `kEpochDayNumber + t` in `DayRep`, so `t` cannot
+///     be smaller than `DayRep`'s minimum plus the offset.
+///   * `to_tdate` must be able to return `t`, so `t` must also fit `DayRep`.
+///
+/// Together: `[DayRep::min() + 134774, DayRep::max()]`. The bounds are
+/// derived from the epoch rather than written down, so they stay correct on an
+/// implementation where `DayRep` is wider.
+///
+/// This is far outside any real date -- TDate 2^31 is the year 5,881,581 --
+/// but an undocumented domain with silently wrong behaviour outside it is the
+/// same shape of defect this port exists to remove, so it is named and
+/// checkable rather than implied. Before it was named,
+/// `from_tdate(5'000'000'000)` round-tripped to 705032704.
+inline constexpr TDate kMinTDate = static_cast<TDate>(std::numeric_limits<detail::DayRep>::min()) -
+                                   static_cast<TDate>(detail::kEpochDayNumber);
+inline constexpr TDate kMaxTDate = static_cast<TDate>(std::numeric_limits<detail::DayRep>::max());
+
+/// Can this TDate be converted without narrowing?
+///
+/// Check this at any boundary that accepts a TDate from outside the library:
+/// a C API shim, a language binding, a file reader. Inside the library, dates
+/// come from `make_date` or `to_tdate` and are representable by construction.
+[[nodiscard]] constexpr bool is_representable_tdate(TDate t) noexcept {
+  return t >= kMinTDate && t <= kMaxTDate;
+}
+
 [[nodiscard]] constexpr TDate to_tdate(Date d) noexcept {
   return static_cast<TDate>((d - kDateEpoch).count());
 }
 
+/// Convert an upstream TDate to a date.
+///
+/// Precondition: `is_representable_tdate(t)`. Outside that the arithmetic
+/// overflows `std::chrono::days`'s representation.
 [[nodiscard]] constexpr Date from_tdate(TDate t) noexcept {
-  return kDateEpoch + std::chrono::days{t};
+  return kDateEpoch + std::chrono::days{static_cast<detail::DayRep>(t)};
 }
 
 /// Number of days in a given month. Replaces JpmcdsDaysInMonth, which indexed
@@ -118,15 +166,27 @@ normalize_ymd(int year, int month, int day) noexcept {
   if (day < 1 || day > 31) {
     return std::nullopt;
   }
-  // Floor division, matching upstream's two while-loops.
-  int month_index = month - 1;
-  int year_carry = month_index / 12;
-  int month_rem = month_index % 12;
-  if (month_rem < 0) {
+  // Done in a wider type on purpose. `month` is any int, so `month - 1`
+  // overflows at INT_MIN and `year + carry` overflows at either extreme.
+  // Guarding each operation separately is easy to get subtly wrong; widening
+  // once and range-checking at the end is not.
+  const long long month_index = static_cast<long long>(month) - 1;
+  long long year_carry = month_index / 12;
+  long long month_rem = month_index % 12;
+  if (month_rem < 0) { // floor division, matching upstream's two while-loops
     month_rem += 12;
     --year_carry;
   }
-  const std::chrono::year y{year + year_carry};
+  const long long normalised_year = static_cast<long long>(year) + year_carry;
+
+  // std::chrono::year represents [-32767, 32767]; anything outside is not a
+  // date. Upstream has no equivalent check -- its month-carry loops would
+  // simply run on -- but it cannot produce such a year from a valid TDate.
+  if (normalised_year < -32767 || normalised_year > 32767) {
+    return std::nullopt;
+  }
+
+  const std::chrono::year y{static_cast<int>(normalised_year)};
   const std::chrono::month m{static_cast<unsigned>(month_rem + 1)};
   const unsigned last = days_in_month(y / m);
   const unsigned clamped = static_cast<unsigned>(day) < last ? static_cast<unsigned>(day) : last;

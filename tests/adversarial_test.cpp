@@ -48,8 +48,8 @@ constexpr std::uint64_t kSeed = 0xC0FFEEULL;
 /// The widest TDate range the port claims to support: upstream's epoch year
 /// through well past any plausible maturity. Used as the domain for the
 /// round-trip properties; extremes are probed separately below.
-constexpr cdsmodel::TDate kMinTDate = 0;
-constexpr cdsmodel::TDate kMaxTDate = 300000; // ~2422
+constexpr cdsmodel::TDate kSweepMin = 0;
+constexpr cdsmodel::TDate kSweepMax = 300000; // ~2422
 
 /// Bytes chosen to break parsers: the characters that drive upstream's
 /// branches, plus whitespace, control codes, digits, signs and high bytes
@@ -163,14 +163,14 @@ TEST(Adversarial, IntervalConstructorIsTotalOverEveryByteAndExtremeCounts) {
 // =========================================================================
 
 TEST(Adversarial, TDateRoundTripsAcrossTheWholeSupportedRange) {
-  for (cdsmodel::TDate t = kMinTDate; t <= kMaxTDate; ++t) {
+  for (cdsmodel::TDate t = kSweepMin; t <= kSweepMax; ++t) {
     const cdsmodel::Date d = cdsmodel::from_tdate(t);
     ASSERT_EQ(cdsmodel::to_tdate(d), t) << "to_tdate(from_tdate(" << t << ")) diverged";
   }
 }
 
 TEST(Adversarial, YmdRoundTripsForEveryRepresentableDate) {
-  for (cdsmodel::TDate t = kMinTDate; t <= kMaxTDate; t += 7) {
+  for (cdsmodel::TDate t = kSweepMin; t <= kSweepMax; t += 7) {
     const cdsmodel::Date d = cdsmodel::from_tdate(t);
     const year_month_day ymd = cdsmodel::to_ymd(d);
     const auto rebuilt = cdsmodel::make_date(static_cast<int>(ymd.year()),
@@ -260,7 +260,7 @@ TEST(Adversarial, DaysInMonthIsAlwaysBetween28And31) {
 }
 
 TEST(Adversarial, EndOfMonthStaysInItsMonthAndIsTheLastDay) {
-  for (cdsmodel::TDate t = 1; t <= kMaxTDate; t += 13) {
+  for (cdsmodel::TDate t = 1; t <= kSweepMax; t += 13) {
     const cdsmodel::Date d = cdsmodel::from_tdate(t);
     const cdsmodel::Date eom = cdsmodel::end_of_month(d);
     const year_month_day a = cdsmodel::to_ymd(d);
@@ -278,7 +278,7 @@ TEST(Adversarial, EndOfMonthStaysInItsMonthAndIsTheLastDay) {
 
 TEST(Adversarial, YearFractionAndDaysDiffAreAntisymmetric) {
   std::mt19937_64 rng{kSeed};
-  std::uniform_int_distribution<cdsmodel::TDate> dist(1, kMaxTDate);
+  std::uniform_int_distribution<cdsmodel::TDate> dist(1, kSweepMax);
   constexpr cdsmodel::DayCount kAll[] = {
       cdsmodel::DayCount::Act365,     cdsmodel::DayCount::Act365Fixed,
       cdsmodel::DayCount::Act360,     cdsmodel::DayCount::Thirty360,
@@ -315,7 +315,7 @@ TEST(Adversarial, ActualDayCountsNeverExceedTheCalendarSpan) {
   // not wander implausibly far from it. Catches a sign or scale slip that
   // antisymmetry alone would not.
   std::mt19937_64 rng{kSeed};
-  std::uniform_int_distribution<cdsmodel::TDate> dist(1, kMaxTDate);
+  std::uniform_int_distribution<cdsmodel::TDate> dist(1, kSweepMax);
   for (int i = 0; i < 20000; ++i) {
     const cdsmodel::TDate ta = dist(rng);
     const cdsmodel::TDate tb = dist(rng);
@@ -380,8 +380,88 @@ TEST(Adversarial, CalendarInvariantsHoldForRandomHolidaySets) {
   }
 }
 
+TEST(Adversarial, AdvanceIsTotalOverExtremeIntervals) {
+  // DateInterval is an aggregate, so a caller can fill it with any int
+  // without going through make_date_interval. advance must therefore be safe
+  // on its own, not merely safe for intervals the constructor produces.
+  for (cdsmodel::TDate t : {1, 2, 1000, 148655, 250000}) {
+    const cdsmodel::Date d = cdsmodel::from_tdate(t);
+    for (int periods : {std::numeric_limits<int>::min(), std::numeric_limits<int>::min() + 1,
+                        -2000000000, -100000, -1, 0, 1, 100000, 2000000000,
+                        std::numeric_limits<int>::max() - 1, std::numeric_limits<int>::max()}) {
+      for (cdsmodel::PeriodUnit unit : {cdsmodel::PeriodUnit::Days, cdsmodel::PeriodUnit::Months}) {
+        const auto r = cdsmodel::advance(d, {periods, unit});
+        // No claim about the value -- only that it returns without undefined
+        // behaviour, and that a success is a date we can round-trip.
+        if (r.has_value()) {
+          EXPECT_EQ(cdsmodel::from_tdate(cdsmodel::to_tdate(*r)), *r)
+              << "advance produced an unrepresentable date, periods=" << periods;
+        }
+      }
+    }
+  }
+}
+
+TEST(Adversarial, NormalizeIsTotalOverExtremeMonths) {
+  for (int year : {1601, 2024, 9999}) {
+    for (int month : {std::numeric_limits<int>::min(), -2000000000, -13, 0, 1, 12, 13, 2000000000,
+                      std::numeric_limits<int>::max()}) {
+      for (int day : {0, 1, 28, 31, 32}) {
+        const auto r = cdsmodel::normalize_ymd(year, month, day);
+        if (r.has_value()) {
+          EXPECT_GE(static_cast<unsigned>(r->month()), 1u);
+          EXPECT_LE(static_cast<unsigned>(r->month()), 12u);
+          EXPECT_GE(static_cast<unsigned>(r->day()), 1u);
+          EXPECT_LE(static_cast<unsigned>(r->day()), 31u);
+        }
+      }
+    }
+  }
+}
+
+TEST(Adversarial, TDateRepresentabilityIsExplicitAndExact) {
+  // std::chrono::days::rep is 32-bit in practice, so TDates beyond it narrow
+  // silently. The domain is named so a boundary can check it.
+  static_assert(cdsmodel::is_representable_tdate(0));
+  static_assert(cdsmodel::is_representable_tdate(cdsmodel::kMaxTDate));
+  static_assert(cdsmodel::is_representable_tdate(cdsmodel::kMinTDate));
+  EXPECT_FALSE(cdsmodel::is_representable_tdate(cdsmodel::kMaxTDate + 1));
+  EXPECT_FALSE(cdsmodel::is_representable_tdate(cdsmodel::kMinTDate - 1));
+  EXPECT_FALSE(cdsmodel::is_representable_tdate(5000000000LL));
+
+  // The range is asymmetric: every conversion carries the 1601-to-1970 offset,
+  // so the lower bound is shifted while the upper is not.
+  EXPECT_NE(cdsmodel::kMinTDate, -cdsmodel::kMaxTDate - 1)
+      << "the domain looks symmetric, which would mean the epoch offset was ignored";
+
+  // Round trip holds exactly across the representable domain, including the
+  // boundary itself -- the value that silently diverged before.
+  for (cdsmodel::TDate t :
+       {cdsmodel::TDate{0}, cdsmodel::TDate{1}, cdsmodel::TDate{300000}, cdsmodel::TDate{100000000},
+        cdsmodel::kMaxTDate - 1, cdsmodel::kMaxTDate}) {
+    ASSERT_TRUE(cdsmodel::is_representable_tdate(t));
+    EXPECT_EQ(cdsmodel::to_tdate(cdsmodel::from_tdate(t)), t) << "at " << t;
+  }
+}
+
+TEST(Adversarial, IntervalScalingRejectsCountsThatWouldOverflow) {
+  // 'Y' scales by 12, 'U' by 28. Upstream wraps silently here.
+  EXPECT_FALSE(cdsmodel::make_date_interval(std::numeric_limits<int>::max(), 'Y').has_value());
+  EXPECT_FALSE(cdsmodel::make_date_interval(std::numeric_limits<int>::min(), 'Y').has_value());
+  EXPECT_FALSE(cdsmodel::make_date_interval(999999999, 'Y').has_value());
+  EXPECT_FALSE(cdsmodel::make_date_interval(std::numeric_limits<int>::max(), 'U').has_value());
+
+  // The largest count that still fits, and one past it.
+  EXPECT_TRUE(cdsmodel::make_date_interval(std::numeric_limits<int>::max() / 12, 'Y').has_value());
+  EXPECT_FALSE(
+      cdsmodel::make_date_interval(std::numeric_limits<int>::max() / 12 + 1, 'Y').has_value());
+  // Unscaled types accept the full range.
+  EXPECT_TRUE(cdsmodel::make_date_interval(std::numeric_limits<int>::max(), 'M').has_value());
+  EXPECT_TRUE(cdsmodel::make_date_interval(std::numeric_limits<int>::min(), 'D').has_value());
+}
+
 TEST(Adversarial, AdvanceByZeroIsIdentityWhereItSucceeds) {
-  for (cdsmodel::TDate t = 1; t <= kMaxTDate; t += 101) {
+  for (cdsmodel::TDate t = 1; t <= kSweepMax; t += 101) {
     const cdsmodel::Date d = cdsmodel::from_tdate(t);
     for (cdsmodel::PeriodUnit unit : {cdsmodel::PeriodUnit::Days, cdsmodel::PeriodUnit::Months}) {
       const auto same = cdsmodel::advance(d, {0, unit});

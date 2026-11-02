@@ -47,6 +47,24 @@ struct DateInterval {
   friend constexpr bool operator==(const DateInterval &, const DateInterval &) = default;
 };
 
+namespace detail {
+
+/// `periods * factor`, or nullopt if the product would not fit an `int`.
+///
+/// Upstream wraps silently: `JpmcdsMakeDateInterval(999999999, 'Y')` scales by
+/// 12 and stores a wrapped month count. Checking before multiplying is the
+/// only option -- signed overflow is undefined, so it cannot be detected
+/// afterwards.
+[[nodiscard]] constexpr std::optional<int> scale(int periods, int factor) noexcept {
+  if (periods > std::numeric_limits<int>::max() / factor ||
+      periods < std::numeric_limits<int>::min() / factor) {
+    return std::nullopt;
+  }
+  return periods * factor;
+}
+
+} // namespace detail
+
 /// Build an interval from a count and an upstream period-type character.
 ///
 /// Reproduces `JpmcdsMakeDateInterval`'s normalisation. Case-insensitive, as
@@ -60,22 +78,33 @@ struct DateInterval {
   const char t = (period_type >= 'a' && period_type <= 'z')
                      ? static_cast<char>(period_type - 'a' + 'A')
                      : period_type;
+  // Scaling can overflow for extreme counts, and upstream wraps when it does.
+  // Rejecting is the third refusal to reproduce undefined behaviour.
+  const auto months = [periods](int factor) -> std::optional<DateInterval> {
+    const std::optional<int> n = detail::scale(periods, factor);
+    return n ? std::optional{DateInterval{*n, PeriodUnit::Months}} : std::nullopt;
+  };
+  const auto days = [periods](int factor) -> std::optional<DateInterval> {
+    const std::optional<int> n = detail::scale(periods, factor);
+    return n ? std::optional{DateInterval{*n, PeriodUnit::Days}} : std::nullopt;
+  };
+
   switch (t) {
   case 'A': // Annual
   case 'Y': // Year
-    return DateInterval{periods * 12, PeriodUnit::Months};
+    return months(12);
   case 'S': // Semi-annual
-    return DateInterval{periods * 6, PeriodUnit::Months};
+    return months(6);
   case 'Q': // Quarterly
-    return DateInterval{periods * 3, PeriodUnit::Months};
+    return months(3);
   case 'M': // Month
-    return DateInterval{periods, PeriodUnit::Months};
+    return months(1);
   case 'W': // Week
-    return DateInterval{periods * 7, PeriodUnit::Days};
+    return days(7);
   case 'U': // Lunar period, 28 days
-    return DateInterval{periods * 28, PeriodUnit::Days};
+    return days(28);
   case 'D': // Day
-    return DateInterval{periods, PeriodUnit::Days};
+    return days(1);
   default:
     // Includes F, E, B, G, H, I, J, K, L, T, V -- which upstream's
     // JpmcdsMakeDateInterval accepts and JpmcdsDtFwdAny then refuses.
@@ -187,13 +216,28 @@ parse_date_interval(std::string_view s) noexcept {
     return std::nullopt; // upstream: "startDate must be > 0"
   }
   if (iv.unit == PeriodUnit::Days) {
-    // Upstream does a bare addition with no range check, so neither do we.
-    return start + std::chrono::days{iv.periods};
+    // Upstream does a bare addition with no range check. The port cannot:
+    // std::chrono::days has a 32-bit representation, so adding a large count
+    // to the day number overflows it. Widen, check, then convert.
+    const long long result = static_cast<long long>(to_tdate(start)) + iv.periods;
+    if (result < static_cast<long long>(kMinTDate) || result > static_cast<long long>(kMaxTDate)) {
+      return std::nullopt;
+    }
+    return from_tdate(static_cast<TDate>(result));
   }
   const std::chrono::year_month_day ymd = to_ymd(start);
+  const int month = static_cast<int>(static_cast<unsigned>(ymd.month()));
+  // DateInterval is an aggregate, so a caller can fill it with any int without
+  // going through make_date_interval. normalize_ymd does its arithmetic in a
+  // wider type and range-checks, so the only thing needed here is to avoid
+  // overflowing while forming the argument.
+  const long long target_month = static_cast<long long>(month) + iv.periods;
+  if (target_month < std::numeric_limits<int>::min() ||
+      target_month > std::numeric_limits<int>::max()) {
+    return std::nullopt;
+  }
   const std::optional<std::chrono::year_month_day> moved =
-      normalize_ymd(static_cast<int>(ymd.year()),
-                    static_cast<int>(static_cast<unsigned>(ymd.month())) + iv.periods,
+      normalize_ymd(static_cast<int>(ymd.year()), static_cast<int>(target_month),
                     static_cast<int>(static_cast<unsigned>(ymd.day())));
   if (!moved) {
     return std::nullopt;
