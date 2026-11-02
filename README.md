@@ -70,16 +70,16 @@ differentially equal to its ancestor across a swept input domain, and the
 sweep is then recorded into tier 1 so CI inherits the guarantee.
 
 ```
-with upstream present: 142 tests  (tier 1 + tier 2 + end-to-end example)
-without upstream:       95 tests  (tier 1 only, replaying 6,631 recorded cases)
+with upstream present: 158 tests  (tier 1 + tier 2 + end-to-end example)
+without upstream:      106 tests  (tier 1 only, replaying 9,831 recorded cases)
 ```
 
 Both configurations also run clean under AddressSanitizer and
-UndefinedBehaviorSanitizer (`--preset asan`). That combination has found five
+UndefinedBehaviorSanitizer (`--preset asan`). That combination has found six
 genuine defects in the original model so far, including a stack buffer
-overflow reachable from string input and an interval type whose meaning
-changes with letter case — see "Upstream defects found" in
-[docs/port-notes.md](docs/port-notes.md).
+overflow reachable from string input, an interval type whose meaning changes
+with letter case, and an adjustment that never returns — see "Upstream defects
+found" in [docs/port-notes.md](docs/port-notes.md).
 
 ## Build
 
@@ -100,7 +100,7 @@ plainly whether the oracle was found.
 | component | state |
 |---|---|
 | CMake build, 3-OS CI, differential test harness | working |
-| C++20 port | layers 1-4 of 11 in progress — the process-wide holiday cache is gone |
+| C++20 port | layers 1-4 of 11 — holiday calendars and bad day conventions done, no global state |
 | Python bindings (nanobind) | not started |
 | Cross-platform spreadsheet interface | not started |
 

@@ -1,6 +1,6 @@
 # Defect report — ISDA CDS Standard Model 1.8.3
 
-Five defects found in the upstream C library while porting it to C++20, with
+Six defects found in the upstream C library while porting it to C++20, with
 the evidence for each and what the port does about it.
 
 - **Library examined:** ISDA CDS Standard Model, version 1.8.3 (C, 2009),
@@ -23,6 +23,7 @@ the evidence for each and what the port does about it.
 | UPSTREAM-3 | Lowercase `'y'` advances a date quarterly, not annually | **High** — silent mispricing | Cannot occur |
 | UPSTREAM-4 | Stack buffer overflow from string input | **High** — memory safety | Fixed (deliberate divergence) |
 | UPSTREAM-5 | Days never format as weeks (missing `break`) | Cosmetic | Reproduced deliberately |
+| UPSTREAM-6 | Business-day adjustment never returns for a calendar with no business weekday | **High** — liveness | Cannot occur |
 
 ## What "fixed" means here, precisely
 
@@ -289,6 +290,77 @@ it crashes the sanitizer build on purpose:
 ```
 
 Test: `DateIntervalParse.RejectsDigitRunsThatWouldOverflowUpstreamsBuffer`.
+
+---
+
+## UPSTREAM-6 — Business-day adjustment never returns
+
+**Location:** `lib/src/busday.c`, `getNextBusDate`, reached from
+`JpmcdsHolidayListBusinessDay` and `JpmcdsMultiHolidayListBusinessDay`.
+**Severity:** High. A hang rather than a wrong answer.
+
+### Mechanism
+
+The walker steps one day at a time with no iteration bound:
+
+```c
+    aHoliday = TRUE;
+    do
+    {   /* Check if it's a holiday first. */
+        ...
+            if (JPMCDS_IS_WEEKEND (curDate, hl->weekends))
+                 curDate += direction;
+            else
+                 aHoliday = FALSE;
+        ...
+    }
+    while ( aHoliday == TRUE );
+```
+
+If the calendar's weekend set covers all seven days, `aHoliday` never becomes
+`FALSE` and the loop never exits.
+
+Such a calendar is **accepted**: `JpmcdsHolidayListNewGeneral(NULL, 0x7F)`
+returns a valid `THolidayList`, because `verifyHolidayList` has no opinion on
+the weekend mask.
+
+### Evidence
+
+```
+calendar with weekends=0x7F constructed: accepted
+calling JpmcdsHolidayListBusinessDay with FOLLOW...
+--- killed after 5s ---
+```
+
+### Reachability
+
+Needs all seven weekend bits set, for which upstream provides no named
+constant — a caller would have to OR them, or compute the mask. So it is a
+robustness failure rather than a likely production path. But accepted input
+that never returns is the kind of defect that takes a pricing service down
+rather than returning a wrong number. As it spins, `curDate += direction`
+would eventually overflow `TDate` as well; the hang simply arrives first.
+
+### Status in the port
+
+**Cannot occur.** `roll_to_business_day` returns `nullopt` when any calendar
+has no business weekday, and otherwise bounds its loop at
+`7 * (holidays + 2)` — a ceiling derived from the fact that stored holidays
+are always business weekdays and reaching the next one costs at most seven
+days.
+
+Construction stays permissive, matching upstream, because the predicates are
+perfectly well defined for such a calendar: everything is a non-business day.
+`Calendar::allows_business_days()` exposes the condition so a caller can tell
+"no business day exists" from other failures.
+
+Only half of this is differentially testable. A test asserts that upstream
+still *accepts* the calendar, and will fail if a future release rejects it —
+but it cannot assert the hang, because the test would never finish.
+
+Tests: `BadDayDifferential.Upstream6_AllWeekendCalendarIsAcceptedByUpstream`,
+`BadDayAdjust.AllWeekendCalendarDeclinesInsteadOfLooping`,
+`BadDayAdjust.TerminatesWithOnlyOneBusinessWeekdayAndManyHolidays`.
 
 ---
 
