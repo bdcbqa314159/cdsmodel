@@ -121,6 +121,12 @@ if(CDSMODEL_BUILD_TESTS)
       target_compile_options(gen_${gen}_golden PRIVATE ${LEGACY_C_FLAGS})
     endforeach()
 
+    # Demonstrates the catalogued upstream defects; produces the transcript
+    # quoted by docs/defect-report.md. Not a test -- it reports, not asserts.
+    add_executable(defect_evidence tools/defect_evidence.cpp)
+    target_link_libraries(defect_evidence PRIVATE cdsmodel cds_reference)
+    target_compile_options(defect_evidence PRIVATE ${LEGACY_C_FLAGS})
+
     # End-to-end: upstream's own example output, byte-exact.
     add_executable(cds_reference_example
                    "${CDSMODEL_UPSTREAM_DIR}/examples/c/src/main.c")
