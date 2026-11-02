@@ -9,6 +9,10 @@ the evidence for each and what the port does about it.
   AddressSanitizer and UndefinedBehaviorSanitizer on the upstream build.
 - **Reproduce the whole report:** `./build/debug/defect_evidence`
   (requires a local upstream copy; see README.md).
+- **Published at:** <https://bdcbqa314159.github.io/cdsmodel/> — same content,
+  rendered. `docs/index.html` is that page; update it alongside this file.
+- **Migration context:** [port-notes.md](port-notes.md) carries the register
+  and the surrounding plan.
 
 ## Register
 

@@ -10,6 +10,10 @@ codebase that only ever shipped a Windows-only Excel XLL.
 ISDA and Markit are not affiliated with this project and do not endorse it.
 See [NOTICE.md](NOTICE.md) for the full attribution and licence position.
 
+📋 **[Defect report](https://bdcbqa314159.github.io/cdsmodel/)** — five defects
+found in the original library while porting it, with sanitizer traces and the
+fix status of each.
+
 ## Why
 
 The official model is the market standard for CDS pricing and the reference
@@ -102,7 +106,10 @@ plainly whether the oracle was found.
 
 The migration plan, the measured legacy-pattern inventory, and every
 deliberate deviation from upstream behaviour are documented in
-[docs/port-notes.md](docs/port-notes.md).
+[docs/port-notes.md](docs/port-notes.md). Defects found in the original
+library are catalogued in [docs/defect-report.md](docs/defect-report.md), and
+published at
+[bdcbqa314159.github.io/cdsmodel](https://bdcbqa314159.github.io/cdsmodel/).
 
 ## Layout
 

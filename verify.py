@@ -129,6 +129,39 @@ def gate_golden_generated() -> None:
     ok(f"{len(goldens)} recorded vector sets, each paired with a generator")
 
 
+def gate_reports() -> None:
+    """Every catalogued defect must appear on all three surfaces.
+
+    The register in port-notes.md, the full account in defect-report.md, and
+    the published page in docs/index.html describe the same findings. Prose
+    cannot be diffed usefully, but a missing id can be caught -- and adding a
+    defect to one surface and forgetting the others is the realistic failure.
+    """
+    surfaces = {
+        "docs/port-notes.md": None,
+        "docs/defect-report.md": None,
+        "docs/index.html": None,
+    }
+    for name in surfaces:
+        f = ROOT / name
+        if not f.exists():
+            fail(f"{name} is missing")
+        surfaces[name] = set(re.findall(r"UPSTREAM-(\d+)", f.read_text()))
+
+    register = surfaces["docs/port-notes.md"]
+    if not register:
+        fail("docs/port-notes.md names no defects; the register is empty")
+    for name, ids in surfaces.items():
+        missing = sorted(register - ids, key=int)
+        if missing:
+            fail(
+                f"{name} does not mention "
+                + ", ".join(f"UPSTREAM-{i}" for i in missing)
+                + " -- a defect was added to one surface and not the others."
+            )
+    ok(f"all {len(register)} catalogued defects appear on all three surfaces")
+
+
 def gate_upstream_unmodified() -> None:
     """The oracle must be byte-identical to what ISDA ships.
 
@@ -206,6 +239,7 @@ GATES = {
     "upstream-absent": gate_upstream_absent,
     "provenance": gate_provenance,
     "golden": gate_golden_generated,
+    "reports": gate_reports,
     "upstream-unmodified": gate_upstream_unmodified,
     "write-manifest": gate_write_manifest,
 }

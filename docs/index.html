@@ -1,0 +1,966 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Five defects found in the ISDA CDS Standard Model 1.8.3 while porting it to C++20, with sanitizer traces, measured evidence and fix status for each.">
+<meta name="color-scheme" content="light dark">
+<meta property="og:title" content="Five defects in the ISDA CDS Standard Model">
+<meta property="og:description" content="Found by differential testing a C++20 port against the original C under AddressSanitizer. Four cannot occur in the port. One is reproduced on purpose.">
+<meta property="og:type" content="article">
+<title>ISDA CDS Defect Register</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+  :root {
+    /* Light palette — cool-biased neutrals, the colour of compiler chrome */
+    --ground: #f6f7f8;
+    --surface: #ffffff;
+    --surface-sunk: #eef1f3;
+    --ink: #141a1f;
+    --ink-soft: #3a4650;
+    --muted: #5c6773;
+    --rule: #dde2e7;
+    --rule-strong: #c3ccd4;
+    --accent: #2d5f7f;
+    --accent-soft: #e4edf3;
+    --crit: #a3342b;
+    --crit-soft: #f7e7e4;
+    --warn: #8a6111;
+    --warn-soft: #f8efdc;
+    --ok: #2f6b4f;
+    --ok-soft: #e3f0e9;
+    --code-ground: #11171c;
+    --code-ink: #dfe6ea;
+    --code-dim: #7e8f9b;
+    --code-hit: #e59488;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #12161a;
+      --surface: #181d22;
+      --surface-sunk: #1f252b;
+      --ink: #e5e9ec;
+      --ink-soft: #bcc5cc;
+      --muted: #8c99a4;
+      --rule: #2a3238;
+      --rule-strong: #3b454d;
+      --accent: #7fb0cf;
+      --accent-soft: #1c2b35;
+      --crit: #e59488;
+      --crit-soft: #33201d;
+      --warn: #d8ad5f;
+      --warn-soft: #302714;
+      --ok: #85c7a4;
+      --ok-soft: #192c22;
+      --code-ground: #0c1115;
+      --code-ink: #dfe6ea;
+      --code-dim: #6f7f8a;
+      --code-hit: #e59488;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #12161a;
+    --surface: #181d22;
+    --surface-sunk: #1f252b;
+    --ink: #e5e9ec;
+    --ink-soft: #bcc5cc;
+    --muted: #8c99a4;
+    --rule: #2a3238;
+    --rule-strong: #3b454d;
+    --accent: #7fb0cf;
+    --accent-soft: #1c2b35;
+    --crit: #e59488;
+    --crit-soft: #33201d;
+    --warn: #d8ad5f;
+    --warn-soft: #302714;
+    --ok: #85c7a4;
+    --ok-soft: #192c22;
+    --code-ground: #0c1115;
+    --code-ink: #dfe6ea;
+    --code-dim: #6f7f8a;
+    --code-hit: #e59488;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
+    font-size: 17px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: 62rem;
+    margin: 0 auto;
+    padding: 3rem 1.5rem 6rem;
+  }
+
+  /* ---- masthead ---- */
+
+  .masthead {
+    border-bottom: 2px solid var(--ink);
+    padding-bottom: 1.5rem;
+    margin-bottom: 2rem;
+  }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.7rem;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 0.9rem;
+  }
+
+  h1 {
+    font-family: Archivo, "Helvetica Neue", Arial, sans-serif;
+    font-weight: 700;
+    font-size: clamp(2rem, 5vw, 3rem);
+    line-height: 1.04;
+    letter-spacing: -0.022em;
+    text-wrap: balance;
+    margin: 0 0 0.75rem;
+  }
+
+  .standfirst {
+    font-size: 1.14rem;
+    color: var(--ink-soft);
+    max-width: 44rem;
+    margin: 0;
+  }
+
+  .meta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+    gap: 1.25rem 2rem;
+    margin: 2rem 0 3rem;
+    padding: 1.25rem 1.5rem;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+  }
+
+  .meta div { min-width: 0; }
+
+  .meta dt {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.66rem;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 0.3rem;
+  }
+
+  .meta dd {
+    margin: 0;
+    font-size: 0.95rem;
+    color: var(--ink);
+  }
+
+  /* ---- typography ---- */
+
+  h2 {
+    font-family: Archivo, "Helvetica Neue", Arial, sans-serif;
+    font-weight: 600;
+    font-size: 1.5rem;
+    letter-spacing: -0.014em;
+    text-wrap: balance;
+    margin: 3.5rem 0 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--rule-strong);
+  }
+
+  h3 {
+    font-family: Archivo, "Helvetica Neue", Arial, sans-serif;
+    font-weight: 600;
+    font-size: 0.78rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 2rem 0 0.6rem;
+  }
+
+  p { margin: 0 0 1rem; max-width: 42rem; }
+  p.wide { max-width: none; }
+
+  strong { font-weight: 600; }
+  em { font-style: italic; }
+
+  a {
+    color: var(--accent);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+  }
+
+  a:focus-visible,
+  button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  code {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.86em;
+    background: var(--surface-sunk);
+    padding: 0.08em 0.3em;
+    border-radius: 2px;
+  }
+
+  pre {
+    margin: 0 0 1.25rem;
+    padding: 1.1rem 1.25rem;
+    background: var(--code-ground);
+    color: var(--code-ink);
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.79rem;
+    line-height: 1.6;
+    overflow-x: auto;
+    border-left: 3px solid var(--accent);
+  }
+
+  pre code {
+    background: none;
+    padding: 0;
+    font-size: inherit;
+    color: inherit;
+  }
+
+  pre .c { color: var(--code-dim); }
+  pre .hit { color: var(--code-hit); font-weight: 500; }
+
+  blockquote {
+    margin: 0 0 1.25rem;
+    padding: 0.2rem 0 0.2rem 1.25rem;
+    border-left: 3px solid var(--rule-strong);
+    color: var(--ink-soft);
+    font-style: italic;
+    max-width: 42rem;
+  }
+
+  /* ---- register table ---- */
+
+  .table-wrap { overflow-x: auto; margin-bottom: 1.5rem; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.92rem;
+    min-width: 40rem;
+  }
+
+  th {
+    font-family: Archivo, "Helvetica Neue", Arial, sans-serif;
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    text-align: left;
+    padding: 0 0.85rem 0.6rem;
+    border-bottom: 1px solid var(--rule-strong);
+    white-space: nowrap;
+  }
+
+  td {
+    padding: 0.8rem 0.85rem;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+
+  td.id {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.8rem;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  table.data td { font-variant-numeric: tabular-nums; }
+
+  /* ---- chips ---- */
+
+  .chip {
+    display: inline-block;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.68rem;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    padding: 0.18em 0.55em;
+    border: 1px solid currentColor;
+    white-space: nowrap;
+  }
+
+  .chip.high { color: var(--crit); background: var(--crit-soft); }
+  .chip.mid { color: var(--warn); background: var(--warn-soft); }
+  .chip.low { color: var(--muted); background: var(--surface-sunk); }
+  .chip.immune { color: var(--ok); background: var(--ok-soft); }
+  .chip.kept { color: var(--accent); background: var(--accent-soft); }
+
+  /* ---- callout ---- */
+
+  .callout {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 4px solid var(--accent);
+    padding: 1.4rem 1.6rem;
+    margin: 1.5rem 0 2rem;
+  }
+
+  .callout p:last-child { margin-bottom: 0; }
+
+  .callout h3 { margin-top: 0; }
+
+  /* ---- defect records ---- */
+
+  .record {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 5px solid var(--rule-strong);
+    padding: 1.75rem 1.9rem;
+    margin-bottom: 2.5rem;
+  }
+
+  .record.sev-high { border-left-color: var(--crit); }
+  .record.sev-mid { border-left-color: var(--warn); }
+  .record.sev-low { border-left-color: var(--rule-strong); }
+
+  .record-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.6rem 1rem;
+    margin-bottom: 0.6rem;
+  }
+
+  .record-id {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.74rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+  }
+
+  .record-head h2 {
+    font-size: 1.3rem;
+    margin: 0;
+    padding: 0;
+    border: none;
+    flex: 1 1 20rem;
+  }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 1.25rem; }
+
+  .locus {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+    padding-bottom: 1rem;
+    margin-bottom: 1.25rem;
+    border-bottom: 1px dashed var(--rule);
+  }
+
+  .record h3:first-of-type { margin-top: 0; }
+
+  .record p { max-width: 40rem; }
+
+  ul { margin: 0 0 1rem; padding-left: 1.3rem; max-width: 42rem; }
+  li { margin-bottom: 0.35rem; }
+
+  .tests {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.74rem;
+    color: var(--muted);
+    background: var(--surface-sunk);
+    padding: 0.8rem 1rem;
+    margin-top: 1.25rem;
+    overflow-x: auto;
+  }
+
+  .tests span { color: var(--ink-soft); }
+
+  footer {
+    margin-top: 4rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--rule-strong);
+    font-size: 0.86rem;
+    color: var(--muted);
+  }
+
+  footer p { max-width: 42rem; }
+
+  @media (max-width: 34rem) {
+    body { font-size: 16px; }
+    .page { padding: 2rem 1.1rem 4rem; }
+    .record { padding: 1.25rem 1.15rem; }
+    .meta { padding: 1rem 1.1rem; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <p class="eyebrow">Defect report · 2026-11-02</p>
+    <h1>Five defects in the ISDA CDS Standard Model</h1>
+    <p class="standfirst">
+      Found while porting the 2009 C library to C++20, by running both
+      implementations side by side under AddressSanitizer. Four cannot occur in
+      the port. One is reproduced on purpose.
+    </p>
+  </header>
+
+  <dl class="meta">
+    <div>
+      <dt>Library examined</dt>
+      <dd>ISDA CDS Standard Model 1.8.3 (C, 2009)</dd>
+    </div>
+    <div>
+      <dt>Obtained from</dt>
+      <dd>cdsmodel.com, under the ISDA CDS Standard Model Public License</dd>
+    </div>
+    <div>
+      <dt>Method</dt>
+      <dd>In-process differential testing vs. a C++20 port, with ASan + UBSan</dd>
+    </div>
+    <div>
+      <dt>Coverage</dt>
+      <dd>~2,000 of 21,775 upstream lines: search, dates, day counts, intervals</dd>
+    </div>
+    <div>
+      <dt>Reproduce</dt>
+      <dd><code>./build/debug/defect_evidence</code></dd>
+    </div>
+    <div>
+      <dt>Fixed upstream</dt>
+      <dd>None — see below</dd>
+    </div>
+  </dl>
+
+  <h2>Register</h2>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">ID</th>
+          <th scope="col">Defect</th>
+          <th scope="col">Severity</th>
+          <th scope="col">Status in the port</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="id"><a href="#u1">UPSTREAM-1</a></td>
+          <td>Month validated <em>after</em> it indexes a 13-element table</td>
+          <td><span class="chip low">Low · UB</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
+          <td class="id"><a href="#u2">UPSTREAM-2</a></td>
+          <td><code>JPMCDS_DEFAULT</code> and <code>FAILURE</code> are both <code>-1</code></td>
+          <td><span class="chip low">Design</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
+          <td class="id"><a href="#u3">UPSTREAM-3</a></td>
+          <td>Lowercase <code>'y'</code> advances a date quarterly, not annually</td>
+          <td><span class="chip high">High · mispricing</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
+          <td class="id"><a href="#u4">UPSTREAM-4</a></td>
+          <td>Stack buffer overflow from string input</td>
+          <td><span class="chip high">High · memory safety</span></td>
+          <td><span class="chip immune">Fixed deliberately</span></td>
+        </tr>
+        <tr>
+          <td class="id"><a href="#u5">UPSTREAM-5</a></td>
+          <td>Days never format as weeks (missing <code>break</code>)</td>
+          <td><span class="chip low">Cosmetic</span></td>
+          <td><span class="chip kept">Reproduced</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <h3>What “fixed” means here, precisely</h3>
+    <p>
+      <strong>Nothing is fixed in upstream.</strong> The original sources are
+      never edited — they are the numerical oracle the port is verified
+      against, and editing them would destroy the only independent check the
+      project has. Every user of the official C library still has all five.
+    </p>
+    <p>
+      Of the five, <strong>three were not fixed so much as made
+      unrepresentable</strong>. No patch was written for UPSTREAM-1, -2 or -3;
+      the types stopped permitting them. A month that cannot be 13. A result
+      that cannot carry a sentinel. A period type normalised at construction.
+      That is the strongest single argument for the port existing: three of
+      five defects died as a side effect of choosing better types, not as a
+      side effect of hunting for bugs.
+    </p>
+    <p>
+      <strong>UPSTREAM-4 is the only defect the port consciously declines to
+      reproduce.</strong> Faithfully reproducing a buffer overflow is not
+      fidelity.
+    </p>
+    <p>
+      <strong>UPSTREAM-5 is the only one deliberately kept</strong>, because
+      its output is observable by callers; abbreviating <code>"14D"</code> to
+      <code>"2W"</code> would be a behaviour change dressed up as a fix.
+    </p>
+  </div>
+
+  <!-- ============ U3 first: highest severity ============ -->
+  <section class="record sev-high" id="u3">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-3</span>
+      <h2>Lowercase <code>'y'</code> advances a date quarterly, not annually</h2>
+    </div>
+    <div class="chips">
+      <span class="chip high">High · silent mispricing</span>
+      <span class="chip immune">Cannot occur in the port</span>
+    </div>
+    <p class="locus">lib/src/ldate.c · JpmcdsDtFwdAny</p>
+
+    <h3>Mechanism</h3>
+    <p>Inside <code>case 'Y':</code> the month multiplier is chosen like this:</p>
+<pre><code>if (upperPrdTyp == 'M')
+    intval.prd = interval-&gt;prd;
+else if (upperPrdTyp == 'A' || interval-&gt;prd_typ == 'Y')   <span class="hit">/* raw, not upper-cased */</span>
+    intval.prd = interval-&gt;prd * JPMCDS_MONTHS_PER_YEAR;
+else if (upperPrdTyp == 'S')
+    intval.prd = interval-&gt;prd * JPMCDS_MONTHS_PER_SEMI;
+else
+    intval.prd = interval-&gt;prd * JPMCDS_MONTHS_PER_QUARTER;  <span class="hit">/* 'y' lands here */</span></code></pre>
+    <p>
+      The second test checks the <strong>upper-cased</strong> type for
+      <code>'A'</code> but the <strong>raw</strong> type for <code>'Y'</code>.
+      A lowercase <code>'y'</code> matches neither, falls to the
+      <code>else</code>, and is multiplied by 3 instead of 12.
+    </p>
+
+    <h3>Evidence</h3>
+    <p>Start date 2008-01-03, one period, measured against the live library:</p>
+<pre><code>  type   upstream       months advanced
+  'Y'    2009-01-03     12
+  'y'    2008-04-03     <span class="hit">3</span>
+  'A'    2009-01-03     12
+  'a'    2009-01-03     12
+  'M'    2008-02-03     1
+  'm'    2008-02-03     1
+  'S'    2008-07-03     6
+  's'    2008-07-03     6
+  'Q'    2008-04-03     3
+  'q'    2008-04-03     3</code></pre>
+    <p>
+      <code>'y'</code> is the only period type in the library whose meaning
+      depends on letter case.
+    </p>
+
+    <h3>Reachability</h3>
+    <p>
+      Not reachable through <code>JpmcdsMakeDateInterval</code> or
+      <code>JpmcdsStringToDateInterval</code>, both of which upper-case first
+      and normalise <code>'Y'</code> to months. It bites hand-constructed
+      <code>TDateInterval</code> values — which is precisely the audience
+      upstream’s own comment names, a few lines above the defect:
+    </p>
+    <blockquote>
+      This code is left here for people who have set up their own
+      TDateIntervals without calling JpmcdsMakeDateInterval or one of the
+      supplied macros.
+    </blockquote>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Cannot occur.</strong> <code>make_date_interval</code>
+      upper-cases and normalises to days or months before any arithmetic, so
+      no non-canonical period type survives to the calculation.
+    </p>
+<pre><code>Port: make_date_interval(1,'y') == make_date_interval(1,'Y') -&gt; true</code></pre>
+    <div class="tests">
+      <span>Tests:</span> DateIntervalDifferential.Upstream3_LowercaseYAdvancesQuarterlyNotAnnually<br>
+      <span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span> DateIntervalMake.IsCaseInsensitiveIncludingY<br>
+      <span>The first asserts the defect still exists upstream, so it fails if a future release fixes it.</span>
+    </div>
+  </section>
+
+  <!-- ============ U4 ============ -->
+  <section class="record sev-high" id="u4">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-4</span>
+      <h2>Stack buffer overflow from string input</h2>
+    </div>
+    <div class="chips">
+      <span class="chip high">High · memory safety</span>
+      <span class="chip immune">Fixed · deliberate divergence</span>
+    </div>
+    <p class="locus">lib/src/convert.c:288 · JpmcdsStringToDateInterval</p>
+
+    <h3>Mechanism</h3>
+    <p>The digit-copy loop has no bounds check against its fixed stack buffer:</p>
+<pre><code>#define MAX_DIGITS 32
+char numberBuff[MAX_DIGITS];
+char *nump = numberBuff;
+...
+while (isdigit((int)*inp))
+    *nump++ = *inp++;          <span class="hit">/* unbounded */</span></code></pre>
+    <p>Any interval string with more than 31 digits writes past the buffer.</p>
+
+    <h3>Evidence</h3>
+<pre><code><span class="hit">ERROR: AddressSanitizer: stack-buffer-overflow</span>
+WRITE of size 1 at 0x00016b2e1e60 thread T0
+    #0 JpmcdsStringToDateInterval convert.c:289
+  This frame has 1 object(s):
+    [32, 64) 'numberBuff' (line 275) &lt;== Memory access at offset 64 overflows this variable</code></pre>
+    <p>Measured boundary:</p>
+<pre><code>  digits         upstream               port
+  5              accepted               accepted
+  10             accepted               accepted
+  31             accepted               accepted
+  32             <span class="hit">overflow</span>               rejected
+  40             <span class="hit">overflow</span>               rejected
+  64             <span class="hit">overflow</span>               rejected</code></pre>
+
+    <h3>Reachability</h3>
+    <p>
+      Interval strings (<code>"1Y"</code>, <code>"3M"</code>,
+      <code>"6M"</code>) are exactly what the shipped Excel add-in reads from
+      user-entered cells, so the input is caller-influenced in the most
+      ordinary deployment of this library.
+    </p>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Fixed, by deliberate divergence.</strong>
+      <code>parse_date_interval</code> bounds the digit count and rejects
+      anything longer. This is the only place the port does not reproduce
+      upstream behaviour.
+    </p>
+    <p>
+      An executable reproducer ships in the repository rather than as prose.
+      It is disabled by default, because it crashes the sanitizer build on
+      purpose:
+    </p>
+<pre><code>./build/asan/cdsmodel_differential_tests \
+    --gtest_also_run_disabled_tests --gtest_filter='*Upstream4*'</code></pre>
+    <div class="tests">
+      <span>Tests:</span> DateIntervalParse.RejectsDigitRunsThatWouldOverflowUpstreamsBuffer<br>
+      <span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span> DISABLED_Upstream4_LongDigitRunOverflowsStackBuffer <span>(the reproducer)</span>
+    </div>
+  </section>
+
+  <!-- ============ U1 ============ -->
+  <section class="record sev-low" id="u1">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-1</span>
+      <h2>Month validated after it indexes a 13-element table</h2>
+    </div>
+    <div class="chips">
+      <span class="chip low">Low · UB on a reject path</span>
+      <span class="chip immune">Cannot occur in the port</span>
+    </div>
+    <p class="locus">lib/src/dateconv.c:657 · JpmcdsMDYToDate</p>
+
+    <h3>Mechanism</h3>
+    <p>
+      The day-range check indexes the month-length table before the
+      month-range check has validated <code>month</code>:
+    </p>
+<pre><code><span class="c">/* Make sure day is in range. */</span>
+if (day &gt;= 1 &amp;&amp; day &lt;= 28)
+   <span class="c">/*EMPTY*/</span>;
+else if (day &lt; 1 ||
+    (isLeap ? day &gt; leapDays[month] : day &gt; (days[month])))   <span class="hit">/* month unvalidated */</span>
+{ ... return FAILURE; }
+
+<span class="c">/* Make sure month and year are in range. */</span>
+if (month &lt; 1 || month &gt; JPMCDS_MONTHS_PER_YEAR || ...)       <span class="hit">/* too late */</span>
+{ ... return FAILURE; }</code></pre>
+    <p>
+      <code>days[]</code> and <code>leapDays[]</code> hold 13 elements, so
+      <code>month == 13</code> reads one past the end.
+    </p>
+
+    <h3>Evidence</h3>
+<pre><code><span class="hit">ERROR: AddressSanitizer: global-buffer-overflow</span>
+READ of size 4 at 0x000102977db4 thread T0
+    #0 JpmcdsMDYToDate dateconv.c:658
+0x000102977db4 is located 0 bytes after global variable 'leapDays' ... of size 52</code></pre>
+
+    <h3>Reachability</h3>
+    <p>All three conditions must hold:</p>
+    <ul>
+      <li>
+        the year is outside 1995–2119 — inside that window
+        <code>gDateCacheArray</code>’s fast path validates the month first and
+        returns early, hiding the defect
+      </li>
+      <li><code>day &gt;= 29</code> — <code>day &lt;= 28</code> short-circuits before the lookup</li>
+      <li><code>month &gt; 12</code></li>
+    </ul>
+    <p>
+      The same validation logic appears in <code>JpmcdsNormalizeMDY</code>
+      with the ordering <strong>correct</strong>: it normalises
+      <code>month</code> into 1–12 before indexing. One defect, written twice,
+      right in one copy.
+    </p>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Cannot occur.</strong> <code>make_date</code> range-checks
+      before constructing anything, and <code>days_in_month</code> takes a
+      <code>std::chrono::year_month</code>, so a 13th month cannot be
+      represented in a value that reaches a table.
+    </p>
+    <div class="tests">
+      <span>Tests:</span> DateDifferential.MakeDateMatchesUpstreamIncludingRejections<br>
+      <span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span> DateMonth.DaysInMonthIsTypeSafeWhereUpstreamWasNot<br>
+      <span>The sweep covers months 0–12 only: there is no defined behaviour at 13 to compare against.</span>
+    </div>
+  </section>
+
+  <!-- ============ U2 ============ -->
+  <section class="record sev-low" id="u2">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-2</span>
+      <h2><code>JPMCDS_DEFAULT</code> and <code>FAILURE</code> are both <code>-1</code></h2>
+    </div>
+    <div class="chips">
+      <span class="chip low">Design · no caller broken today</span>
+      <span class="chip immune">Cannot occur in the port</span>
+    </div>
+    <p class="locus">lib/include/isda/cgeneral.h:56 and :64</p>
+
+    <h3>Mechanism</h3>
+<pre><code>#define FAILURE        -1
+#define JPMCDS_DEFAULT -1</code></pre>
+    <p>
+      A day count code of <code>-1</code> means both “the default convention”
+      and “this call failed”. The same pattern appears in
+      <code>JpmcdsDate</code>, which returns <code>FAILURE</code> as a
+      <code>TDate</code>.
+    </p>
+
+    <h3>Evidence</h3>
+<pre><code>  JPMCDS_DEFAULT = -1
+  FAILURE        = -1
+  equal?         = <span class="hit">YES</span>
+
+Upstream parse of "Default": rc=SUCCESS, code=-1
+Upstream JpmcdsDate(1600,1,1) (an invalid date): -1</code></pre>
+    <p>A caller holding a <code>long</code> cannot distinguish the two.</p>
+
+    <h3>Status in the port</h3>
+    <p><strong>Cannot occur.</strong> Success and value are separate channels:</p>
+<pre><code>Port parse of "Default": has_value=true, value=-1
+Port make_date(1600,1,1):  has_value=false</code></pre>
+    <p>
+      <code>-1</code> is an ordinary value in the port, not a signal. This is
+      the reason the port returns <code>std::optional</code> throughout rather
+      than reserving values inside the result space.
+    </p>
+    <div class="tests">
+      <span>Test:</span> DayCountStringParse.NonCalculableKeywordsParseButAreNotConventions
+    </div>
+  </section>
+
+  <!-- ============ U5 ============ -->
+  <section class="record sev-low" id="u5">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-5</span>
+      <h2>Days never format as weeks</h2>
+    </div>
+    <div class="chips">
+      <span class="chip low">Cosmetic · output still correct</span>
+      <span class="chip kept">Reproduced deliberately</span>
+    </div>
+    <p class="locus">lib/src/convert.c · JpmcdsFormatDateInterval</p>
+
+    <h3>Mechanism</h3>
+    <p>
+      The <code>'D'</code> case computes a week form and then falls through
+      into <code>default:</code>, which overwrites both variables:
+    </p>
+<pre><code>case 'D':
+    if (interval-&gt;prd % JPMCDS_DAYS_PER_WEEK == 0)
+    {
+        periodType = 'W';                     <span class="c">/* computed... */</span>
+        numPeriods = interval-&gt;prd/JPMCDS_DAYS_PER_WEEK;
+    }
+    ...
+    <span class="hit">/* no break */</span>
+default:
+    periodType = interval-&gt;prd_typ;           <span class="c">/* ...then discarded */</span>
+    numPeriods = interval-&gt;prd;</code></pre>
+    <p>
+      The <code>'M'</code> case directly above it does have its
+      <code>break</code>, so month collapsing works.
+    </p>
+
+    <h3>Evidence</h3>
+<pre><code>  stored     upstream       port       intended
+  12M        1A             1A         same
+  18M        3S             3S         same
+  6M         1S             1S         same
+  7D         <span class="hit">7D</span>             7D         1W
+  14D        <span class="hit">14D</span>            14D        2W
+  28D        <span class="hit">28D</span>            28D        4W</code></pre>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Reproduced deliberately.</strong> This is observable output;
+      abbreviating <code>"14D"</code> to <code>"2W"</code> would change
+      behaviour for every caller that formats an interval. The port reproduces
+      the behaviour and does not implement the unreachable intent.
+    </p>
+    <div class="tests">
+      <span>Tests:</span> DateIntervalDifferential.Upstream5_DaysNeverFormatAsWeeks<br>
+      <span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span> DateIntervalFormat.DaysNeverCollapseToWeeks
+    </div>
+  </section>
+
+  <h2>Also noted — why the library cannot be used concurrently</h2>
+  <p class="wide">
+    Not defects in the sense above, but the reason the library is
+    single-threaded in practice. The port holds no mutable global state.
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Location</th>
+          <th scope="col">State</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="id">buscache.c:62</td>
+          <td>
+            <code>THoliday *cache = NULL;</code> — <strong>no <code>static</code></strong>,
+            so it has external linkage and is exported from the archive as
+            <code>_cache</code>. A process-wide holiday cache with no locking.
+          </td>
+        </tr>
+        <tr>
+          <td class="id">cerror.c</td>
+          <td>Eight statics including a <code>FILE *</code> log handle and a callback pointer</td>
+        </tr>
+        <tr>
+          <td class="id">bsearch.c:19</td>
+          <td>
+            <code>bSearchCheckOrder_g</code>, a global flag that silently switched every
+            binary search in the process between checked and unchecked
+          </td>
+        </tr>
+        <tr>
+          <td class="id">yearfrac.c:172</td>
+          <td>
+            <code>static char privDccString[33]</code>, a function-local scratch buffer in
+            the convention-string parser
+          </td>
+        </tr>
+        <tr>
+          <td class="id">convert.c</td>
+          <td>
+            <code>static char format[2][16]</code> with a toggling index, so
+            <code>JpmcdsFormatDateInterval</code>’s result is invalidated by the second
+            subsequent call
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="wide">
+    <code>bSearchCheckOrder_g</code> is already gone — the caller chooses
+    <code>bracket</code> or <code>bracket_checked</code>. The holiday cache
+    becomes a value the caller owns when the calendar layer lands.
+  </p>
+
+  <h2>Method</h2>
+  <p>
+    The upstream C is compiled untouched into a static library and linked into
+    the <strong>same test binary</strong> as the port. Tests call both
+    implementations side by side and compare in-process, so the oracle is not
+    a recorded value that can go stale — it is the original code, executing.
+  </p>
+  <p>
+    All of it runs under AddressSanitizer and UndefinedBehaviorSanitizer. That
+    pairing is what surfaced UPSTREAM-1 and UPSTREAM-4: neither changes the
+    library’s return value, so neither is visible from output alone.
+  </p>
+
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr>
+          <th scope="col">Configuration</th>
+          <th scope="col">Tests</th>
+          <th scope="col">Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>With a local oracle</td>
+          <td>102</td>
+          <td>Tier 1 + live differential + byte-exact end-to-end example</td>
+        </tr>
+        <tr>
+          <td>Without an oracle (CI)</td>
+          <td>61</td>
+          <td>Replaying 4,225 recorded reference cases</td>
+        </tr>
+        <tr>
+          <td>ASan + UBSan</td>
+          <td>102</td>
+          <td>Clean</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <footer>
+    <h3>Source</h3>
+    <p>
+      Everything here is reproducible from the repository:
+      <a href="https://github.com/bdcbqa314159/cdsmodel">github.com/bdcbqa314159/cdsmodel</a>.
+      The evidence transcripts are printed by
+      <code>tools/defect_evidence.cpp</code>; the fix status of each defect is
+      enforced by the named tests. The migration plan and the full
+      legacy-pattern inventory are in <code>docs/port-notes.md</code>.
+    </p>
+
+    <h3>Scope</h3>
+    <p>
+      Covers only the parts of the library ported so far — binary search,
+      dates, day counts and date intervals, about 2,000 of 21,775 upstream
+      lines. Calendars, schedules, curves, cashflows, the CDS legs, the solver
+      and the top-level pricing API have not been examined. No attempt was
+      made to assess exploitability of UPSTREAM-4 beyond confirming the
+      out-of-bounds write.
+    </p>
+    <p>
+      This report is based on the ISDA CDS Standard Model (version 1.8.3),
+      developed and supported in collaboration with Markit Group Ltd. ISDA and
+      Markit are not affiliated with this work and do not endorse it. The
+      upstream sources are not redistributed; they are available from
+      cdsmodel.com under the ISDA CDS Standard Model Public License.
+    </p>
+  </footer>
+
+</div>
+</body>
+</html>
