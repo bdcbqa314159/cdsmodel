@@ -135,6 +135,36 @@ TEST(DateIntervalParse, RejectsDigitRunsThatWouldOverflowUpstreamsBuffer) {
   EXPECT_TRUE(cdsmodel::parse_date_interval("1D").has_value());
 }
 
+TEST(DateIntervalParse, RejectsDigitRunsThatWouldOverflowAnInt) {
+  // Found by auditing the port under UBSan, NOT by differential testing:
+  // upstream's atoi overflows too, so both sides produced wrapped garbage and
+  // "agreed". Upstream parses "9999999999M" as 1410065407 months; a 20-digit
+  // run comes back as prd=-1, which is also its FAILURE value.
+  //
+  // The port rejects instead. Recording upstream's answers here would enshrine
+  // undefined behaviour as the specification, so these cases are deliberately
+  // absent from the golden vectors.
+  EXPECT_TRUE(cdsmodel::parse_date_interval("2147483647M").has_value());
+  EXPECT_EQ(cdsmodel::parse_date_interval("2147483647M")->periods, 2147483647);
+
+  EXPECT_FALSE(cdsmodel::parse_date_interval("2147483648M").has_value());
+  EXPECT_FALSE(cdsmodel::parse_date_interval("9999999999M").has_value());
+  EXPECT_FALSE(cdsmodel::parse_date_interval("99999999999999999999M").has_value());
+  // The sign is applied after accumulation, so the negative bound matches.
+  EXPECT_FALSE(cdsmodel::parse_date_interval("-9999999999M").has_value());
+
+  // Leading zeros do not count against the magnitude, only the digit budget.
+  EXPECT_TRUE(cdsmodel::parse_date_interval("0000000001M").has_value());
+  EXPECT_EQ(cdsmodel::parse_date_interval("0000000001M")->periods, 1);
+}
+
+TEST(DateIntervalParse, OverflowRejectionIsExactAtTheBoundary) {
+  // One below, at, and one above INT_MAX, so the check cannot be off by one.
+  EXPECT_EQ(cdsmodel::parse_date_interval("2147483646M")->periods, 2147483646);
+  EXPECT_EQ(cdsmodel::parse_date_interval("2147483647M")->periods, 2147483647);
+  EXPECT_FALSE(cdsmodel::parse_date_interval("2147483648M").has_value());
+}
+
 TEST(DateIntervalParse, RejectsMissingOrMisplacedPeriodType) {
   for (std::string_view s : {"", "1", "12", "-", "+", "1X", "X", "1 Y", " 1Y", "Y1"}) {
     const auto got = cdsmodel::parse_date_interval(s);

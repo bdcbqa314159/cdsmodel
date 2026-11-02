@@ -167,7 +167,8 @@ a comment at the site and listed below.
 | `"NONE"` round trip | parses to code `0`, which the formatter has no `case` for, so it formats back as `"unrecognized"` | identical, deliberately | an upstream asymmetry, recorded and tested rather than silently repaired |
 | `TDateInterval.flag` | third field selecting what the interval is measured from | dropped | `JpmcdsMakeDateInterval` always sets it to 0 and nothing in the library reads it. A differential test asserts it stays 0, so if that ever changes we find out. |
 | interval period types | fourteen documented; `JpmcdsMakeDateInterval` accepts thirteen; `JpmcdsDtFwdAny` can advance by seven | the seven advanceable ones | upstream lets you construct an interval it then refuses to use. A value you can build and not use is not a feature; the rest arrive with `schedule.c` if anything consumes them. |
-| interval digit parsing | unbounded copy into a 32-byte stack buffer | bounded, rejects >31 digits | **the only place the port refuses to reproduce upstream behaviour**, because that behaviour is a stack buffer overflow. See UPSTREAM-4. |
+| interval digit parsing | unbounded copy into a 32-byte stack buffer | bounded, rejects >31 digits | a refusal to reproduce upstream behaviour, because that behaviour is a stack buffer overflow. See UPSTREAM-4. |
+| interval digit conversion | `atoi`, whose overflow is undefined; `"9999999999M"` becomes 1410065407 months and a 20-digit run becomes `prd = -1` (also its `FAILURE` value) | rejects any run that would not fit an `int` | the second refusal to reproduce undefined behaviour. **Found by auditing the port, not by differential testing** — both sides were producing wrapped garbage, so they agreed. See "Auditing the port itself" below. |
 | days-to-weeks formatting | week branch exists but is unreachable (missing `break`) | unreachable behaviour reproduced, dead intent not | `14D` formats as `"14D"`, never `"2W"`. It is observable output. See UPSTREAM-5. |
 | `JpmcdsDate` failure | returns `-1`, a value in the date space | `std::optional<Date>` | `-1` was safe only because valid TDates are non-negative — exactly the coupling optional removes |
 | `JpmcdsDaysInMonth` | `(long year, long month)`, month unvalidated, indexes a 13-element table | `days_in_month(std::chrono::year_month)` | a 13th month becomes unrepresentable instead of an out-of-bounds read |
@@ -222,6 +223,28 @@ canonical account. It is published at
 Keeping the detail in one place means the register above is a summary and not
 a second, drifting copy. `python verify.py reports` checks that every id named
 here appears in both the report and the published page.
+
+## Auditing the port itself
+
+Differential testing proves the port agrees with the oracle on the inputs
+swept. It cannot prove three other things, so those need separate attention:
+
+1. **Agreement on undefined behaviour is not agreement.** Where both
+   implementations are undefined, a differential test passes while both
+   produce garbage. This is how the `atoi` overflow above survived: the port
+   accumulated digits into an `int` with signed overflow, upstream did the
+   same through `atoi`, and the suite was green because neither side was
+   tested with a ten-digit interval. UBSan on the *port* found it in seconds;
+   no amount of differential testing would have.
+2. **Coverage is only what was swept.** 6,631 recorded cases sounds like a
+   lot, but every one of them was chosen by hand. The gaps are invisible by
+   construction.
+3. **Transitive includes.** A public header that compiles only because some
+   other header was included first is broken for any consumer who includes it
+   alone. The `cdsmodel_header_selftest` target in `CMakeLists.txt` compiles
+   each public header on its own to catch this. Note it does **not** catch
+   much on Apple libc++, which satisfies most of these transitively — its
+   value is on the Windows and Linux legs of CI.
 
 ## Not doing
 
