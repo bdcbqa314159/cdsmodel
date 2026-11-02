@@ -7,6 +7,18 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(CDSMODEL_BUILD_TESTS "Build tests" ${PROJECT_IS_TOP_LEVEL})
+
+# UndefinedBehaviorSanitizer PRINTS and CONTINUES by default, exiting 0. A
+# sanitizer job that only fails on AddressSanitizer errors therefore ignores
+# every pure-UB finding -- signed overflow, bad shifts, invalid enum loads.
+# This makes UBSan fatal, and is applied ONLY to the port and its tests, never
+# to cds_reference: upstream's own undefined behaviour is catalogued, not
+# fixed, and must stay observable without aborting the suite.
+option(CDSMODEL_FATAL_UBSAN "Abort on UndefinedBehaviorSanitizer findings in port code" OFF)
+set(CDSMODEL_UBSAN_FATAL_FLAGS "")
+if(CDSMODEL_FATAL_UBSAN AND NOT MSVC)
+  set(CDSMODEL_UBSAN_FATAL_FLAGS -fno-sanitize-recover=undefined)
+endif()
 set(CDSMODEL_UPSTREAM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/isda_cds_model_c_v1.8.3"
     CACHE PATH "Local copy of the upstream ISDA CDS Standard Model C sources")
 
@@ -72,6 +84,7 @@ if(MSVC)
 else()
   target_compile_options(cdsmodel PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+target_compile_options(cdsmodel PUBLIC ${CDSMODEL_UBSAN_FATAL_FLAGS})
 
 # Each public header must compile on its own. A missing #include that happens
 # to be satisfied transitively by whatever a .cpp included first is a latent
@@ -115,7 +128,8 @@ if(CDSMODEL_BUILD_TESTS)
                  tests/day_count_test.cpp
                  tests/day_count_string_test.cpp
                  tests/date_interval_test.cpp
-                 tests/calendar_test.cpp)
+                 tests/calendar_test.cpp
+                 tests/adversarial_test.cpp)
   target_link_libraries(cdsmodel_tests PRIVATE cdsmodel GTest::gtest_main)
   target_include_directories(cdsmodel_tests PRIVATE tests)
   include(GoogleTest)

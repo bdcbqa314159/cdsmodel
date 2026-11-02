@@ -140,9 +140,10 @@ them reproducible rather than magic.
 A module needs **both**. Tier 2 alone is verified only on the machine that
 has the oracle; tier 1 alone can go stale against a behaviour nobody swept.
 
-Current coverage: 120 tests with an oracle present, 73 without, the latter
+Current coverage: 142 tests with an oracle present, 95 without, the latter
 replaying 6,631 recorded reference cases. All of it also runs clean under
-AddressSanitizer and UndefinedBehaviorSanitizer.
+AddressSanitizer and UndefinedBehaviorSanitizer, with UBSan findings **fatal**
+for port code (see PORT-5 below).
 
 Where the port deliberately differs from upstream, the difference is named in
 a comment at the site and listed below.
@@ -245,6 +246,52 @@ swept. It cannot prove three other things, so those need separate attention:
    each public header on its own to catch this. Note it does **not** catch
    much on Apple libc++, which satisfies most of these transitively — its
    value is on the Windows and Linux legs of CI.
+
+`tests/adversarial_test.cpp` is the harness for the first two. It asserts
+**invariants** rather than agreement — totality, round trips, postconditions —
+and feeds hostile input rather than plausible input, from a fixed seed so a
+failure is reproducible and the suite cannot go intermittently red.
+
+### Port-side findings
+
+Defects in **this port**, found by auditing it rather than by comparing it to
+the oracle. Numbered separately from the UPSTREAM series: these are ours.
+
+| id | defect | found by | status |
+|---|---|---|---|
+| PORT-1 | signed overflow accumulating interval digits (`periods * 10 + digit`); `"9999999999M"` was UB that happened to yield 1410065407 | UBSan, run by hand on the port | fixed — check before multiplying |
+| PORT-2 | signed overflow *scaling* interval periods (`periods * 12` for `'Y'`, `* 28` for `'U'`) — a different site from PORT-1 | the harness | fixed — `detail::scale` rejects |
+| PORT-3 | signed overflow in `normalize_ymd` (`month - 1` at `INT_MIN`, `year + carry`) and in `advance`'s days path (`sys_days + days{periods}`) | the harness | fixed — arithmetic widened once and range-checked, rather than guarded per operation |
+| PORT-4 | `from_tdate` narrowed silently outside an undocumented domain: `from_tdate(5'000'000'000)` round-tripped to 705032704 on macOS | probing extremes after PORT-3 | fixed — `kMinTDate`/`kMaxTDate`/`is_representable_tdate`, derived from the epoch |
+| PORT-6 | the first test for PORT-4 asserted macOS's domain as a literal, and failed on both other platforms for two *different* reasons | the 3-OS CI matrix | fixed — the test asserts properties of the bounds, never numbers |
+| PORT-5 | **UBSan findings were not fatal in CI**, so every pure-UB finding had been silently ignored since the sanitizer job was added | noticed when PORT-2 "passed" while printing a runtime error | fixed — `CDSMODEL_FATAL_UBSAN`, on for the asan preset |
+
+**PORT-5 is the one that mattered most.** UndefinedBehaviorSanitizer prints
+and continues by default, exiting 0. The sanitizer job only ever failed on
+AddressSanitizer errors, which is why UPSTREAM-1 and UPSTREAM-4 surfaced —
+both are *also* ASan errors — while pure undefined behaviour like signed
+overflow was invisible. PORT-1 through PORT-4 were all sitting in a green
+suite. The flag is applied to the port and its tests only, never to
+`cds_reference`: upstream's undefined behaviour is catalogued, not fixed, and
+must stay observable without aborting the run.
+
+**PORT-6 is why the three-OS matrix is not ceremony.** The representable
+domain varies in two independent ways: `std::chrono::days::rep` is 32-bit on
+libc++ and 64-bit on libstdc++, and `long` — hence `TDate` — is 32-bit on
+Windows and 64-bit elsewhere. Upstream's `typedef long int TDate` inherits
+that second one, so **the model's date type is not a stable width across
+platforms.** Harmless for day numbers around 150,000, and worth remembering at
+any ABI boundary: the C shim and the Python bindings both cross one.
+
+Three things worth taking from this:
+
+* **A sanitizer that cannot fail the build is documentation, not a gate.**
+  Check that a new sanitizer actually aborts before trusting it.
+* **PORT-2 and PORT-3 are in code written to fix PORT-1.** Guarding
+  individual arithmetic operations is easy to get subtly incomplete; the
+  version that holds up widens once and range-checks at the boundary.
+* **A test that asserts a platform's answer as a literal is a portability
+  bug.** PORT-6 was in the test written to prove PORT-4 fixed.
 
 ## Not doing
 
