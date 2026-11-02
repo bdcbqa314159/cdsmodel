@@ -172,7 +172,40 @@ a comment at the site and listed below.
 ## Upstream defects found
 
 Porting against a live oracle under sanitizers surfaces bugs in the original.
-These are reported here, not fixed in place — upstream stays untouched.
+**None of them are fixed in upstream, and none ever will be here**: editing
+`isda_cds_model_c_v1.8.3/` would destroy the only independent check the
+project has. Anyone using the official C library still has all of these.
+
+### Register
+
+| id | defect | severity | in the port | how |
+|---|---|---|---|---|
+| [UPSTREAM-1](#upstream-1--out-of-bounds-read-in-jpmcdsmdytodate-dateconvc657) | month validated *after* it indexes a 13-element table | low — UB on a reject path | cannot occur | validation precedes lookup, and `std::chrono::month` makes a 13th month unrepresentable |
+| [UPSTREAM-2](#upstream-2--jpmcds_default-collides-with-failure) | `JPMCDS_DEFAULT` == `FAILURE` == `-1` | design | cannot occur | `std::optional` throughout; no sentinel inside the value space |
+| [UPSTREAM-3](#upstream-3--lowercase-y-advances-a-date-quarterly-not-annually) | lowercase `'y'` advances quarterly, not annually | **high** — silent mispricing | cannot occur | `make_date_interval` upper-cases and normalises before any arithmetic |
+| [UPSTREAM-4](#upstream-4--stack-buffer-overflow-in-jpmcdsstringtodateinterval) | stack buffer overflow from string input | **high** — memory safety | **fixed, deliberate divergence** | digit count bounded; input over 31 digits rejected |
+| [UPSTREAM-5](#upstream-5--days-never-format-as-weeks-missing-break) | days never format as weeks (missing `break`) | cosmetic | **reproduced on purpose** | observable output; fidelity beats tidiness |
+
+Three of these were not *fixed* so much as made unrepresentable. Nobody wrote
+a patch for UPSTREAM-1, -2 or -3 — the types stopped permitting them. A month
+that cannot be 13, a result that cannot carry a sentinel, a period type
+normalised at construction. That is the strongest single argument for the port
+existing: three of five defects died as a side effect of choosing better types.
+
+UPSTREAM-4 is the only defect the port consciously declines to reproduce.
+Faithfully reproducing a buffer overflow is not fidelity.
+
+UPSTREAM-5 is the only one deliberately kept, because its output is observable
+by callers and abbreviating `"14D"` to `"2W"` would be a behaviour change
+dressed up as a fix.
+
+### Not yet reported to ISDA
+
+Each entry below carries a reproducer, a sanitizer trace where relevant, and
+its reachability conditions, so the register is the raw material for a report.
+Reporting has not happened yet. UPSTREAM-3 and UPSTREAM-4 are the two worth
+leading with: a silent annual-to-quarterly substitution, and a stack write
+driven by user-entered spreadsheet input.
 
 ### UPSTREAM-1 — out-of-bounds read in `JpmcdsMDYToDate` (dateconv.c:657)
 
