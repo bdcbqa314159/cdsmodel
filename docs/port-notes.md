@@ -262,7 +262,8 @@ the oracle. Numbered separately from the UPSTREAM series: these are ours.
 | PORT-1 | signed overflow accumulating interval digits (`periods * 10 + digit`); `"9999999999M"` was UB that happened to yield 1410065407 | UBSan, run by hand on the port | fixed — check before multiplying |
 | PORT-2 | signed overflow *scaling* interval periods (`periods * 12` for `'Y'`, `* 28` for `'U'`) — a different site from PORT-1 | the harness | fixed — `detail::scale` rejects |
 | PORT-3 | signed overflow in `normalize_ymd` (`month - 1` at `INT_MIN`, `year + carry`) and in `advance`'s days path (`sys_days + days{periods}`) | the harness | fixed — arithmetic widened once and range-checked, rather than guarded per operation |
-| PORT-4 | `from_tdate` narrowed silently outside an undocumented domain: `from_tdate(5'000'000'000)` round-tripped to 705032704 | probing extremes after PORT-3 | fixed — `kMinTDate`/`kMaxTDate`/`is_representable_tdate`, derived from the epoch |
+| PORT-4 | `from_tdate` narrowed silently outside an undocumented domain: `from_tdate(5'000'000'000)` round-tripped to 705032704 on macOS | probing extremes after PORT-3 | fixed — `kMinTDate`/`kMaxTDate`/`is_representable_tdate`, derived from the epoch |
+| PORT-6 | the first test for PORT-4 asserted macOS's domain as a literal, and failed on both other platforms for two *different* reasons | the 3-OS CI matrix | fixed — the test asserts properties of the bounds, never numbers |
 | PORT-5 | **UBSan findings were not fatal in CI**, so every pure-UB finding had been silently ignored since the sanitizer job was added | noticed when PORT-2 "passed" while printing a runtime error | fixed — `CDSMODEL_FATAL_UBSAN`, on for the asan preset |
 
 **PORT-5 is the one that mattered most.** UndefinedBehaviorSanitizer prints
@@ -274,13 +275,23 @@ suite. The flag is applied to the port and its tests only, never to
 `cds_reference`: upstream's undefined behaviour is catalogued, not fixed, and
 must stay observable without aborting the run.
 
-Two things worth taking from this:
+**PORT-6 is why the three-OS matrix is not ceremony.** The representable
+domain varies in two independent ways: `std::chrono::days::rep` is 32-bit on
+libc++ and 64-bit on libstdc++, and `long` — hence `TDate` — is 32-bit on
+Windows and 64-bit elsewhere. Upstream's `typedef long int TDate` inherits
+that second one, so **the model's date type is not a stable width across
+platforms.** Harmless for day numbers around 150,000, and worth remembering at
+any ABI boundary: the C shim and the Python bindings both cross one.
+
+Three things worth taking from this:
 
 * **A sanitizer that cannot fail the build is documentation, not a gate.**
   Check that a new sanitizer actually aborts before trusting it.
 * **PORT-2 and PORT-3 are in code written to fix PORT-1.** Guarding
   individual arithmetic operations is easy to get subtly incomplete; the
   version that holds up widens once and range-checks at the boundary.
+* **A test that asserts a platform's answer as a literal is a portability
+  bug.** PORT-6 was in the test written to prove PORT-4 fixed.
 
 ## Not doing
 

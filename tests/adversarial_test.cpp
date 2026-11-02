@@ -420,27 +420,48 @@ TEST(Adversarial, NormalizeIsTotalOverExtremeMonths) {
 }
 
 TEST(Adversarial, TDateRepresentabilityIsExplicitAndExact) {
-  // std::chrono::days::rep is 32-bit in practice, so TDates beyond it narrow
-  // silently. The domain is named so a boundary can check it.
+  // The domain is IMPLEMENTATION-DEPENDENT in two independent ways, which an
+  // earlier version of this test got wrong by asserting Apple's answer as a
+  // literal:
+  //
+  //   * std::chrono::days::rep is 32-bit on libc++ and 64-bit on libstdc++.
+  //   * `long`, and therefore TDate, is 32-bit on Windows and 64-bit
+  //     elsewhere.
+  //
+  // So everything here is a property of the bounds, never a magic number.
   static_assert(cdsmodel::is_representable_tdate(0));
   static_assert(cdsmodel::is_representable_tdate(cdsmodel::kMaxTDate));
   static_assert(cdsmodel::is_representable_tdate(cdsmodel::kMinTDate));
-  EXPECT_FALSE(cdsmodel::is_representable_tdate(cdsmodel::kMaxTDate + 1));
-  EXPECT_FALSE(cdsmodel::is_representable_tdate(cdsmodel::kMinTDate - 1));
-  EXPECT_FALSE(cdsmodel::is_representable_tdate(5000000000LL));
 
-  // The range is asymmetric: every conversion carries the 1601-to-1970 offset,
-  // so the lower bound is shifted while the upper is not.
+  // Just outside -- but only where "just outside" is expressible without
+  // overflowing TDate itself, which it is not when the bound already sits at
+  // the type's own limit.
+  if (cdsmodel::kMaxTDate < std::numeric_limits<cdsmodel::TDate>::max()) {
+    EXPECT_FALSE(cdsmodel::is_representable_tdate(cdsmodel::kMaxTDate + 1));
+  }
+  if (cdsmodel::kMinTDate > std::numeric_limits<cdsmodel::TDate>::min()) {
+    EXPECT_FALSE(cdsmodel::is_representable_tdate(cdsmodel::kMinTDate - 1));
+  }
+
+  // The range is asymmetric on every platform: every conversion carries the
+  // 1601-to-1970 offset, so the lower bound is shifted while the upper is not.
   EXPECT_NE(cdsmodel::kMinTDate, -cdsmodel::kMaxTDate - 1)
       << "the domain looks symmetric, which would mean the epoch offset was ignored";
+  EXPECT_LT(cdsmodel::kMinTDate, cdsmodel::TDate{0});
+  EXPECT_GT(cdsmodel::kMaxTDate, cdsmodel::TDate{0});
 
-  // Round trip holds exactly across the representable domain, including the
-  // boundary itself -- the value that silently diverged before.
-  for (cdsmodel::TDate t :
-       {cdsmodel::TDate{0}, cdsmodel::TDate{1}, cdsmodel::TDate{300000}, cdsmodel::TDate{100000000},
-        cdsmodel::kMaxTDate - 1, cdsmodel::kMaxTDate}) {
-    ASSERT_TRUE(cdsmodel::is_representable_tdate(t));
-    EXPECT_EQ(cdsmodel::to_tdate(cdsmodel::from_tdate(t)), t) << "at " << t;
+  // Every real date is comfortably inside, whatever the platform decided.
+  // TDate 300000 is the year 2422; this is the claim that actually matters.
+  EXPECT_TRUE(cdsmodel::is_representable_tdate(0));
+  EXPECT_TRUE(cdsmodel::is_representable_tdate(300000));
+
+  // Round trip holds exactly across the whole domain, bounds included -- the
+  // property the named limits exist to guarantee.
+  for (cdsmodel::TDate t : {cdsmodel::TDate{0}, cdsmodel::TDate{1}, cdsmodel::TDate{300000},
+                            cdsmodel::TDate{100000000}, cdsmodel::kMaxTDate - 1,
+                            cdsmodel::kMaxTDate, cdsmodel::kMinTDate, cdsmodel::kMinTDate + 1}) {
+    ASSERT_TRUE(cdsmodel::is_representable_tdate(t)) << "at " << t;
+    EXPECT_EQ(cdsmodel::to_tdate(cdsmodel::from_tdate(t)), t) << "round trip at " << t;
   }
 }
 

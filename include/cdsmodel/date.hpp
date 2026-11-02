@@ -71,11 +71,20 @@ inline constexpr long long kEpochDayNumber = kDateEpoch.time_since_epoch().count
 /// derived from the epoch rather than written down, so they stay correct on an
 /// implementation where `DayRep` is wider.
 ///
-/// This is far outside any real date -- TDate 2^31 is the year 5,881,581 --
-/// but an undocumented domain with silently wrong behaviour outside it is the
-/// same shape of defect this port exists to remove, so it is named and
-/// checkable rather than implied. Before it was named,
-/// `from_tdate(5'000'000'000)` round-tripped to 705032704.
+/// The actual numbers are IMPLEMENTATION-DEPENDENT in two independent ways,
+/// so never write them down:
+///
+///   * `std::chrono::days::rep` is 32-bit on libc++ and 64-bit on libstdc++.
+///   * `long`, and therefore `TDate`, is 32-bit on Windows and 64-bit
+///     elsewhere -- upstream's `typedef long int TDate` inherits that, so the
+///     date type is not a stable width across platforms. Harmless for day
+///     numbers around 150,000, but it matters at any ABI boundary.
+///
+/// Either way the bounds sit far outside any real date -- on libc++, TDate
+/// 2^31 is the year 5,881,581 -- but an undocumented domain with silently
+/// wrong behaviour outside it is the same shape of defect this port exists to
+/// remove. Before it was named, `from_tdate(5'000'000'000)` round-tripped to
+/// 705032704 on macOS.
 inline constexpr TDate kMinTDate = static_cast<TDate>(std::numeric_limits<detail::DayRep>::min()) -
                                    static_cast<TDate>(detail::kEpochDayNumber);
 inline constexpr TDate kMaxTDate = static_cast<TDate>(std::numeric_limits<detail::DayRep>::max());
