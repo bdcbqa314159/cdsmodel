@@ -101,7 +101,7 @@ there is never a big-bang integration.
 | 1 | search / interp | `bsearch` ✅, `lintrp1`, `linterpc`, `interpc` | `interpc` needs a strided overload — one call site, `interpc.c:560`, `sizeof(TRatePt)` |
 | 2 | dates | `cdate` ✅, `dateconv` ✅, `ldate` ✅ (except calendar-dependent parts), `date_sup`, `dateadj` | epoch pinned: TDate 0 = 1601-01-01, proleptic Gregorian, verified every 13th day to 2200 |
 | 3 | day counts | `ldate` (DCF part) ✅, `yearfrac` ✅, `convert` | layer complete except `convert.c`, which is date intervals rather than day counts and moves to layer 5 |
-| 4 | calendars | `buscache` ✅ (type + predicates), `busday`, `badday` | **the `cache` global is gone** — a calendar is now a value the caller owns. 2,350 lines, the biggest single layer; business-day arithmetic and bad-day conventions still to come |
+| 4 | calendars | `buscache` ✅, `busday` (conventions ✅, arithmetic pending), `badday` → layer 6 | the `cache` global is gone, and bad day conventions are done. `badday.c` holds `TBadDayList`, used only by the zero-curve swap code, so it moves to layer 6. Business-day arithmetic (`BusinessDaysDiff`, `AddBusinessDays`, business EOM) is what remains |
 | 5 | intervals / schedules | `convert` ✅ (interval parts), `schedule`, `datelist`, `dtlist`, `cxdatelist`, `stub` | `DateInterval` done — the type the whole schedule layer is built on |
 | 6 | curves | `tcurve`, `zerocurve`, `cxzerocurve`, `zcall`, `zcswap`, `gtozc` | 3,330 lines; `TCurve` → `std::vector` |
 | 7 | cashflows | `cashflow`, `streamcf`, `fltrate`, `cfinanci` | |
@@ -140,8 +140,8 @@ them reproducible rather than magic.
 A module needs **both**. Tier 2 alone is verified only on the machine that
 has the oracle; tier 1 alone can go stale against a behaviour nobody swept.
 
-Current coverage: 142 tests with an oracle present, 95 without, the latter
-replaying 6,631 recorded reference cases. All of it also runs clean under
+Current coverage: 158 tests with an oracle present, 106 without, the latter
+replaying 9,831 recorded reference cases. All of it also runs clean under
 AddressSanitizer and UndefinedBehaviorSanitizer, with UBSan findings **fatal**
 for port code (see PORT-5 below).
 
@@ -160,6 +160,8 @@ a comment at the site and listed below.
 | unsorted holiday lists | rejected by `verifyHolidayList` | rejected | the port does **not** quietly sort. `JpmcdsHolidayListIsHoliday` `bsearch`es the list, so upstream must reject unsorted input, and accepting what upstream refuses would be a behaviour change. |
 | holidays falling on a weekend | stripped from the stored list by `verifyHolidayList`, so `is_holiday` reports false for a Saturday holiday the caller supplied | identical | observable through the stored list as well as the predicate |
 | the built-in `"NONE"` calendar | means "no holiday dates", **not** "no non-business days" — Saturday and Sunday are still weekends | `Calendar::none()`, documented | the name is misleading enough to warrant a test asserting the behaviour against upstream |
+| bad day convention | `long badDayConv` holding a character code, `((long)'F')` | `enum class BadDayConv : char` | same primitive-obsession fix; the character values are kept so interop is a cast |
+| business-day rolling | unbounded `do { ... } while (aHoliday)` | bounded by `7 * (holidays + 2)`, derived | upstream never terminates for a calendar with no business weekday (UPSTREAM-6). The bound is **derived, and the first attempt at it was wrong** — see below. |
 | day count convention | `long method` carrying one of six `#define`d codes | `enum class DayCount` | any `long` was accepted at the call site and only rejected at the bottom of a `switch` |
 | `JPMCDS_ACT_ACT` | `#define`d to the same value as `JPMCDS_ACT_365`, so the two are indistinguishable | `kActAct` is an alias of `DayCount::Act365`, not a separate enumerator | preserved, not fixed — splitting them would change results. The conflation is now visible in the type rather than buried in a macro. |
 | ACT/365 leap weighting | walks years by adding 365 or 366 to a running date and re-deriving the year from it | intersects the period with each calendar year directly | same arithmetic, no running date to drift. Verified bit-identical (`EXPECT_DOUBLE_EQ`) across 3,456 pair/convention combinations and every start day of a full leap cycle. |
@@ -292,6 +294,64 @@ Three things worth taking from this:
   version that holds up widens once and range-checks at the boundary.
 * **A test that asserts a platform's answer as a literal is a portability
   bug.** PORT-6 was in the test written to prove PORT-4 fixed.
+* **Replacing an unbounded loop with a bounded one means getting the bound
+  right.** The first version of `roll_to_business_day`'s budget charged one
+  day per holiday, which is wrong whenever fewer than seven weekdays trade: a
+  holiday on the only trading weekday costs a full week to skip. The
+  differential sweep caught it at `weekends = 0x7E`. A guessed bound is a
+  hang with extra steps.
+
+### UPSTREAM-6 — unbounded loop for a calendar with no business weekday
+
+`busday.c`, `getNextBusDate`, reached from `JpmcdsHolidayListBusinessDay` and
+`JpmcdsMultiHolidayListBusinessDay`.
+
+The walker steps one day at a time with no iteration bound:
+
+```c
+    aHoliday = TRUE;
+    do
+    {   /* Check if it's a holiday first. */
+        ...
+            if (JPMCDS_IS_WEEKEND (curDate, hl->weekends))
+                 curDate += direction;
+            else
+                 aHoliday = FALSE;
+        ...
+    }
+    while ( aHoliday == TRUE );
+```
+
+If the calendar's weekend set covers all seven days, `aHoliday` never becomes
+`FALSE` and the loop never exits. Such a calendar is **accepted** —
+`JpmcdsHolidayListNewGeneral(NULL, 0x7F)` returns a valid `THolidayList`,
+since `verifyHolidayList` has no opinion on the weekend mask.
+
+Measured:
+
+```
+calendar with weekends=0x7F constructed: accepted
+calling JpmcdsHolidayListBusinessDay with FOLLOW...
+--- killed after 5s ---
+```
+
+Severity: a liveness failure rather than memory corruption, and it needs an
+unusual calendar — all seven weekend bits, which upstream provides no named
+constant for. But accepted input that never returns is a real defect, and it
+is the kind that takes a pricing service down rather than returning a wrong
+number. As it spins, `curDate += direction` would eventually overflow `TDate`
+too; the hang simply arrives first.
+
+The port keeps construction permissive, because the predicates are perfectly
+well defined for such a calendar (everything is a non-business day), and
+makes `adjust` return `nullopt`. `Calendar::allows_business_days()` exposes
+the condition so a caller can distinguish "no business day exists" from other
+failures.
+
+Only half of this is differentially testable. A test can assert that upstream
+still *accepts* the calendar — `BadDayDifferential.Upstream6_AllWeekendCalendarIsAcceptedByUpstream`
+does, and will fail if a future release rejects it — but it cannot assert the
+hang, because the test would never finish.
 
 ## Not doing
 

@@ -80,6 +80,18 @@ enum class Weekend : std::uint8_t {
   return static_cast<Weekend>(static_cast<std::uint8_t>(flags));
 }
 
+/// Does this weekend set leave any weekday on which business can happen?
+///
+/// A set with all seven bits means every day is a non-business day, so no
+/// amount of rolling will ever find one. Upstream accepts such a calendar and
+/// then loops forever when asked to adjust a date onto a business day -- see
+/// UPSTREAM-6 in docs/port-notes.md. The port keeps construction permissive,
+/// because the predicates are perfectly well defined (everything is a
+/// non-business day), and makes `adjust` return nullopt instead of hanging.
+[[nodiscard]] constexpr bool allows_business_days(Weekend w) noexcept {
+  return (static_cast<std::uint8_t>(w) & 0x7FU) != 0x7FU;
+}
+
 /// Does this set include the given weekday?
 [[nodiscard]] constexpr bool includes(Weekend set, std::chrono::weekday day) noexcept {
   const unsigned bit = 1u << (day.iso_encoding() - 1u);
@@ -161,6 +173,11 @@ public:
   [[nodiscard]] std::span<const Date> holidays() const noexcept { return holidays_; }
 
   [[nodiscard]] Weekend weekends() const noexcept { return weekends_; }
+
+  /// False when every weekday is a weekend, so no business day exists.
+  [[nodiscard]] bool allows_business_days() const noexcept {
+    return cdsmodel::allows_business_days(weekends_);
+  }
 
 private:
   Calendar(std::vector<Date> holidays, Weekend weekends)

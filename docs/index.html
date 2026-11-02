@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Five defects found in the ISDA CDS Standard Model 1.8.3 while porting it to C++20, with sanitizer traces, measured evidence and fix status for each.">
+<meta name="description" content="Six defects found in the ISDA CDS Standard Model 1.8.3 while porting it to C++20, with sanitizer traces, measured evidence and fix status for each.">
 <meta name="color-scheme" content="light dark">
-<meta property="og:title" content="Five defects in the ISDA CDS Standard Model">
-<meta property="og:description" content="Found by differential testing a C++20 port against the original C under AddressSanitizer. Four cannot occur in the port. One is reproduced on purpose.">
+<meta property="og:title" content="Six defects in the ISDA CDS Standard Model">
+<meta property="og:description" content="Found by differential testing a C++20 port against the original C under AddressSanitizer. Five cannot occur in the port. One is reproduced on purpose.">
 <meta property="og:type" content="article">
 <title>ISDA CDS Defect Register</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -410,10 +410,10 @@
 
   <header class="masthead">
     <p class="eyebrow">Defect report · 2026-11-02</p>
-    <h1>Five defects in the ISDA CDS Standard Model</h1>
+    <h1>Six defects in the ISDA CDS Standard Model</h1>
     <p class="standfirst">
       Found while porting the 2009 C library to C++20, by running both
-      implementations side by side under AddressSanitizer. Four cannot occur in
+      implementations side by side under AddressSanitizer. Five cannot occur in
       the port. One is reproduced on purpose.
     </p>
   </header>
@@ -433,7 +433,7 @@
     </div>
     <div>
       <dt>Coverage</dt>
-      <dd>~2,700 of 21,775 upstream lines: search, dates, day counts, intervals, calendars</dd>
+      <dd>~3,500 of 21,775 upstream lines: search, dates, day counts, intervals, calendars</dd>
     </div>
     <div>
       <dt>Reproduce</dt>
@@ -483,6 +483,12 @@
           <td><span class="chip immune">Fixed deliberately</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u6">UPSTREAM-6</a></td>
+          <td>Business-day adjustment never returns for a calendar with no business weekday</td>
+          <td><span class="chip high">High · liveness</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u5">UPSTREAM-5</a></td>
           <td>Days never format as weeks (missing <code>break</code>)</td>
           <td><span class="chip low">Cosmetic</span></td>
@@ -501,13 +507,14 @@
       project has. Every user of the official C library still has all five.
     </p>
     <p>
-      Of the five, <strong>three were not fixed so much as made
-      unrepresentable</strong>. No patch was written for UPSTREAM-1, -2 or -3;
+      Of the six, <strong>four were not fixed so much as made
+      unrepresentable</strong>. No patch was written for UPSTREAM-1, -2, -3 or -6;
       the types stopped permitting them. A month that cannot be 13. A result
       that cannot carry a sentinel. A period type normalised at construction.
-      That is the strongest single argument for the port existing: three of
-      five defects died as a side effect of choosing better types, not as a
-      side effect of hunting for bugs.
+      A loop whose bound is derived rather than hoped for. That is the
+      strongest single argument for the port existing: four of six defects
+      died as a side effect of choosing better types and stating preconditions,
+      not as a side effect of hunting for bugs.
     </p>
     <p>
       <strong>UPSTREAM-4 is the only defect the port consciously declines to
@@ -658,6 +665,82 @@ WRITE of size 1 at 0x00016b2e1e60 thread T0
     <div class="tests">
       <span>Tests:</span> DateIntervalParse.RejectsDigitRunsThatWouldOverflowUpstreamsBuffer<br>
       <span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span> DISABLED_Upstream4_LongDigitRunOverflowsStackBuffer <span>(the reproducer)</span>
+    </div>
+  </section>
+
+  <!-- ============ U6 ============ -->
+  <section class="record sev-high" id="u6">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-6</span>
+      <h2>Business-day adjustment never returns</h2>
+    </div>
+    <div class="chips">
+      <span class="chip high">High · liveness</span>
+      <span class="chip immune">Cannot occur in the port</span>
+    </div>
+    <p class="locus">lib/src/busday.c · getNextBusDate</p>
+
+    <h3>Mechanism</h3>
+    <p>The walker steps one day at a time with no iteration bound:</p>
+<pre><code>aHoliday = TRUE;
+do
+{   <span class="c">/* Check if it's a holiday first. */</span>
+    ...
+        if (JPMCDS_IS_WEEKEND (curDate, hl-&gt;weekends))
+             curDate += direction;
+        else
+             aHoliday = FALSE;
+    ...
+}
+<span class="hit">while ( aHoliday == TRUE );</span></code></pre>
+    <p>
+      If the calendar's weekend set covers all seven days,
+      <code>aHoliday</code> never becomes <code>FALSE</code> and the loop
+      never exits. Such a calendar is <strong>accepted</strong>:
+      <code>JpmcdsHolidayListNewGeneral(NULL, 0x7F)</code> returns a valid
+      list, because <code>verifyHolidayList</code> has no opinion on the
+      weekend mask.
+    </p>
+
+    <h3>Evidence</h3>
+<pre><code>calendar with weekends=0x7F constructed: accepted
+calling JpmcdsHolidayListBusinessDay with FOLLOW...
+<span class="hit">--- killed after 5s ---</span></code></pre>
+
+    <h3>Reachability</h3>
+    <p>
+      Needs all seven weekend bits set, for which upstream provides no named
+      constant — a caller would have to OR them or compute the mask. So it is
+      a robustness failure rather than a likely production path. But accepted
+      input that never returns is the kind of defect that takes a pricing
+      service down rather than returning a wrong number. As it spins,
+      <code>curDate += direction</code> would eventually overflow
+      <code>TDate</code> as well; the hang simply arrives first.
+    </p>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Cannot occur.</strong> <code>roll_to_business_day</code> returns
+      nullopt when any calendar has no business weekday, and otherwise bounds
+      its loop at <code>7 × (holidays + 2)</code> — a ceiling derived from the
+      fact that stored holidays are always business weekdays and reaching the
+      next one costs at most seven days.
+    </p>
+    <p>
+      Construction stays permissive, matching upstream, because the predicates
+      are well defined for such a calendar: everything is a non-business day.
+      <code>Calendar::allows_business_days()</code> exposes the condition.
+    </p>
+    <p>
+      Only half of this is differentially testable. A test asserts upstream
+      still <em>accepts</em> the calendar, and fails if a future release
+      rejects it — but it cannot assert the hang, because the test would never
+      finish.
+    </p>
+    <div class="tests">
+      <span>Tests:</span> BadDayDifferential.Upstream6_AllWeekendCalendarIsAcceptedByUpstream<br>
+      <span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span> BadDayAdjust.AllWeekendCalendarDeclinesInsteadOfLooping<br>
+      <span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span> BadDayAdjust.TerminatesWithOnlyOneBusinessWeekdayAndManyHolidays
     </div>
   </section>
 
@@ -915,17 +998,17 @@ default:
       <tbody>
         <tr>
           <td>With a local oracle</td>
-          <td>120</td>
+          <td>158</td>
           <td>Tier 1 + live differential + byte-exact end-to-end example</td>
         </tr>
         <tr>
           <td>Without an oracle (CI)</td>
-          <td>73</td>
-          <td>Replaying 6,631 recorded reference cases</td>
+          <td>106</td>
+          <td>Replaying 9,831 recorded reference cases</td>
         </tr>
         <tr>
           <td>ASan + UBSan</td>
-          <td>120</td>
+          <td>158</td>
           <td>Clean</td>
         </tr>
       </tbody>
@@ -946,8 +1029,9 @@ default:
     <h3>Scope</h3>
     <p>
       Covers only the parts of the library ported so far — binary search,
-      dates, day counts, date intervals and the holiday calendar type, about
-      2,700 of 21,775 upstream lines. Business-day arithmetic, schedules,
+      dates, day counts, date intervals, the holiday calendar and the bad day
+      conventions, about 3,500 of 21,775 upstream lines. Business-day
+      arithmetic, schedules,
       curves, cashflows, the CDS legs, the solver and the top-level pricing
       API have not been examined. No attempt was
       made to assess exploitability of UPSTREAM-4 beyond confirming the
