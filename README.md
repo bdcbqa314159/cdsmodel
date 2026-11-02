@@ -10,6 +10,10 @@ codebase that only ever shipped a Windows-only Excel XLL.
 ISDA and Markit are not affiliated with this project and do not endorse it.
 See [NOTICE.md](NOTICE.md) for the full attribution and licence position.
 
+📋 **[Defect report](https://bdcbqa314159.github.io/cdsmodel/)** — five defects
+found in the original library while porting it, with sanitizer traces and the
+fix status of each.
+
 ## Why
 
 The official model is the market standard for CDS pricing and the reference
@@ -66,13 +70,15 @@ differentially equal to its ancestor across a swept input domain, and the
 sweep is then recorded into tier 1 so CI inherits the guarantee.
 
 ```
-with upstream present:  75 tests  (tier 1 + tier 2 + end-to-end example)
-without upstream:       44 tests  (tier 1 only, replaying 3,354 recorded cases)
+with upstream present: 102 tests  (tier 1 + tier 2 + end-to-end example)
+without upstream:       61 tests  (tier 1 only, replaying 4,225 recorded cases)
 ```
 
 Both configurations also run clean under AddressSanitizer and
-UndefinedBehaviorSanitizer (`--preset asan`). That combination already found a
-genuine out-of-bounds read in the original model — see UPSTREAM-1 in
+UndefinedBehaviorSanitizer (`--preset asan`). That combination has found five
+genuine defects in the original model so far, including a stack buffer
+overflow reachable from string input and an interval type whose meaning
+changes with letter case — see "Upstream defects found" in
 [docs/port-notes.md](docs/port-notes.md).
 
 ## Build
@@ -94,13 +100,16 @@ plainly whether the oracle was found.
 | component | state |
 |---|---|
 | CMake build, 3-OS CI, differential test harness | working |
-| C++20 port | layers 1-3 of 11 — `bsearch`, `dateconv`, day counts (arithmetic + strings) |
+| C++20 port | layers 1-3 of 11 plus `DateInterval` — see [docs/port-notes.md](docs/port-notes.md) |
 | Python bindings (nanobind) | not started |
 | Cross-platform spreadsheet interface | not started |
 
 The migration plan, the measured legacy-pattern inventory, and every
 deliberate deviation from upstream behaviour are documented in
-[docs/port-notes.md](docs/port-notes.md).
+[docs/port-notes.md](docs/port-notes.md). Defects found in the original
+library are catalogued in [docs/defect-report.md](docs/defect-report.md), and
+published at
+[bdcbqa314159.github.io/cdsmodel](https://bdcbqa314159.github.io/cdsmodel/).
 
 ## Layout
 

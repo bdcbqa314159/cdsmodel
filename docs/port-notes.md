@@ -99,10 +99,10 @@ there is never a big-bang integration.
 |---|---|---|---|
 | 0 | harness | — | ✅ done: CMake, GoogleTest, two-tier verification, oracle optional |
 | 1 | search / interp | `bsearch` ✅, `lintrp1`, `linterpc`, `interpc` | `interpc` needs a strided overload — one call site, `interpc.c:560`, `sizeof(TRatePt)` |
-| 2 | dates | `cdate` ✅, `dateconv` ✅, `ldate` (partly ✅), `date_sup`, `dateadj` | epoch pinned: TDate 0 = 1601-01-01, proleptic Gregorian, verified every 13th day to 2200 |
+| 2 | dates | `cdate` ✅, `dateconv` ✅, `ldate` ✅ (except calendar-dependent parts), `date_sup`, `dateadj` | epoch pinned: TDate 0 = 1601-01-01, proleptic Gregorian, verified every 13th day to 2200 |
 | 3 | day counts | `ldate` (DCF part) ✅, `yearfrac` ✅, `convert` | layer complete except `convert.c`, which is date intervals rather than day counts and moves to layer 5 |
 | 4 | calendars | `busday`, `buscache`, `badday` | kills the `cache` global; 2,253 lines, the biggest single layer |
-| 5 | schedules | `schedule`, `datelist`, `dtlist`, `cxdatelist`, `stub` | |
+| 5 | intervals / schedules | `convert` ✅ (interval parts), `schedule`, `datelist`, `dtlist`, `cxdatelist`, `stub` | `DateInterval` done — the type the whole schedule layer is built on |
 | 6 | curves | `tcurve`, `zerocurve`, `cxzerocurve`, `zcall`, `zcswap`, `gtozc` | 3,330 lines; `TCurve` → `std::vector` |
 | 7 | cashflows | `cashflow`, `streamcf`, `fltrate`, `cfinanci` | |
 | 8 | CDS legs | `feeleg`, `contingentleg`, `timeline`, `defaulted` | |
@@ -160,6 +160,10 @@ a comment at the site and listed below.
 | `JpmcdsFormatDayCountConv` | returns `char *` into a string literal, and writes to the global error log as a side effect of formatting | returns `std::string_view`, logs nothing | writing through the returned pointer was undefined; a formatter should not have side effects |
 | convention string parsing | substring matching, so `"GARBAGE365"` is ACT/365 and `"A360"` is ACT/360 | identical, deliberately | observable behaviour at a public API. Tightening it would be a breaking change disguised as a fix. A strict parser can be added alongside. |
 | `"NONE"` round trip | parses to code `0`, which the formatter has no `case` for, so it formats back as `"unrecognized"` | identical, deliberately | an upstream asymmetry, recorded and tested rather than silently repaired |
+| `TDateInterval.flag` | third field selecting what the interval is measured from | dropped | `JpmcdsMakeDateInterval` always sets it to 0 and nothing in the library reads it. A differential test asserts it stays 0, so if that ever changes we find out. |
+| interval period types | fourteen documented; `JpmcdsMakeDateInterval` accepts thirteen; `JpmcdsDtFwdAny` can advance by seven | the seven advanceable ones | upstream lets you construct an interval it then refuses to use. A value you can build and not use is not a feature; the rest arrive with `schedule.c` if anything consumes them. |
+| interval digit parsing | unbounded copy into a 32-byte stack buffer | bounded, rejects >31 digits | **the only place the port refuses to reproduce upstream behaviour**, because that behaviour is a stack buffer overflow. See UPSTREAM-4. |
+| days-to-weeks formatting | week branch exists but is unreachable (missing `break`) | unreachable behaviour reproduced, dead intent not | `14D` formats as `"14D"`, never `"2W"`. It is observable output. See UPSTREAM-5. |
 | `JpmcdsDate` failure | returns `-1`, a value in the date space | `std::optional<Date>` | `-1` was safe only because valid TDates are non-negative — exactly the coupling optional removes |
 | `JpmcdsDaysInMonth` | `(long year, long month)`, month unvalidated, indexes a 13-element table | `days_in_month(std::chrono::year_month)` | a 13th month becomes unrepresentable instead of an out-of-bounds read |
 | `gDateCacheArray` | 1,500-entry hardcoded table of month starts, 1995–2119, plus a slow path for anything outside | nothing | `std::chrono` covers the whole proleptic Gregorian range. 377 lines deleted, and the dates outside 1995–2119 stop taking a different code path |
@@ -168,70 +172,51 @@ a comment at the site and listed below.
 ## Upstream defects found
 
 Porting against a live oracle under sanitizers surfaces bugs in the original.
-These are reported here, not fixed in place — upstream stays untouched.
+**None of them are fixed in upstream, and none ever will be here**: editing
+`isda_cds_model_c_v1.8.3/` would destroy the only independent check the
+project has. Anyone using the official C library still has all of these.
 
-### UPSTREAM-1 — out-of-bounds read in `JpmcdsMDYToDate` (dateconv.c:657)
+### Register
 
-The day-range check indexes the month-length table *before* the month-range
-check validates `month`:
+| id | defect | severity | in the port | how |
+|---|---|---|---|---|
+| [UPSTREAM-1](#upstream-1--out-of-bounds-read-in-jpmcdsmdytodate-dateconvc657) | month validated *after* it indexes a 13-element table | low — UB on a reject path | cannot occur | validation precedes lookup, and `std::chrono::month` makes a 13th month unrepresentable |
+| [UPSTREAM-2](#upstream-2--jpmcds_default-collides-with-failure) | `JPMCDS_DEFAULT` == `FAILURE` == `-1` | design | cannot occur | `std::optional` throughout; no sentinel inside the value space |
+| [UPSTREAM-3](#upstream-3--lowercase-y-advances-a-date-quarterly-not-annually) | lowercase `'y'` advances quarterly, not annually | **high** — silent mispricing | cannot occur | `make_date_interval` upper-cases and normalises before any arithmetic |
+| [UPSTREAM-4](#upstream-4--stack-buffer-overflow-in-jpmcdsstringtodateinterval) | stack buffer overflow from string input | **high** — memory safety | **fixed, deliberate divergence** | digit count bounded; input over 31 digits rejected |
+| [UPSTREAM-5](#upstream-5--days-never-format-as-weeks-missing-break) | days never format as weeks (missing `break`) | cosmetic | **reproduced on purpose** | observable output; fidelity beats tidiness |
 
-```c
-    /* Make sure day is in range. */
-    if (day >= 1 && day <= 28)
-       /*EMPTY*/;
-    else if (day < 1 ||
-        (isLeap ? day > leapDays[month] : day > (days[month])))   /* <-- month unvalidated */
-    { ... return FAILURE; }
+Three of these were not *fixed* so much as made unrepresentable. Nobody wrote
+a patch for UPSTREAM-1, -2 or -3 — the types stopped permitting them. A month
+that cannot be 13, a result that cannot carry a sentinel, a period type
+normalised at construction. That is the strongest single argument for the port
+existing: three of five defects died as a side effect of choosing better types.
 
-    /* Make sure month and year are in range. */
-    if (month < 1 || month > JPMCDS_MONTHS_PER_YEAR || ...)        /* <-- too late */
-```
+UPSTREAM-4 is the only defect the port consciously declines to reproduce.
+Faithfully reproducing a buffer overflow is not fidelity.
 
-`days[]` and `leapDays[]` hold 13 elements, so `month == 13` reads one past
-the end. Found by AddressSanitizer plus UBSan via
-`DateDifferential.MakeDateMatchesUpstreamIncludingRejections`:
+UPSTREAM-5 is the only one deliberately kept, because its output is observable
+by callers and abbreviating `"14D"` to `"2W"` would be a behaviour change
+dressed up as a fix.
 
-```
-dateconv.c:658:25: runtime error: index 13 out of bounds for type 'int[13]'
-AddressSanitizer: global-buffer-overflow
-  0 bytes after global variable 'leapDays' ... of size 52
-    #0 JpmcdsMDYToDate dateconv.c:658
-    #1 JpmcdsDate      dateconv.c:480
-```
+### Not yet reported to ISDA
 
-Reachable when **all three** hold:
+Each entry below carries a reproducer, a sanitizer trace where relevant, and
+its reachability conditions, so the register is the raw material for a report.
+Reporting has not happened yet. UPSTREAM-3 and UPSTREAM-4 are the two worth
+leading with: a silent annual-to-quarterly substitution, and a stack write
+driven by user-entered spreadsheet input.
 
-- the year is outside 1995–2119 (inside that window `gDateCacheArray`'s fast
-  path validates month first and returns early, so the bug is hidden)
-- `day >= 29` (`day <= 28` short-circuits before the table lookup)
-- `month > 12`
+### Full write-ups
 
-Impact is low in practice — it is a read of adjacent static data, and the
-function returns `FAILURE` either way on current compilers — but it is
-undefined behaviour on a validation path that exists to reject bad input.
+Each defect's mechanism, evidence, sanitizer trace, reachability conditions
+and fix status live in **[defect-report.md](defect-report.md)**, which is the
+canonical account. It is published at
+<https://bdcbqa314159.github.io/cdsmodel/>.
 
-The same validation logic appears in `JpmcdsNormalizeMDY` with the ordering
-**correct**: it normalises `month` into 1–12 before indexing. One bug, written
-twice, right in one copy.
-
-The port is structurally immune: `make_date` range-checks before constructing,
-and `std::chrono::month` cannot hold 13 in a way that reaches a table.
-
-Worth sending to ISDA once there is something to send it with.
-
-### UPSTREAM-2 — `JPMCDS_DEFAULT` collides with `FAILURE`
-
-`cgeneral.h:64` defines `JPMCDS_DEFAULT` as `-1`. `cgeneral.h:56` defines
-`FAILURE` as `-1`. They are the same value.
-
-So a day count code of `-1` means both "the default convention" and "this
-call failed", and `JpmcdsStringToDayCountConv("Default", &type)` writes a
-value indistinguishable from an error sentinel. The same pattern appears in
-`JpmcdsDate`, which returns `FAILURE` as a `TDate`.
-
-Not a live bug — no current caller tests a parsed code against `FAILURE` —
-but it is the reason the port returns `std::optional` everywhere rather than
-reserving values inside the result space.
+Keeping the detail in one place means the register above is a summary and not
+a second, drifting copy. `python verify.py reports` checks that every id named
+here appears in both the report and the published page.
 
 ## Not doing
 

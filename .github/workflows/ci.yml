@@ -20,6 +20,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # UTF-8 forced: the tree is cross-OS and encoding is not a per-platform
+      # guess. Without this, Windows Python reads the reports as cp1252 and
+      # chokes on an em-dash.
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -43,6 +48,12 @@ jobs:
       # A hand-edited golden file is how a port's bug becomes the port's
       # specification. Vectors must be generated, and have a generator.
       - run: python verify.py golden
+
+      # The defect register, the full report and the published page describe the
+      # same findings. Prose cannot be diffed, but a missing id can be caught,
+      # and adding a defect to one surface and forgetting the others is the
+      # realistic failure.
+      - run: python verify.py reports
 
       - run: cmake --preset release
       - run: cmake --build --preset release
