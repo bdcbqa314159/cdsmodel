@@ -433,7 +433,7 @@
     </div>
     <div>
       <dt>Coverage</dt>
-      <dd>~2,000 of 21,775 upstream lines: search, dates, day counts, intervals</dd>
+      <dd>~2,700 of 21,775 upstream lines: search, dates, day counts, intervals, calendars</dd>
     </div>
     <div>
       <dt>Reproduce</dt>
@@ -915,17 +915,17 @@ default:
       <tbody>
         <tr>
           <td>With a local oracle</td>
-          <td>102</td>
+          <td>120</td>
           <td>Tier 1 + live differential + byte-exact end-to-end example</td>
         </tr>
         <tr>
           <td>Without an oracle (CI)</td>
-          <td>61</td>
-          <td>Replaying 4,225 recorded reference cases</td>
+          <td>73</td>
+          <td>Replaying 6,631 recorded reference cases</td>
         </tr>
         <tr>
           <td>ASan + UBSan</td>
-          <td>102</td>
+          <td>120</td>
           <td>Clean</td>
         </tr>
       </tbody>
@@ -946,9 +946,10 @@ default:
     <h3>Scope</h3>
     <p>
       Covers only the parts of the library ported so far — binary search,
-      dates, day counts and date intervals, about 2,000 of 21,775 upstream
-      lines. Calendars, schedules, curves, cashflows, the CDS legs, the solver
-      and the top-level pricing API have not been examined. No attempt was
+      dates, day counts, date intervals and the holiday calendar type, about
+      2,700 of 21,775 upstream lines. Business-day arithmetic, schedules,
+      curves, cashflows, the CDS legs, the solver and the top-level pricing
+      API have not been examined. No attempt was
       made to assess exploitability of UPSTREAM-4 beyond confirming the
       out-of-bounds write.
     </p>
