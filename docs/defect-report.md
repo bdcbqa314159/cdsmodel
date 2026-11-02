@@ -356,9 +356,11 @@ concurrently. Catalogued in `docs/port-notes.md`:
 | `yearfrac.c:172` | `static char privDccString[33]`, a function-local scratch buffer in the convention-string parser |
 | `convert.c` | `static char format[2][16]` with a toggling index, so `JpmcdsFormatDateInterval`'s result is invalidated by the second subsequent call |
 
-The port holds no mutable global state. `bSearchCheckOrder_g` is already gone
-(the caller chooses `bracket` or `bracket_checked`); the holiday cache becomes
-a value the caller owns when layer 4 lands.
+The port holds no mutable global state. `bSearchCheckOrder_g` is gone (the
+caller chooses `bracket` or `bracket_checked`), and the holiday cache is now
+gone too: a calendar is a value the caller owns and copies. That is not a lock
+but an owner — there is nothing left to invalidate or synchronise, and
+`JpmcdsHolidayEmptyCache` has no analogue because there is no cache to empty.
 
 ## Method
 
