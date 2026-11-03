@@ -437,9 +437,17 @@ remaining margin is visible rather than assumed — on the generating platform
 it is exactly zero, and elsewhere it shows how much of the budget cross-libm
 accumulation actually consumes.
 
-That reporting habit is the part worth copying. A tolerance with no visibility
-into its margin is a number nobody will ever revisit, and the first thing it
-does when it starts failing is get loosened.
+The measured margin on x86-64 is about 1.5e-13 against a budget of 1e-12 —
+roughly seven times the headroom.
+
+A footnote on the reporting, because the first attempt at it was wrong. The
+intent was to print the observed margin on every CI run, so the remaining
+headroom would be visible rather than assumed. That does not work: `ctest`
+shows a passing test's output only under `-V`, so the line never reaches the
+harness, and a change to `verify.py` to surface it was dead code that was
+removed again. The margin is now carried in the assertion's failure message
+instead — visible exactly when it starts to matter, which is the next best
+thing and does not require machinery that pretends to work.
 
 ### A second kind of oracle
 

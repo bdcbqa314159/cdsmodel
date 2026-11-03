@@ -89,11 +89,17 @@ TEST(ContingentLegGolden, PvsMatchRecordedReference) {
         << std::setprecision(17) << "\n  got      " << *pv << "\n  recorded " << c.pv
         << "\n  relative " << relative;
   }
-  // Report the margin rather than leaving it implicit. On the platform that
-  // generated the vectors this is exactly zero; elsewhere it shows how much of
-  // the budget cross-libm accumulation actually consumes. A tolerance whose
-  // margin is invisible is one nobody revisits -- and the first thing it does
-  // when it starts failing is get loosened.
+  // Track the margin so the failure message carries it. Note what this does
+  // NOT do: ctest shows a passing test's output only under -V, so this line is
+  // invisible in a green CI run. An earlier attempt to surface it from
+  // verify.py was dead code -- `--output-on-failure` means the text never
+  // reaches the harness at all.
+  //
+  // So the margin is visible exactly when it matters: the EXPECT_LE above
+  // prints the observed relative difference when it breaches the budget.
+  // Measured at roughly 1.5e-13 on x86-64 against a budget of 1e-12, about
+  // seven times the headroom -- if cross-libm drift ever grows into that, the
+  // assertion reports the number rather than leaving it to be guessed.
   std::cout << "[ INFO     ] worst relative difference " << std::setprecision(3) << worst_relative
             << " against a budget of " << kCrossPlatformRelative << "\n";
 }
