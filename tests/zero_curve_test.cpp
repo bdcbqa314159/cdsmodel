@@ -1,9 +1,26 @@
 // TIER 1 -- runs anywhere, including CI with no upstream oracle present.
 //
-// The recorded doubles are compared with EXPECT_EQ, not EXPECT_DOUBLE_EQ.
-// That is deliberate: the differential suite established that the port
-// reproduces upstream's floating point bit-for-bit, and a tolerance here
-// would quietly give that guarantee away.
+// IMPORTANT, and the first version of this file got it wrong:
+//
+// The recorded doubles here are compared with EXPECT_DOUBLE_EQ (4 ULPs), NOT
+// with exact equality -- while the differential suite next door uses exact
+// equality. That is not inconsistency, it is two different claims:
+//
+//   * TIER 2 compares the port against upstream **in the same process**, so
+//     both calls reach the same libm. `exp` and `log` return identical bits,
+//     and anything else differing is a real porting error. Exact equality is
+//     the right bar, and it holds on arm64/clang, x86-64/gcc and MSVC.
+//
+//   * TIER 1 compares the port against doubles **recorded on another
+//     machine**. `exp` and `log` are not specified to the last bit and differ
+//     between macOS libm, glibc and the MSVC CRT. Vectors generated on one
+//     platform are off by about 1 ULP on another.
+//
+// So "bit-exact" is a property of two implementations sharing one libm, not a
+// property of a number. Demanding bit equality from a recorded transcendental
+// value asserts that every libm agrees, which is false -- and it failed on
+// Linux and Windows while passing on macOS, which is exactly how a
+// platform-specific assumption hides.
 
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/day_count.hpp>
@@ -34,7 +51,7 @@ cdsmodel::ZeroCurve rebuild(const cdsmodel::golden::ZeroCurveDef &def) {
   return *curve;
 }
 
-TEST(ZeroCurveGolden, RatesAndPricesAreBitIdenticalToRecordedReference) {
+TEST(ZeroCurveGolden, RatesAndPricesMatchRecordedReferenceWithinLibmTolerance) {
   std::vector<cdsmodel::ZeroCurve> curves;
   for (const auto &def : cdsmodel::golden::kZeroCurves) {
     curves.push_back(rebuild(def));
@@ -42,9 +59,13 @@ TEST(ZeroCurveGolden, RatesAndPricesAreBitIdenticalToRecordedReference) {
   for (const auto &c : cdsmodel::golden::kZeroCurveCases) {
     ASSERT_LT(c.curve, curves.size());
     const cdsmodel::Date date = cdsmodel::from_tdate(c.tdate);
-    EXPECT_EQ(curves[c.curve].zero_rate(date), c.rate)
+    // 4 ULPs, which is what EXPECT_DOUBLE_EQ allows. Enough to absorb a
+    // differing libm, far too tight to absorb a porting error: the defects
+    // this project has actually produced moved results by far more than that,
+    // or not at all.
+    EXPECT_DOUBLE_EQ(curves[c.curve].zero_rate(date), c.rate)
         << "rate, curve " << c.curve << " tdate " << c.tdate;
-    EXPECT_EQ(curves[c.curve].zero_price(date), c.price)
+    EXPECT_DOUBLE_EQ(curves[c.curve].zero_price(date), c.price)
         << "price, curve " << c.curve << " tdate " << c.tdate;
   }
 }

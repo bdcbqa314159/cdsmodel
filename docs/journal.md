@@ -249,7 +249,49 @@ over roughly 6,500 queries spanning from 400 days before the base date to
 4,200 days after.
 
 Compared with `EXPECT_EQ` on raw doubles, not `EXPECT_DOUBLE_EQ`, which
-tolerates 4 ULPs and would have hidden a real difference.
+tolerates 4 ULPs and would have hidden a real difference. And verified on
+three toolchains: arm64/clang, x86-64/gcc and x86-64/MSVC.
+
+### But "bit-exact" turned out to mean something narrower than I wrote
+
+The first version of this entry claimed bit-exactness without qualification.
+CI disagreed: the tier-1 replay failed on Linux and Windows while passing on
+macOS. The numbers were 1 ULP apart —
+
+```
+0.60220191189840799   recorded on macOS
+0.60220191189840788   computed on Linux
+```
+
+— and crucially **only the tier-1 test failed. The differential tests passed
+on every platform.**
+
+That splits the claim in two, and the distinction is the real lesson:
+
+| claim | holds? | why |
+|---|---|---|
+| the port equals upstream, bit for bit | **yes, on all three toolchains** | both run in one process and call the *same* libm, so `exp` and `log` return identical bits |
+| a recorded double can be replayed bit-for-bit elsewhere | **no** | `exp` and `log` are not specified to the last bit; macOS libm, glibc and the MSVC CRT disagree by about 1 ULP |
+
+**So "bit-exact" is a property of two implementations sharing one libm, not a
+property of a number.** Demanding bit equality from a recorded transcendental
+value is really asserting that every libm agrees, which is false.
+
+The fix is not to weaken the differential test — that claim stands and is the
+load-bearing one. It is to recognise that tier 1 and tier 2 verify different
+things:
+
+- **tier 2**, port against upstream in one process: exact equality;
+- **tier 1**, port against doubles recorded elsewhere: 4 ULPs, which absorbs
+  a differing libm and is still far tighter than any porting error this
+  project has actually produced — those moved results by orders of magnitude,
+  or not at all.
+
+Golden vectors containing transcendental results are **platform-specific
+artifacts**, and the generator now says so in the file it emits.
+
+This failed on two of three platforms and passed on the one I develop on,
+which is precisely how a platform-specific assumption survives review.
 
 **What made it work**, and what to copy:
 
@@ -336,6 +378,17 @@ Investigating the date list defects I hypothesised a use-after-free and said
 so. ASan showed nothing of the kind; it was deterministic logic all along. I
 had a plausible story and reached for it instead of a sanitizer that would
 have answered in thirty seconds.
+
+### My own gate hid the diagnostic
+
+When CI failed, the log showed only ctest's summary — no assertion detail, no
+numbers. `verify.py` was printing the *last 4,000 characters* of ctest output
+on failure, which reliably cut off everything explaining the failure and kept
+the part that merely announced it.
+
+Fixed to print everything on failure. A gate exists to produce a diagnostic;
+truncating that diagnostic defeats the purpose, and it cost a push-and-wait
+cycle to notice.
 
 ### A dangling reference in test code
 

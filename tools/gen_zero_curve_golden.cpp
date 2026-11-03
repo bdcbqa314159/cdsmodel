@@ -1,10 +1,16 @@
 // Emits tests/golden/zero_curve_cases.hpp -- upstream's zero rates and
 // discount factors, recorded so CI can verify the port without the oracle.
 //
-// Doubles are written with %.17g, which round-trips an IEEE double exactly.
-// That matters more here than anywhere else in the project: the whole point
-// of these vectors is that the port reproduces them BIT-for-bit, so a lossy
-// decimal rendering would quietly weaken the test it exists to support.
+// Doubles are written with %.17g, which round-trips an IEEE double exactly,
+// so nothing is lost in the rendering.
+//
+// What IS platform-specific is the value itself. These come from `exp` and
+// `log`, which are not specified to the last bit and differ by about 1 ULP
+// between macOS libm, glibc and the MSVC CRT. So vectors generated here are
+// correct to 4 ULPs anywhere, not bit-identical everywhere, and the replay
+// test uses EXPECT_DOUBLE_EQ for exactly that reason. Bit equality is the
+// right bar only for the differential suite, where both implementations run
+// in one process and share one libm.
 //
 // Licence note: computed data, exempt under section 4(b).
 //
