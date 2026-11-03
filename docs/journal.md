@@ -213,6 +213,70 @@ failures are reproducible. It found four defects on its first run.
 
 ---
 
+## Decision 7 — Go vertical before going wide
+
+**Chosen:** stop completing layers bottom-up and cut a vertical slice toward
+one priced CDS.
+
+**Why:** at the end of layer 4 the project had retired 20% of the lines and
+**0% of the 8,871-line pricing path**. Everything done was infrastructure,
+where answers are crisp integers. The biggest unknown — whether a C++20 port
+can reproduce the original's *floating point* — sat five layers away, and the
+answer reshapes the whole verification story. Finding out late is the
+expensive way.
+
+**Cost accepted:** a slice means stubbing parts of layers 6 to 8 and
+revisiting them, so some rework is certain.
+
+**First step of the slice:** the zero curve, because that is where the
+floating point actually lives. `JpmcdsZeroRate` / `JpmcdsZeroPrice` reduce to
+a handful of multiplies, a divide, a `log` and an `exp`.
+
+### The result: bit-exactness is attainable
+
+This was genuinely open. Floating point addition and multiplication are not
+associative, so an algebraically equivalent rearrangement changes the last
+bits. If the port could only match to a tolerance, the verification standard
+would have to weaken from "equal" to "close enough", and the project would
+need a tolerance policy before the remaining 5,000 lines of curve code
+arrived.
+
+It matched exactly. Across ten curve scenarios — annual, continuous,
+semi-annual and quarterly compounding, ACT/365F and ACT/360, upward,
+inverted, near-zero and negative rates, and a single-point curve — zero
+rates, discount factors and forward discount factors are **bit-identical**
+over roughly 6,500 queries spanning from 400 days before the base date to
+4,200 days after.
+
+Compared with `EXPECT_EQ` on raw doubles, not `EXPECT_DOUBLE_EQ`, which
+tolerates 4 ULPs and would have hidden a real difference.
+
+**What made it work**, and what to copy:
+
+- **Write the arithmetic in upstream's expression order**, including
+  groupings that look redundant. `zt = z1t1 + (z2t2 - z1t1) * (t-t1)/(t2-t1)`
+  is not refactored, because any rearrangement moves the last bit.
+- **Reproduce the branch structure**, not just the formula. Upstream
+  short-circuits the rate conversion when the compounding bases are equal;
+  the two paths are algebraically the same and numerically are not.
+- **Record golden doubles with `%.17g`**, which round-trips exactly. A lossy
+  decimal rendering would have quietly weakened the very test that justifies
+  the bit-exact claim.
+
+**What would change this conclusion:** a module whose answer depends on
+accumulation over many terms — the contingent leg integral is next — where
+the compiler may vectorise or contract differently between the C and C++
+front ends. The claim is established for the curve, not for the project.
+
+**A sentinel removed along the way.** Upstream's `JpmcdsZeroRate` returns
+`NaN` on failure. The port validates the curve once at construction — at
+least one point, strictly increasing dates, a supported basis and day count —
+so `zero_rate` and `zero_price` return a plain `double` that cannot be a
+failure signal. Upstream checks the basis and day count on *every call*, from
+inside a loop it describes as a hotspot.
+
+---
+
 ## What went wrong, and how we found out
 
 The honest section. Eight defects in the port against seven in a
@@ -273,6 +337,18 @@ so. ASan showed nothing of the kind; it was deterministic logic all along. I
 had a plausible story and reached for it instead of a sanitizer that would
 have answered in thirty seconds.
 
+### A dangling reference in test code
+
+`const Scenario &s = scenarios().front();` — `scenarios()` returns by value,
+so the reference bound into a temporary that died at the end of the
+expression. The symptom in the debug build was a null curve and a confusing
+assertion failure. ASan named it immediately as a `heap-use-after-free`.
+
+Worth recording because it was in *test* code, which is easy to treat as
+lower-stakes. A broken test is worse than no test: it fails for a reason that
+has nothing to do with the thing under test, and the natural next move is to
+doubt the code instead of the test.
+
 ### A patch can silently not apply
 
 Twice, an edit targeted text that had since been reformatted. The replace was
@@ -326,21 +402,22 @@ As of the end of layer 4 and part of layer 5:
 
 | | |
 |---|---|
-| upstream lines retired | 4,353 of 21,775 (20%) |
-| **pricing-path lines ported** | **0 of 8,871 (0%)** |
+| upstream lines retired | 4,712 of 21,775 (22%) |
+| **pricing-path lines ported** | **359 of 8,871 (4%)** — the zero curve |
 | port size | 1,755 lines (≈2.5:1 compression) |
 | tests + generators | 5,407 lines (3:1 over the port) |
-| recorded reference cases | 13,866 |
-| tests | 198 with an oracle, 133 without |
+| recorded reference cases | 15,886 |
+| tests | 209 with an oracle, 140 without |
 | defects | 7 upstream, 8 port-side |
 
-**The 20% is the least meaningful number here.** Everything done is
+**The 22% is the least meaningful number here.** Most of what is done is
 infrastructure — dates, day counts, calendars, lists — where answers are
-crisp integers. Nothing prices anything yet. The layers remaining are harder
-per line, and layer 6 brings the first real floating-point: interpolation and
-root-finding, where accumulation order changes the last bits and
-`EXPECT_DOUBLE_EQ` may stop being attainable. When that happens the
-verification method itself needs a decision, not just the code.
+crisp integers. Nothing prices a CDS yet.
+
+The floating-point question that worried this section is now answered for the
+curve: bit-exact, see Decision 7. It is **not** answered for the contingent
+leg integral, which accumulates over a timeline and is where a compiler is
+most likely to vectorise or contract differently between the two front ends.
 
 **Lines retired measures effort. It does not measure capability.**
 
@@ -364,6 +441,8 @@ verification method itself needs a decision, not just the code.
 | #9 | 3 Nov | business day offsets; layer 4 complete; PORT-7, PORT-8 |
 | #10 | 3 Nov | UPSTREAM-7 recorded; the divergence question raised rather than defaulted |
 | #11 | 3 Nov | date lists, correcting UPSTREAM-7; the divergence **policy** written down |
+| #12 | 3 Nov | this journal |
+| #13 | 3 Nov | **the vertical slice begins** — zero curve, and floating point proves bit-exact |
 
 Every PR green on Linux, macOS and Windows plus a sanitizer job, with a
 machine-checked floor on tests actually run.
