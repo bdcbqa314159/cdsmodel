@@ -101,7 +101,7 @@ there is never a big-bang integration.
 | 1 | search / interp | `bsearch` ✅, `lintrp1`, `linterpc`, `interpc` | `interpc` needs a strided overload — one call site, `interpc.c:560`, `sizeof(TRatePt)` |
 | 2 | dates | `cdate` ✅, `dateconv` ✅, `ldate` ✅ (except calendar-dependent parts), `date_sup`, `dateadj` | epoch pinned: TDate 0 = 1601-01-01, proleptic Gregorian, verified every 13th day to 2200 |
 | 3 | day counts | `ldate` (DCF part) ✅, `yearfrac` ✅, `convert` | layer complete except `convert.c`, which is date intervals rather than day counts and moves to layer 5 |
-| 4 | calendars | `buscache` ✅, `busday` (conventions ✅, counting ✅, offsets pending), `badday` → layer 6 | no global state left. `BusinessDaysDiff` is transcribed rather than reimplemented — see below. `AddBusinessDays` and business EOM remain |
+| 4 | calendars | `buscache` ✅, `busday` ✅, `badday` → layer 6 | **layer complete.** No global state left. `BusinessDaysDiff` transcribed, `AddBusinessDays` reimplemented — see "Transcribe or reimplement". `badday.c` holds `TBadDayList`, used only by the zero-curve swap code |
 | 5 | intervals / schedules | `convert` ✅ (interval parts), `schedule`, `datelist`, `dtlist`, `cxdatelist`, `stub` | `DateInterval` done — the type the whole schedule layer is built on |
 | 6 | curves | `tcurve`, `zerocurve`, `cxzerocurve`, `zcall`, `zcswap`, `gtozc` | 3,330 lines; `TCurve` → `std::vector` |
 | 7 | cashflows | `cashflow`, `streamcf`, `fltrate`, `cfinanci` | |
@@ -140,8 +140,8 @@ them reproducible rather than magic.
 A module needs **both**. Tier 2 alone is verified only on the machine that
 has the oracle; tier 1 alone can go stale against a behaviour nobody swept.
 
-Current coverage: 170 tests with an oracle present, 114 without, the latter
-replaying 10,496 recorded reference cases. All of it also runs clean under
+Current coverage: 181 tests with an oracle present, 122 without, the latter
+replaying 13,266 recorded reference cases. All of it also runs clean under
 AddressSanitizer and UndefinedBehaviorSanitizer, with UBSan findings **fatal**
 for port code (see PORT-5 below).
 
@@ -283,9 +283,25 @@ carries both tables verbatim, and a test asserts the asymmetry still exists
 upstream — if a future release makes the tables mirror each other, that test
 fails and the transcription can be revisited.
 
+**`AddBusinessDays` was reimplemented**, which is the same file as
+`BusinessDaysDiff` going the other way. Upstream splits it across three code
+paths — a trivial case, a table-driven fast path for forwards under standard
+weekends, and a general stepper — but those are optimisations of one idea:
+step in the given direction counting business days. The port is a bounded
+walk.
+
+That claim was checked rather than assumed. Upstream's `offsetTable` gives
+−1 for Saturday and −2 for Sunday at `n % 5 == 0`, normalising a weekend
+start back to the preceding Friday, which looks like a contradiction until you
+work it through: five business days from a Saturday is `Sat + 7 − 1 = Friday`,
+and counting Mon–Fri from that Saturday also lands on Friday. The table
+encodes the walk. The differential sweep then confirmed it across 28 start
+days, 15 counts and 7 weekend sets.
+
 **The rule:** reimplement when the intent is recoverable and equivalence can
 be proven; transcribe when the behaviour *is* the specification. Guessing
-which one you are in is how a port silently changes results.
+which one you are in is how a port silently changes results. Both halves of
+that rule now have a worked example in the same upstream file.
 
 Practical consequence: `business_days_between` is **not antisymmetric**, so
 the adversarial harness must not assume for it what it rightly assumes for
@@ -303,6 +319,7 @@ the oracle. Numbered separately from the UPSTREAM series: these are ours.
 | PORT-3 | signed overflow in `normalize_ymd` (`month - 1` at `INT_MIN`, `year + carry`) and in `advance`'s days path (`sys_days + days{periods}`) | the harness | fixed — arithmetic widened once and range-checked, rather than guarded per operation |
 | PORT-4 | `from_tdate` narrowed silently outside an undocumented domain: `from_tdate(5'000'000'000)` round-tripped to 705032704 on macOS | probing extremes after PORT-3 | fixed — `kMinTDate`/`kMaxTDate`/`is_representable_tdate`, derived from the epoch |
 | PORT-6 | the first test for PORT-4 asserted macOS's domain as a literal, and failed on both other platforms for two *different* reasons | the 3-OS CI matrix | fixed — the test asserts properties of the bounds, never numbers |
+| PORT-7 | `add_business_days` negated `LONG_MIN` to get a magnitude, which is undefined and silently returned the input unchanged | the test written to check absurd counts | fixed — rejected explicitly before any negation |
 | PORT-5 | **UBSan findings were not fatal in CI**, so every pure-UB finding had been silently ignored since the sanitizer job was added | noticed when PORT-2 "passed" while printing a runtime error | fixed — `CDSMODEL_FATAL_UBSAN`, on for the asan preset |
 
 **PORT-5 is the one that mattered most.** UndefinedBehaviorSanitizer prints

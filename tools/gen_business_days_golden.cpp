@@ -108,6 +108,66 @@ int main() {
   for (const std::string &r : rows) {
     std::printf("%s\n", r.c_str());
   }
+  std::printf("}};\n\n");
+
+  // ---- offsets ----------------------------------------------------------
+  std::printf("/// Moving `count` business days from a date.\n"
+              "struct BusDayOffsetCase {\n  long weekends;\n  long from;\n  long count;\n"
+              "  bool ok;\n  long result;\n};\n\n");
+  rows.clear();
+  const long counts[] = {-60, -23, -11, -6, -5, -4, -1, 0, 1, 4, 5, 6, 11, 23, 60};
+  for (long w : kWeekendSets) {
+    THolidayList *hl = build(holidays, w, storage);
+    if (hl == nullptr) {
+      return 1;
+    }
+    for (int start = 0; start < 28; ++start) {
+      const cdsmodel::Date from = d(2024, 2, 1) + std::chrono::days{start};
+      for (long n : counts) {
+        TDate out = 0;
+        const bool ok =
+            JpmcdsHolidayListAddBusinessDays(cdsmodel::to_tdate(from), n, hl, &out) == SUCCESS;
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "    {0x%02lx, %ld, %ld, %s, %ld},", w,
+                      cdsmodel::to_tdate(from), n, ok ? "true" : "false", ok ? (long)out : 0L);
+        rows.emplace_back(buf);
+      }
+    }
+    JpmcdsHolidayListDelete(hl);
+  }
+  std::printf("inline constexpr std::array<BusDayOffsetCase, %zu> kBusDayOffsetCases{{\n",
+              rows.size());
+  for (const std::string &r : rows) {
+    std::printf("%s\n", r.c_str());
+  }
+  std::printf("}};\n\n");
+
+  // ---- business end of month -------------------------------------------
+  std::printf("/// Last business day of the date's own month.\n"
+              "struct BusDayEomCase {\n  long weekends;\n  long tdate;\n  bool ok;\n"
+              "  long eom;\n};\n\n");
+  rows.clear();
+  for (long w : kWeekendSets) {
+    THolidayList *hl = build(holidays, w, storage);
+    if (hl == nullptr) {
+      return 1;
+    }
+    for (int i = 0; i < 400; i += 3) {
+      const cdsmodel::Date day = d(2023, 12, 1) + std::chrono::days{i};
+      TDate out = 0;
+      const bool ok =
+          JpmcdsHolidayListDateToBusinessEOM(cdsmodel::to_tdate(day), hl, &out) == SUCCESS;
+      char buf[140];
+      std::snprintf(buf, sizeof buf, "    {0x%02lx, %ld, %s, %ld},", w, cdsmodel::to_tdate(day),
+                    ok ? "true" : "false", ok ? (long)out : 0L);
+      rows.emplace_back(buf);
+    }
+    JpmcdsHolidayListDelete(hl);
+  }
+  std::printf("inline constexpr std::array<BusDayEomCase, %zu> kBusDayEomCases{{\n", rows.size());
+  for (const std::string &r : rows) {
+    std::printf("%s\n", r.c_str());
+  }
   std::printf("}};\n\n} // namespace cdsmodel::golden\n");
   return 0;
 }
