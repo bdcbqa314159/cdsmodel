@@ -6,7 +6,7 @@
 <meta name="description" content="Seven defects found in the ISDA CDS Standard Model 1.8.3 while porting it to C++20, with sanitizer traces, measured evidence and fix status for each.">
 <meta name="color-scheme" content="light dark">
 <meta property="og:title" content="Seven defects in the ISDA CDS Standard Model">
-<meta property="og:description" content="Found by differential testing a C++20 port against the original C under AddressSanitizer. Five cannot occur in the port, one is reproduced on purpose, one is still open.">
+<meta property="og:description" content="Found by differential testing a C++20 port against the original C under AddressSanitizer. Six cannot occur in the port; one is reproduced on purpose.">
 <meta property="og:type" content="article">
 <title>ISDA CDS Defect Register</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -484,9 +484,9 @@
         </tr>
         <tr>
           <td class="id"><a href="#u7">UPSTREAM-7</a></td>
-          <td>Date list truncation never examines index 0; two implementations fail in opposite directions</td>
+          <td>Date list truncation ignored when fewer than two dates survive; two implementations fail in opposite directions</td>
           <td><span class="chip high">High · silently wrong</span></td>
-          <td><span class="chip mid">Not yet ported</span></td>
+          <td><span class="chip immune">Fixed · documented intent</span></td>
         </tr>
         <tr>
           <td class="id"><a href="#u6">UPSTREAM-6</a></td>
@@ -678,11 +678,11 @@ WRITE of size 1 at 0x00016b2e1e60 thread T0
   <section class="record sev-high" id="u7">
     <div class="record-head">
       <span class="record-id">UPSTREAM-7</span>
-      <h2>Date list truncation never examines index 0</h2>
+      <h2>Date list truncation is ignored when fewer than two dates survive</h2>
     </div>
     <div class="chips">
       <span class="chip high">High · silently wrong</span>
-      <span class="chip mid">Not yet ported · decision open</span>
+      <span class="chip immune">Fixed · documented intent</span>
     </div>
     <p class="locus">lib/src/dtlist.c:592 &amp; lib/src/cxdatelist.c:220 — two implementations</p>
 
@@ -696,10 +696,17 @@ WRITE of size 1 at 0x00016b2e1e60 thread T0
 }
 size = truncatePt + 1;</code></pre>
     <p>
-      The condition is <code>i &gt; 0</code> rather than <code>i &gt;= 0</code>.
-      When element 0 is the only one that qualifies, the sentinel survives —
-      and the two files chose <strong>different sentinels</strong>, so they
-      fail in opposite directions.
+      The condition is <code>i &gt; 0</code> rather than <code>i &gt;= 0</code>,
+      so the scan can fail to find any qualifying element. When it does, the
+      sentinel survives — and the two files chose <strong>different
+      sentinels</strong>, so they fail in opposite directions.
+    </p>
+    <p>
+      The consequence is wider than element 0, which an earlier version of
+      this report understated. The scan finds nothing whenever <strong>fewer
+      than two dates should survive</strong>, so <code>dtlist.c</code> returns
+      an empty list while <code>cxdatelist.c</code>
+      <strong>ignores the truncation entirely</strong>.
     </p>
 
     <h3>Evidence</h3>
@@ -710,10 +717,21 @@ size = truncatePt + 1;</code></pre>
   [5] @9                     [5]            <span class="hit">[]</span>               [5]
   [9,10] @9 inclusive        [9]            <span class="hit">[]</span>               <span class="hit">[9,10]</span>
   [1,2,3] @3                 [1,2]          [1,2]            [1,2]</code></pre>
+<pre><code>  keep-before                  want         cxdatelist.c
+  [5,6,7] @3                   []           <span class="hit">[5,6,7]</span>      &lt;- ignored entirely
+  [5,6,7] @5                   []           <span class="hit">[5,6,7]</span>
+  [5,6,7] @6                   [5]          <span class="hit">[5,6,7]</span>
+  [5,6,7] @7                   [5,6]        [5,6]        correct
+  [5,6,7] @9                   [5,6,7]      [5,6,7]      correct
+
+  keep-after also fails when the answer is empty:
+  [5,6,7] @9 keep-after        []           <span class="hit">[5,6,7]</span></code></pre>
     <p>
-      Both are correct whenever two or more elements survive, which is why
-      this has gone unnoticed: the failure needs the answer to be exactly the
-      first element. One loses data; the other silently declines to truncate.
+      Over a 600-case sweep across six lists, every cut position and both
+      directions, upstream disagrees with the documented intent on
+      <strong>234 cases — 39%</strong>. Both are correct whenever two or more
+      dates survive, which is the common case and the reason this has gone
+      unnoticed.
     </p>
 
     <h3>Reachability</h3>
@@ -732,12 +750,15 @@ size = truncatePt + 1;</code></pre>
 
     <h3>Status in the port</h3>
     <p>
-      <strong>Not yet ported</strong>, and the first finding where
-      "preserve upstream behaviour" is not available: there are two upstream
-      behaviours and they contradict each other. Implementing the documented
-      intent would diverge from both in the index-0 case, so no differential
-      test could cover it. That is a decision for the project owner rather
-      than a default, and it is written up in <code>docs/port-notes.md</code>.
+      <strong>Fixed.</strong> The port implements the documented intent. This
+      was the first finding where "preserve upstream behaviour" was not
+      available — there are two upstream behaviours and they contradict each
+      other as well as their own header — and it prompted the project to write
+      down a policy for when a port corrects rather than reproduces. Recorded
+      vectors for this module hold the <em>intended</em> answers plus a flag
+      for whether upstream agreed, so the correction stays visible instead of
+      becoming invisible. The price impact is owed a measurement when
+      <code>timeline.c</code> is ported.
     </p>
     <div class="tests">
       <span>Reproduce:</span> ./build/debug/defect_evidence u7
