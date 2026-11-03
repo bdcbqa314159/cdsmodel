@@ -71,6 +71,7 @@ TEST(ContingentLegGolden, PvsMatchRecordedReference) {
       rebuild(cdsmodel::golden::kClSpreadDates, cdsmodel::golden::kClSpreadRates);
   const cdsmodel::Date base = cdsmodel::from_tdate(cdsmodel::golden::kClBase);
 
+  double worst_relative = 0.0;
   for (const auto &c : cdsmodel::golden::kContingentLegCases) {
     const cdsmodel::ContingentLeg leg{cdsmodel::from_tdate(c.start), cdsmodel::from_tdate(c.end),
                                       1.0e7,
@@ -79,9 +80,22 @@ TEST(ContingentLegGolden, PvsMatchRecordedReference) {
                                       c.protect_start};
     const auto pv = cdsmodel::contingent_leg_pv(leg, base, base, base, disc, spread, c.recovery);
     ASSERT_TRUE(pv.has_value()) << "start=" << c.start << " end=" << c.end;
-    EXPECT_DOUBLE_EQ(*pv, c.pv) << "start=" << c.start << " end=" << c.end << " R=" << c.recovery
-                                << " pay=" << c.pay;
+
+    const double scale = std::max(1.0, std::fabs(c.pv));
+    const double relative = std::fabs(*pv - c.pv) / scale;
+    worst_relative = std::max(worst_relative, relative);
+    EXPECT_LE(relative, kCrossPlatformRelative)
+        << "start=" << c.start << " end=" << c.end << " R=" << c.recovery << " pay=" << c.pay
+        << std::setprecision(17) << "\n  got      " << *pv << "\n  recorded " << c.pv
+        << "\n  relative " << relative;
   }
+  // Report the margin rather than leaving it implicit. On the platform that
+  // generated the vectors this is exactly zero; elsewhere it shows how much of
+  // the budget cross-libm accumulation actually consumes. A tolerance whose
+  // margin is invisible is one nobody revisits -- and the first thing it does
+  // when it starts failing is get loosened.
+  std::cout << "[ INFO     ] worst relative difference " << std::setprecision(3) << worst_relative
+            << " against a budget of " << kCrossPlatformRelative << "\n";
 }
 
 TEST(ContingentLegGolden, VectorSetIsNotEmpty) {
