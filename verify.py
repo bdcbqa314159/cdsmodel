@@ -146,6 +146,10 @@ def gate_reports() -> None:
         "docs/defect-report.md": None,
         "docs/index.html": None,
     }
+    # The journal narrates the findings rather than cataloguing them, so it is
+    # not required to mention every id -- but it must not name one that does
+    # not exist, which is how a retold story drifts from the record.
+    journal = ROOT / "docs/journal.md"
     for name in surfaces:
         f = ROOT / name
         if not f.exists():
@@ -163,6 +167,16 @@ def gate_reports() -> None:
                 + ", ".join(f"UPSTREAM-{i}" for i in missing)
                 + " -- a defect was added to one surface and not the others."
             )
+    if journal.exists():
+        told = set(re.findall(r"UPSTREAM-(\d+)", journal.read_text(encoding="utf-8")))
+        invented = sorted(told - register, key=int)
+        if invented:
+            fail(
+                "docs/journal.md refers to "
+                + ", ".join(f"UPSTREAM-{i}" for i in invented)
+                + " which is not in the register"
+            )
+
     ok(f"all {len(register)} catalogued defects appear on all three surfaces")
 
 
