@@ -161,6 +161,17 @@ inline constexpr std::array<std::array<long, 7>, 7> kBackwardDiff{{
   return result - holidays * signum;
 }
 
+/// Largest business-day offset `add_business_days` will attempt.
+///
+/// The walk is O(count), so an astronomical count would spin for a very long
+/// time before discovering it cannot finish. The representable date range is
+/// not a useful limit here: on libstdc++ `std::chrono::days::rep` is 64-bit,
+/// so a date 2^62 days away is "representable" and a count that large is
+/// technically satisfiable. It is not a financial quantity -- the longest CDS
+/// schedules run to a few thousand business days -- so the port states a
+/// limit instead. Upstream has no limit and simply spins.
+inline constexpr long kMaxBusinessDayOffset = 10'000'000;
+
 /// Move `count` business days from `from`. Replaces
 /// `JpmcdsHolidayListAddBusinessDays`.
 ///
@@ -206,17 +217,29 @@ inline constexpr std::array<std::array<long, 7>, 7> kBackwardDiff{{
   const long long magnitude = signed_count < 0 ? -signed_count : signed_count;
   const int direction = signed_count < 0 ? -1 : 1;
 
+  if (magnitude > kMaxBusinessDayOffset) {
+    return std::nullopt; // see kMaxBusinessDayOffset
+  }
+
   // Each business day consumes at least one calendar day, so a count larger
-  // than the calendar days available cannot be satisfied. Checking up front
-  // keeps an absurd count from turning into a very long loop.
-  const long long room = direction > 0 ? static_cast<long long>(kMaxTDate) - to_tdate(from)
-                                       : static_cast<long long>(to_tdate(from)) - kMinTDate;
-  if (magnitude > room) {
+  // than the calendar days available in that direction cannot be satisfied.
+  //
+  // Computed UNSIGNED on purpose. `kMinTDate` sits near the minimum of
+  // `std::chrono::days::rep`, which is 64-bit on libstdc++, so the signed
+  // expression `to_tdate(from) - kMinTDate` overflows there -- which it did,
+  // rejecting ordinary backward offsets, and only the Linux leg of CI
+  // noticed. Both subtractions below are exact because
+  // `kMinTDate <= to_tdate(from) <= kMaxTDate`. See PORT-8.
+  const auto here = static_cast<unsigned long long>(to_tdate(from));
+  const unsigned long long room = direction > 0 ? static_cast<unsigned long long>(kMaxTDate) - here
+                                                : here - static_cast<unsigned long long>(kMinTDate);
+  if (static_cast<unsigned long long>(magnitude) > room) {
     return std::nullopt;
   }
 
   // Same reasoning as roll_to_business_day: reaching the next business day
-  // costs at most 7 calendar days, and each holiday can block one more.
+  // costs at most 7 calendar days, and each holiday can block one more. The
+  // offset cap above keeps this product well inside range.
   const long long budget = 7 * (magnitude + static_cast<long long>(calendar.holidays().size()) + 2);
 
   TDate cursor = to_tdate(from);

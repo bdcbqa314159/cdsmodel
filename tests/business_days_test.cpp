@@ -203,6 +203,40 @@ TEST(BusinessDaysOffset, DeclinesAnAbsurdCountInsteadOfWalkingForever) {
                    .has_value());
 }
 
+TEST(BusinessDaysOffset, WorksNearBothEndsOfTheRepresentableRange) {
+  // PORT-8: the "room available" check computed `to_tdate(from) - kMinTDate`
+  // in a signed type, which overflows wherever kMinTDate sits near the
+  // minimum of std::chrono::days::rep -- 64-bit on libstdc++, 32-bit on
+  // libc++. The effect was that ordinary BACKWARD offsets were rejected, and
+  // only the Linux leg of CI noticed.
+  //
+  // This exercises both directions from dates spread across the range, so the
+  // room arithmetic is covered wherever the bounds happen to land.
+  const cdsmodel::Calendar cal = cdsmodel::Calendar::no_weekends();
+  for (cdsmodel::TDate t : {cdsmodel::TDate{1000}, cdsmodel::TDate{148655},
+                            cdsmodel::TDate{1000000}, cdsmodel::kMaxTDate / 2}) {
+    const cdsmodel::Date from = cdsmodel::from_tdate(t);
+    for (long n : {-100L, -1L, 1L, 100L}) {
+      const auto got = cdsmodel::add_business_days(from, n, cal);
+      ASSERT_TRUE(got.has_value()) << "rejected an ordinary offset at tdate " << t << " n=" << n;
+      // With no weekends and no holidays, n business days is n calendar days.
+      EXPECT_EQ(cdsmodel::to_tdate(*got), t + n) << "tdate " << t << " n=" << n;
+    }
+  }
+}
+
+TEST(BusinessDaysOffset, RejectsOffsetsBeyondTheStatedLimit) {
+  // The limit is stated rather than left to the date range, because on a
+  // 64-bit days::rep a count of 2^62 is "representable" and would spin.
+  const cdsmodel::Calendar cal = cdsmodel::Calendar::none();
+  EXPECT_TRUE(cdsmodel::add_business_days(d(2024, 6, 3), 1000, cal).has_value());
+  EXPECT_FALSE(cdsmodel::add_business_days(d(2024, 6, 3), cdsmodel::kMaxBusinessDayOffset + 1, cal)
+                   .has_value());
+  EXPECT_FALSE(
+      cdsmodel::add_business_days(d(2024, 6, 3), -(cdsmodel::kMaxBusinessDayOffset + 1), cal)
+          .has_value());
+}
+
 TEST(BusinessDaysEom, LandsOnTheLastBusinessDayOfTheSameMonth) {
   // June 2024 ends on Sunday the 30th, so the business EOM is Friday the 28th.
   const cdsmodel::Calendar cal = cdsmodel::Calendar::none();

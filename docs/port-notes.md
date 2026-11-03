@@ -140,7 +140,7 @@ them reproducible rather than magic.
 A module needs **both**. Tier 2 alone is verified only on the machine that
 has the oracle; tier 1 alone can go stale against a behaviour nobody swept.
 
-Current coverage: 181 tests with an oracle present, 122 without, the latter
+Current coverage: 183 tests with an oracle present, 124 without, the latter
 replaying 13,266 recorded reference cases. All of it also runs clean under
 AddressSanitizer and UndefinedBehaviorSanitizer, with UBSan findings **fatal**
 for port code (see PORT-5 below).
@@ -320,6 +320,7 @@ the oracle. Numbered separately from the UPSTREAM series: these are ours.
 | PORT-4 | `from_tdate` narrowed silently outside an undocumented domain: `from_tdate(5'000'000'000)` round-tripped to 705032704 on macOS | probing extremes after PORT-3 | fixed — `kMinTDate`/`kMaxTDate`/`is_representable_tdate`, derived from the epoch |
 | PORT-6 | the first test for PORT-4 asserted macOS's domain as a literal, and failed on both other platforms for two *different* reasons | the 3-OS CI matrix | fixed — the test asserts properties of the bounds, never numbers |
 | PORT-7 | `add_business_days` negated `LONG_MIN` to get a magnitude, which is undefined and silently returned the input unchanged | the test written to check absurd counts | fixed — rejected explicitly before any negation |
+| PORT-8 | the same function computed its "room available" as `to_tdate(from) - kMinTDate` in a signed type, which overflows where `kMinTDate` sits near the minimum of `days::rep`. Ordinary **backward** offsets were rejected | the Linux leg of CI — macOS and Windows both passed | fixed — computed unsigned, which is exact because `kMinTDate <= t <= kMaxTDate`, plus a stated offset limit |
 | PORT-5 | **UBSan findings were not fatal in CI**, so every pure-UB finding had been silently ignored since the sanitizer job was added | noticed when PORT-2 "passed" while printing a runtime error | fixed — `CDSMODEL_FATAL_UBSAN`, on for the asan preset |
 
 **PORT-5 is the one that mattered most.** UndefinedBehaviorSanitizer prints
@@ -331,7 +332,17 @@ suite. The flag is applied to the port and its tests only, never to
 `cds_reference`: upstream's undefined behaviour is catalogued, not fixed, and
 must stay observable without aborting the run.
 
-**PORT-6 is why the three-OS matrix is not ceremony.** The representable
+**PORT-6 and PORT-8 are why the three-OS matrix is not ceremony.** Both were
+invisible on macOS. PORT-8 is the sharper of the two: it was not a test
+asserting the wrong literal but a *functional* bug in the library, rejecting
+ordinary backward business-day offsets, and it reached a passing local suite
+and a passing Windows build before Linux caught it. The platform difference
+in `std::chrono::days::rep` has now produced three separate defects
+(PORT-4, PORT-6, PORT-8), which is a strong argument for treating the
+representable range as a first-class part of the interface rather than an
+implementation detail.
+
+ The representable
 domain varies in two independent ways: `std::chrono::days::rep` is 32-bit on
 libc++ and 64-bit on libstdc++, and `long` — hence `TDate` — is 32-bit on
 Windows and 64-bit elsewhere. Upstream's `typedef long int TDate` inherits
