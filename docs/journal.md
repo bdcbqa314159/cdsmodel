@@ -405,6 +405,42 @@ stood for, then measure whether the behaviour changed.** Here it did not,
 which is the best possible outcome — upstream's behaviour preserved, with a
 condition that is actually true.
 
+### The verification standard now has three tiers, not two
+
+CI corrected me again, and the correction is worth more than the code.
+
+The tier-1 replay failed on Linux and Windows with a 4-ULP tolerance already
+in place — the one I had carefully introduced in Decision 7. Accumulation
+amplifies: summing one term per timeline segment turned a 1-ULP libm
+difference in the curve into roughly **600 ULPs** in the total.
+
+```
+7352.2330864798769   computed on Linux
+7352.2330864809865   recorded on macOS
+```
+
+A relative difference of 1.5e-13 — nothing financially, and far outside any
+ULP budget. So **a ULP tolerance does not survive accumulation**, and the
+standard needs a third tier:
+
+| what | bar | why |
+|---|---|---|
+| integers, calendars | exact | no rounding exists |
+| non-accumulating floating point | bit-exact in-process; **4 ULPs** cross-platform | `exp`/`log` are libm-specific, but the error does not compound |
+| **accumulating floating point** | bit-exact in-process; **relative 1e-12** cross-platform | each segment contributes its own libm difference and they add |
+
+The relative bound is chosen against the size of errors that matter, not to
+make the test pass: every port-side defect this project produced changed an
+answer by orders of magnitude or not at all, and none would hide under 1e-12.
+The test also **reports the worst relative difference it observed**, so the
+remaining margin is visible rather than assumed — on the generating platform
+it is exactly zero, and elsewhere it shows how much of the budget cross-libm
+accumulation actually consumes.
+
+That reporting habit is the part worth copying. A tolerance with no visibility
+into its margin is a number nobody will ever revisit, and the first thing it
+does when it starts failing is get loosened.
+
 ### A second kind of oracle
 
 With a price to check, a new class of test became available: not

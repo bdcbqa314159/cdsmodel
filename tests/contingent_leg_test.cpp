@@ -1,10 +1,31 @@
 // TIER 1 -- runs anywhere, including CI with no upstream oracle present.
 //
-// Recorded PVs are compared with EXPECT_DOUBLE_EQ (4 ULPs), not exactly:
-// these come from exp and log and are libm-specific. Bit equality is the
-// right bar only in the differential suite, where both implementations share
-// one libm. See the header of zero_curve_test.cpp for why that distinction
-// exists and how it was learned.
+// Recorded PVs are compared with a RELATIVE tolerance, not a ULP count, and
+// the reason is the third refinement of this project's verification standard.
+//
+//   1. Integers and calendars: exact equality, trivially.
+//   2. Non-accumulating floating point (the zero curve): bit-exact against
+//      upstream in-process; 4 ULPs against doubles recorded on another
+//      platform, because exp and log are libm-specific.
+//   3. ACCUMULATING floating point (this file): 4 ULPs is not enough. Summing
+//      one term per timeline segment amplifies a 1-ULP libm difference into
+//      roughly 600 ULPs in the total --
+//
+//        7352.2330864798769  computed on Linux
+//        7352.2330864809865  recorded on macOS
+//
+//      a relative difference of 1.5e-13, which is nothing financially and far
+//      more than four ULPs. A ULP budget does not survive accumulation.
+//
+// So the bound here is relative, and chosen against the size of errors that
+// actually matter rather than to make the test pass. Every port-side defect
+// this project has produced changed an answer by orders of magnitude or not
+// at all; none would hide under 1e-12. The test also tracks and reports the
+// worst relative difference it saw, so the remaining margin is visible
+// instead of assumed.
+//
+// Bit equality remains the bar in the differential suite, where both
+// implementations run in one process and share one libm.
 
 #include <cdsmodel/contingent_leg.hpp>
 #include <cdsmodel/date.hpp>
@@ -14,8 +35,11 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <iomanip>
+#include <iostream>
 #include <limits>
 #include <span>
 #include <vector>
@@ -34,6 +58,11 @@ cdsmodel::ZeroCurve rebuild(std::span<const long> dates, std::span<const double>
   return *cdsmodel::ZeroCurve::create(cdsmodel::from_tdate(cdsmodel::golden::kClBase), points, 1.0,
                                       cdsmodel::DayCount::Act365Fixed);
 }
+
+/// Relative bound for replaying accumulated PVs across platforms. See the
+/// file header for why this is relative rather than a ULP count, and why this
+/// size.
+constexpr double kCrossPlatformRelative = 1e-12;
 
 TEST(ContingentLegGolden, PvsMatchRecordedReference) {
   const cdsmodel::ZeroCurve disc =
