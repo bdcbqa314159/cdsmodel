@@ -106,7 +106,10 @@ plainly whether the oracle was found.
 
 The migration plan, the measured legacy-pattern inventory, and every
 deliberate deviation from upstream behaviour are documented in
-[docs/port-notes.md](docs/port-notes.md). Defects found in the original
+[docs/port-notes.md](docs/port-notes.md).
+[docs/journal.md](docs/journal.md) records how the port was made — the
+decisions, the alternatives rejected, and what went wrong — organised by
+decision rather than by date. Defects found in the original
 library are catalogued in [docs/defect-report.md](docs/defect-report.md), and
 published at
 [bdcbqa314159.github.io/cdsmodel](https://bdcbqa314159.github.io/cdsmodel/).
