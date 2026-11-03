@@ -234,10 +234,15 @@ def gate_tests(preset: str) -> None:
         capture_output=True,
         text=True,
     )
-    print(proc.stdout[-4000:])
     if proc.returncode != 0:
-        print(proc.stderr[-2000:], file=sys.stderr)
+        # Print EVERYTHING on failure. An earlier version truncated to the last
+        # 4000 characters, which reliably cut off the assertion detail and left
+        # only ctest's summary -- the diagnostic was hidden by the gate that
+        # exists to produce it.
+        print(proc.stdout)
+        print(proc.stderr, file=sys.stderr)
         fail("ctest reported failures")
+    print(proc.stdout[-4000:])
     # CMake 4 omits the ", N tests failed" clause when nothing failed.
     m = re.search(r"(\d+)% tests passed(?:, (\d+) tests failed)? out of (\d+)", proc.stdout)
     if not m:
