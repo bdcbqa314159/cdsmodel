@@ -70,8 +70,8 @@ differentially equal to its ancestor across a swept input domain, and the
 sweep is then recorded into tier 1 so CI inherits the guarantee.
 
 ```
-with upstream present: 209 tests  (tier 1 + tier 2 + end-to-end example)
-without upstream:      140 tests  (tier 1 only, replaying 15,886 recorded cases)
+with upstream present: 219 tests  (tier 1 + tier 2 + end-to-end example)
+without upstream:      146 tests  (tier 1 only, replaying 15,982 recorded cases)
 ```
 
 Both configurations also run clean under AddressSanitizer and
@@ -100,7 +100,7 @@ plainly whether the oracle was found.
 | component | state |
 |---|---|
 | CMake build, 3-OS CI, differential test harness | working |
-| C++20 port | layers 1-4 complete; vertical slice begun — the zero curve is bit-identical to the original |
+| C++20 port | layers 1-4 complete; vertical slice in progress — zero curve and integration timeline done |
 | Python bindings (nanobind) | not started |
 | Cross-platform spreadsheet interface | not started |
 

@@ -741,11 +741,19 @@ size = truncatePt + 1;</code></pre>
       fee and contingent legs — so it sits on the CDS pricing path.
     </p>
     <p>
-      <strong>What is established and what is not.</strong> The function
-      misbehaves; that is measured above. Whether a CDS price actually changes
-      is <em>not</em> established — that needs a test at the timeline level,
-      which belongs with the layer where <code>timeline.c</code> is ported.
-      Recorded now so it is not rediscovered then.
+      <strong>Price impact: measured, and it is none.</strong>
+      <code>timeline.c</code> is the only caller on the pricing path, and it
+      cannot reach the defect. Both of its truncations run <em>after</em> the
+      start and end dates have been merged into the list, and the contract
+      requires <code>end &gt; start</code>, so at least two distinct dates
+      always survive — precisely the regime where upstream's truncation is
+      correct.
+    </p>
+    <p>
+      Confirmed over 96 integration windows plus 8 deliberately minimal
+      two-date timelines, every one matching the corrected port exactly. Note
+      the form of that answer: the sweep says the defect did not bite in the
+      cases tried, while the structural argument says it cannot bite at all.
     </p>
 
     <h3>Status in the port</h3>
