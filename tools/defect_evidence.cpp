@@ -29,12 +29,17 @@ extern "C" {
 #include "cdate.h"
 #include "cerror.h"
 #include "cgeneral.h"
+#include "contingentleg.h"
 #include "convert.h"
+#include "cx.h"
 #include "cxdatelist.h"
+#include "cxzerocurve.h"
 #include "dateconv.h"
 #include "dtlist.h"
 #include "ldate.h"
+#include "macros.h"
 #include "mdydate.h"
+#include "tcurve.h"
 #include "yearfrac.h"
 }
 
@@ -249,6 +254,60 @@ void u7() {
               "the function misbehaves.\n");
 }
 
+TCurve *flat_curve(TDate base, TDate end, double rate) {
+  TDate dates[2] = {base + 1, end};
+  double rates[2] = {rate, rate};
+  return JpmcdsMakeTCurve(base, dates, rates, 2, 5000.0 /*continuous*/, JPMCDS_ACT_365F);
+}
+
+void u8() {
+  heading("UPSTREAM-8", "a validation guard that validates almost nothing");
+  std::printf("    if (!JpmcdsZeroPrice(spreadCurve, cl->endDate) > JPMCDS_LOG0_THRESHOLD)\n\n");
+  std::printf("`!` binds tighter than `>`, so this reads (!price) > %g -- a 0 or 1\n"
+              "compared against a threshold. True only when price is exactly 0.\n"
+              "The intent was !(price > threshold): reject a survival probability\n"
+              "too small to take a logarithm of. Written four times: twice in\n"
+              "contingentleg.c, twice in feeleg.c.\n\n",
+              (double)JPMCDS_LOG0_THRESHOLD);
+
+  const TDate base = JpmcdsDate(2024, 1, 1);
+  const TDate mat = JpmcdsDate(2034, 1, 1);
+  TCurve *disc = flat_curve(base, mat, 0.03);
+  std::printf("  %-13s %-14s %-10s %-11s %s\n", "hazard rate", "survival(T)", "as-written",
+              "as-intended", "JpmcdsContingentLegPV");
+  for (double h : {0.01, 0.5, 5.0, 20.0, 50.0, 80.0, 200.0}) {
+    TCurve *spread = flat_curve(base, mat, h);
+    const double surv = JpmcdsZeroPrice(spread, mat);
+    TContingentLeg cl{};
+    cl.startDate = base;
+    cl.endDate = mat;
+    cl.notional = 1.0e7;
+    cl.payType = PROT_PAY_DEF;
+    cl.protectStart = TRUE;
+    double pv = 0.0;
+    const int rc = JpmcdsContingentLegPV(&cl, base, base, base, disc, spread, 0.4, &pv);
+    char out[48];
+    if (rc != SUCCESS) {
+      std::snprintf(out, sizeof out, "REJECTED");
+    } else {
+      std::snprintf(out, sizeof out, "pv=%.6g", pv);
+    }
+    std::printf("  %-13g %-14.3g %-10s %-11s %s\n", h, surv,
+                ((!surv) > JPMCDS_LOG0_THRESHOLD) ? "fires" : "passes",
+                (!(surv > JPMCDS_LOG0_THRESHOLD)) ? "fires" : "passes", out);
+    JpmcdsFreeTCurve(spread);
+  }
+  JpmcdsFreeTCurve(disc);
+  std::printf("\nSeverity is LOW, and the careful reason matters. The window where the\n"
+              "two differ is survival in (0, 1e-100] -- hazard above about 23 for a\n"
+              "ten-year maturity, which is not a credit but an underflow. And there\n"
+              "the computation returns notional * (1 - R) = 6e6, the correct limit\n"
+              "for a credit certain to default. The guard was defensive; the defect\n"
+              "disabled the defence; the computation did not need it.\n\n"
+              "No mispricing is demonstrated. \"Precedence bug on the pricing path\"\n"
+              "would overstate this.\n");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -291,6 +350,9 @@ int main(int argc, char **argv) {
   }
   if (want("u7")) {
     u7();
+  }
+  if (want("u8")) {
+    u8();
   }
   return 0;
 }

@@ -1,6 +1,6 @@
 # Defect report — ISDA CDS Standard Model 1.8.3
 
-Seven defects found in the upstream C library while porting it to C++20, with
+Eight defects found in the upstream C library while porting it to C++20, with
 the evidence for each and what the port does about it.
 
 - **Library examined:** ISDA CDS Standard Model, version 1.8.3 (C, 2009),
@@ -25,6 +25,7 @@ the evidence for each and what the port does about it.
 | UPSTREAM-5 | Days never format as weeks (missing `break`) | Cosmetic | Reproduced deliberately |
 | UPSTREAM-6 | Business-day adjustment never returns for a calendar with no business weekday | **High** — liveness | Cannot occur |
 | UPSTREAM-7 | Date list truncation ignored when fewer than two dates survive; two implementations fail in opposite directions | **High** — silently wrong | Fixed (documented intent) |
+| UPSTREAM-8 | `!price > THRESHOLD` precedence bug disables a validation guard, in four places | Low — a guard that does not guard | Open; see below |
 
 ## What "fixed" means here, precisely
 
@@ -291,6 +292,92 @@ it crashes the sanitizer build on purpose:
 ```
 
 Test: `DateIntervalParse.RejectsDigitRunsThatWouldOverflowUpstreamsBuffer`.
+
+---
+
+## UPSTREAM-8 — A validation guard that validates almost nothing
+
+**Location:** `lib/src/contingentleg.c:90` and `:97`, `lib/src/feeleg.c:101`
+and `:108` — the same line written four times.
+**Severity:** Low. A guard that does not guard, rather than a wrong number.
+
+### Mechanism
+
+```c
+if (!JpmcdsZeroPrice(spreadCurve, cl->endDate) > JPMCDS_LOG0_THRESHOLD)
+{
+    JpmcdsErrMsg("%s: Default hazard rate is not defined at maturity %s!", ...);
+    goto done;
+}
+```
+
+`!` binds tighter than `>`, so this is `(!price) > THRESHOLD` — a `0` or `1`
+compared against `1e-100`. It is true exactly when `price == 0.0`.
+
+The intent was plainly `!(price > THRESHOLD)`: reject a survival probability
+too small to take a logarithm of. The macro is even named
+`JPMCDS_LOG0_THRESHOLD`, "Used for avoiding LOG0 error".
+
+So the guard rejects only an *exactly zero* price, and lets through every
+tiny-but-nonzero one it was written to catch.
+
+### Evidence
+
+Ten-year flat curves, varying the hazard rate:
+
+```
+hazard rate    survival(T)    as-written as-intended JpmcdsContingentLegPV
+0.01           0.905          passes    passes    pv=494850
+0.5            0.00671        passes    passes    pv=5.63225e+06
+5              1.85e-22       passes    passes    pv=5.96421e+06
+20             1.17e-87       passes    passes    pv=5.99101e+06
+50             4.72e-218      passes    fires     pv=5.9964e+06
+80             0              fires     fires     REJECTED
+200            0              fires     fires     REJECTED
+```
+
+Reproduce with `./build/debug/defect_evidence u8`.
+
+### Why the severity is low, stated carefully
+
+The window where written and intended behaviour differ is survival in
+`(0, 1e-100]` — hazard rates above roughly 23 for a ten-year maturity. That
+is not a credit; it is a number that has underflowed.
+
+And in that window the computation **does not misbehave**. At a hazard rate
+of 50 it returns 5.9964e6 against a notional of 1e7 and recovery of 0.4,
+which is `notional * (1 - R) = 6e6` to four figures — the correct limit for a
+credit certain to default. The guard was defensive, the defect disabled the
+defence, and the computation turned out not to need it.
+
+So this is **not** a demonstrated mispricing, and it is recorded as a guard
+defect rather than a numerical one. Worth knowing precisely because the
+tempting write-up — "precedence bug on the pricing path" — would overstate
+it.
+
+### Status in the port
+
+**Open.** Deliberately not decided yet, because the right answer depends on
+something not yet built: whether the port's own integral is numerically safe
+in that window.
+
+Three options, and the policy in port-notes.md does not settle it cleanly:
+
+1. **Implement the intent** — reject survival `<= 1e-100`. Faithful to what
+   the author wrote down, but it makes the port *refuse to price* something
+   upstream prices correctly. Fixing a contract violation here reduces
+   capability.
+2. **Reproduce the effective behaviour** — reject only exactly zero.
+   Bug-compatible, and the bug happens to be harmless.
+3. **Guard the real failure instead of a proxy** — drop the survival
+   threshold and reject only where the arithmetic actually fails to produce a
+   finite result. Principled: validate the thing you need, not a stand-in for
+   it.
+
+Current preference is (3), on the grounds that `1e-100` was a proxy for "the
+logarithm will misbehave" and the port can test that directly. But this will
+be decided when the contingent leg integral exists and the claim can be
+tested rather than argued.
 
 ---
 

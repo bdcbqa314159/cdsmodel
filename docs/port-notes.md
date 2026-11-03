@@ -212,6 +212,8 @@ dressed up as a fix.
 
 | UPSTREAM-7 | date list truncation ignored when fewer than two dates survive, in two implementations that fail in opposite directions (39% of a 600-case sweep) | **high** — silently wrong | not yet ported | the two upstream behaviours contradict each other, so "preserve upstream" is not available |
 
+| UPSTREAM-8 | `!price > THRESHOLD` precedence bug disables a validation guard, four sites on the pricing path | low — a guard that does not guard; no mispricing demonstrated | open | the honest severity: the window where it matters is survival `<= 1e-100`, and there the computation returns the correct limit anyway. Decision deferred until the contingent leg integral exists — see the report. |
+
 ### Not yet reported to ISDA
 
 Each entry below carries a reproducer, a sanitizer trace where relevant, and
