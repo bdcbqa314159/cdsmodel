@@ -32,6 +32,8 @@
 #include <cdsmodel/date.hpp>
 
 #include <algorithm>
+#include <functional>
+#include <iterator>
 #include <optional>
 #include <span>
 #include <vector>
