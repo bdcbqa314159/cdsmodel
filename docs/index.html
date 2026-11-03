@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Seven defects found in the ISDA CDS Standard Model 1.8.3 while porting it to C++20, with sanitizer traces, measured evidence and fix status for each.">
+<meta name="description" content="Eight defects found in the ISDA CDS Standard Model 1.8.3 while porting it to C++20, with sanitizer traces, measured evidence and fix status for each.">
 <meta name="color-scheme" content="light dark">
-<meta property="og:title" content="Seven defects in the ISDA CDS Standard Model">
-<meta property="og:description" content="Found by differential testing a C++20 port against the original C under AddressSanitizer. Six cannot occur in the port; one is reproduced on purpose.">
+<meta property="og:title" content="Eight defects in the ISDA CDS Standard Model">
+<meta property="og:description" content="Found by differential testing a C++20 port against the original C under AddressSanitizer. Six cannot occur in the port; one is reproduced on purpose; one is open.">
 <meta property="og:type" content="article">
 <title>ISDA CDS Defect Register</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -410,10 +410,10 @@
 
   <header class="masthead">
     <p class="eyebrow">Defect report · 2026-11-02</p>
-    <h1>Seven defects in the ISDA CDS Standard Model</h1>
+    <h1>Eight defects in the ISDA CDS Standard Model</h1>
     <p class="standfirst">
       Found while porting the 2009 C library to C++20, by running both
-      implementations side by side under AddressSanitizer. Five cannot occur in
+      implementations side by side under AddressSanitizer. Six cannot occur in
       the port, one is reproduced on purpose, and one is still open.
     </p>
   </header>
@@ -481,6 +481,12 @@
           <td>Stack buffer overflow from string input</td>
           <td><span class="chip high">High · memory safety</span></td>
           <td><span class="chip immune">Fixed deliberately</span></td>
+        </tr>
+        <tr>
+          <td class="id"><a href="#u8">UPSTREAM-8</a></td>
+          <td><code>!price &gt; THRESHOLD</code> precedence bug disables a validation guard, in four places</td>
+          <td><span class="chip low">Low · guard only</span></td>
+          <td><span class="chip mid">Open</span></td>
         </tr>
         <tr>
           <td class="id"><a href="#u7">UPSTREAM-7</a></td>
@@ -671,6 +677,81 @@ WRITE of size 1 at 0x00016b2e1e60 thread T0
     <div class="tests">
       <span>Tests:</span> DateIntervalParse.RejectsDigitRunsThatWouldOverflowUpstreamsBuffer<br>
       <span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span> DISABLED_Upstream4_LongDigitRunOverflowsStackBuffer <span>(the reproducer)</span>
+    </div>
+  </section>
+
+  <!-- ============ U8 ============ -->
+  <section class="record sev-low" id="u8">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-8</span>
+      <h2>A validation guard that validates almost nothing</h2>
+    </div>
+    <div class="chips">
+      <span class="chip low">Low · a guard that does not guard</span>
+      <span class="chip mid">Open · decision deferred</span>
+    </div>
+    <p class="locus">contingentleg.c:90 &amp; :97, feeleg.c:101 &amp; :108 — the same line, four times</p>
+
+    <h3>Mechanism</h3>
+<pre><code>if (<span class="hit">!JpmcdsZeroPrice(spreadCurve, cl-&gt;endDate) &gt; JPMCDS_LOG0_THRESHOLD</span>)
+{
+    JpmcdsErrMsg("%s: Default hazard rate is not defined at maturity %s!", ...);
+    goto done;
+}</code></pre>
+    <p>
+      <code>!</code> binds tighter than <code>&gt;</code>, so this is
+      <code>(!price) &gt; 1e-100</code> — a <code>0</code> or <code>1</code>
+      compared against a threshold. True exactly when the price is
+      <em>zero</em>. The intent was plainly
+      <code>!(price &gt; THRESHOLD)</code>: reject a survival probability too
+      small to take a logarithm of. The macro is even named
+      <code>JPMCDS_LOG0_THRESHOLD</code>, "Used for avoiding LOG0 error".
+    </p>
+
+    <h3>Evidence</h3>
+<pre><code>hazard rate    survival(T)    as-written as-intended JpmcdsContingentLegPV
+0.01           0.905          passes    passes    pv=494850
+0.5            0.00671        passes    passes    pv=5.63225e+06
+5              1.85e-22       passes    passes    pv=5.96421e+06
+20             1.17e-87       passes    passes    pv=5.99101e+06
+50             4.72e-218      <span class="hit">passes</span>    <span class="hit">fires</span>     pv=5.9964e+06
+80             0              fires     fires     REJECTED
+200            0              fires     fires     REJECTED</code></pre>
+
+    <h3>Why the severity is low, stated carefully</h3>
+    <p>
+      The window where written and intended behaviour differ is survival in
+      <code>(0, 1e-100]</code> — hazard rates above roughly 23 for a ten-year
+      maturity. That is not a credit; it is a number that has underflowed.
+    </p>
+    <p>
+      And in that window the computation <strong>does not misbehave</strong>.
+      At a hazard rate of 50 it returns 5.9964e6 against a notional of 1e7 and
+      recovery of 0.4 — that is <code>notional × (1 − R) = 6e6</code> to four
+      figures, the correct limit for a credit certain to default. The guard
+      was defensive, the defect disabled the defence, and the computation
+      turned out not to need it.
+    </p>
+    <p>
+      So this is <strong>not a demonstrated mispricing</strong>, and it is
+      recorded as a guard defect rather than a numerical one — precisely
+      because the tempting headline, "precedence bug on the pricing path",
+      would overstate it.
+    </p>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Open, deliberately.</strong> The right answer depends on
+      something not yet built: whether the port's own integral is numerically
+      safe in that window. Implementing the stated intent would make the port
+      <em>refuse to price</em> something upstream prices correctly, so
+      "fix the contract violation" here would reduce capability. The current
+      preference is to guard the real failure — a non-finite result — rather
+      than a proxy threshold, but that will be decided by testing once the
+      integral exists.
+    </p>
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u8
     </div>
   </section>
 
