@@ -140,8 +140,8 @@ them reproducible rather than magic.
 A module needs **both**. Tier 2 alone is verified only on the machine that
 has the oracle; tier 1 alone can go stale against a behaviour nobody swept.
 
-Current coverage: 198 tests with an oracle present, 133 without, replaying
-13,866 recorded cases. 600 of those are recorded *intent* rather than
+Current coverage: 209 tests with an oracle present, 140 without, replaying
+15,886 recorded cases. 600 of those are recorded *intent* rather than
 upstream answers, for the date list module that corrects upstream. All of it also runs clean under
 AddressSanitizer and UndefinedBehaviorSanitizer, with UBSan findings **fatal**
 for port code (see PORT-5 below).
