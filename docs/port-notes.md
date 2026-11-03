@@ -101,7 +101,7 @@ there is never a big-bang integration.
 | 1 | search / interp | `bsearch` ✅, `lintrp1`, `linterpc`, `interpc` | `interpc` needs a strided overload — one call site, `interpc.c:560`, `sizeof(TRatePt)` |
 | 2 | dates | `cdate` ✅, `dateconv` ✅, `ldate` ✅ (except calendar-dependent parts), `date_sup`, `dateadj` | epoch pinned: TDate 0 = 1601-01-01, proleptic Gregorian, verified every 13th day to 2200 |
 | 3 | day counts | `ldate` (DCF part) ✅, `yearfrac` ✅, `convert` | layer complete except `convert.c`, which is date intervals rather than day counts and moves to layer 5 |
-| 4 | calendars | `buscache` ✅, `busday` (conventions ✅, arithmetic pending), `badday` → layer 6 | the `cache` global is gone, and bad day conventions are done. `badday.c` holds `TBadDayList`, used only by the zero-curve swap code, so it moves to layer 6. Business-day arithmetic (`BusinessDaysDiff`, `AddBusinessDays`, business EOM) is what remains |
+| 4 | calendars | `buscache` ✅, `busday` (conventions ✅, counting ✅, offsets pending), `badday` → layer 6 | no global state left. `BusinessDaysDiff` is transcribed rather than reimplemented — see below. `AddBusinessDays` and business EOM remain |
 | 5 | intervals / schedules | `convert` ✅ (interval parts), `schedule`, `datelist`, `dtlist`, `cxdatelist`, `stub` | `DateInterval` done — the type the whole schedule layer is built on |
 | 6 | curves | `tcurve`, `zerocurve`, `cxzerocurve`, `zcall`, `zcswap`, `gtozc` | 3,330 lines; `TCurve` → `std::vector` |
 | 7 | cashflows | `cashflow`, `streamcf`, `fltrate`, `cfinanci` | |
@@ -140,8 +140,8 @@ them reproducible rather than magic.
 A module needs **both**. Tier 2 alone is verified only on the machine that
 has the oracle; tier 1 alone can go stale against a behaviour nobody swept.
 
-Current coverage: 158 tests with an oracle present, 106 without, the latter
-replaying 9,831 recorded reference cases. All of it also runs clean under
+Current coverage: 170 tests with an oracle present, 114 without, the latter
+replaying 10,496 recorded reference cases. All of it also runs clean under
 AddressSanitizer and UndefinedBehaviorSanitizer, with UBSan findings **fatal**
 for port code (see PORT-5 below).
 
@@ -162,6 +162,7 @@ a comment at the site and listed below.
 | the built-in `"NONE"` calendar | means "no holiday dates", **not** "no non-business days" — Saturday and Sunday are still weekends | `Calendar::none()`, documented | the name is misleading enough to warrant a test asserting the behaviour against upstream |
 | bad day convention | `long badDayConv` holding a character code, `((long)'F')` | `enum class BadDayConv : char` | same primitive-obsession fix; the character values are kept so interop is a cast |
 | business-day rolling | unbounded `do { ... } while (aHoliday)` | bounded by `7 * (holidays + 2)`, derived | upstream never terminates for a calendar with no business weekday (UPSTREAM-6). The bound is **derived, and the first attempt at it was wrong** — see below. |
+| business-day counting | two 7×7 lookup tables that are deliberately **not** negatives of each other | the same two tables, transcribed | the only module ported by transcription rather than reimplementation. See "Transcribe or reimplement" below. |
 | day count convention | `long method` carrying one of six `#define`d codes | `enum class DayCount` | any `long` was accepted at the call site and only rejected at the bottom of a `switch` |
 | `JPMCDS_ACT_ACT` | `#define`d to the same value as `JPMCDS_ACT_365`, so the two are indistinguishable | `kActAct` is an alias of `DayCount::Act365`, not a separate enumerator | preserved, not fixed — splitting them would change results. The conflation is now visible in the type rather than buried in a macro. |
 | ACT/365 leap weighting | walks years by adding 365 or 366 to a running date and re-deriving the year from it | intersects the period with each calendar year directly | same arithmetic, no running date to drift. Verified bit-identical (`EXPECT_DOUBLE_EQ`) across 3,456 pair/convention combinations and every start day of a full leap cycle. |
@@ -253,6 +254,42 @@ swept. It cannot prove three other things, so those need separate attention:
 **invariants** rather than agreement — totality, round trips, postconditions —
 and feeds hostile input rather than plausible input, from a fixed seed so a
 failure is reproducible and the suite cannot go intermittently red.
+
+### Transcribe or reimplement
+
+Two modules faced the same choice and went opposite ways, which is worth
+stating because the reasoning generalises.
+
+**ACT/365 (`day_count.hpp`) was reimplemented.** Upstream walks years by
+adding 365 or 366 to a running date and re-deriving the calendar year. The
+port intersects the period with each calendar year instead. The *intent* was
+recoverable — "days in leap years over 366, the rest over 365" — so a cleaner
+implementation of that intent is a legitimate port, and equivalence was then
+proven: bit-identical across 3,456 pair/convention combinations and every
+start day of a full leap cycle.
+
+**`BusinessDaysDiff` (`business_days.hpp`) was transcribed.** Upstream's own
+comment says why:
+
+> The values of the table were chosen so that the current ALIB behaviour was
+> left unchanged. Note that because fwdDiffTable is not identical to
+> (-1 x bwdDiffTable), swapping fromDate and toDate in the call to this
+> function does not simply reverse the sign of the result.
+
+There is no intent to recover. The answer is *defined by* the tables, and the
+tables disagree with each other: forward Monday→Saturday is 4, backward is
+−5. A cleaner implementation would be a different function. So the port
+carries both tables verbatim, and a test asserts the asymmetry still exists
+upstream — if a future release makes the tables mirror each other, that test
+fails and the transcription can be revisited.
+
+**The rule:** reimplement when the intent is recoverable and equivalence can
+be proven; transcribe when the behaviour *is* the specification. Guessing
+which one you are in is how a port silently changes results.
+
+Practical consequence: `business_days_between` is **not antisymmetric**, so
+the adversarial harness must not assume for it what it rightly assumes for
+the day count conventions.
 
 ### Port-side findings
 

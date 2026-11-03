@@ -70,8 +70,8 @@ differentially equal to its ancestor across a swept input domain, and the
 sweep is then recorded into tier 1 so CI inherits the guarantee.
 
 ```
-with upstream present: 158 tests  (tier 1 + tier 2 + end-to-end example)
-without upstream:      106 tests  (tier 1 only, replaying 9,831 recorded cases)
+with upstream present: 170 tests  (tier 1 + tier 2 + end-to-end example)
+without upstream:      114 tests  (tier 1 only, replaying 10,496 recorded cases)
 ```
 
 Both configurations also run clean under AddressSanitizer and
