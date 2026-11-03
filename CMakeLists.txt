@@ -134,6 +134,7 @@ if(CDSMODEL_BUILD_TESTS)
                  tests/date_list_test.cpp
                  tests/zero_curve_test.cpp
                  tests/timeline_test.cpp
+                 tests/contingent_leg_test.cpp
                  tests/adversarial_test.cpp)
   target_link_libraries(cdsmodel_tests PRIVATE cdsmodel GTest::gtest_main)
   target_include_directories(cdsmodel_tests PRIVATE tests)
@@ -154,7 +155,8 @@ if(CDSMODEL_BUILD_TESTS)
                    tests/business_days_differential_test.cpp
                    tests/date_list_differential_test.cpp
                    tests/zero_curve_differential_test.cpp
-                   tests/timeline_differential_test.cpp)
+                   tests/timeline_differential_test.cpp
+                   tests/contingent_leg_differential_test.cpp)
     target_link_libraries(cdsmodel_differential_tests
                           PRIVATE cdsmodel cds_reference GTest::gtest_main)
     gtest_discover_tests(cdsmodel_differential_tests)
@@ -162,7 +164,7 @@ if(CDSMODEL_BUILD_TESTS)
     # Regenerates tests/golden/bsearch_cases.hpp from the live oracle, so the
     # committed vectors are reproducible rather than magic numbers.
     foreach(gen bsearch date day_count day_count_string date_interval calendar bad_day
-                 business_days date_list zero_curve timeline)
+                 business_days date_list zero_curve timeline contingent_leg)
       add_executable(gen_${gen}_golden tools/gen_${gen}_golden.cpp)
       target_link_libraries(gen_${gen}_golden PRIVATE cdsmodel cds_reference)
       target_compile_options(gen_${gen}_golden PRIVATE ${LEGACY_C_FLAGS})

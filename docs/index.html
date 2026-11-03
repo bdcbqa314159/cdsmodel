@@ -6,7 +6,7 @@
 <meta name="description" content="Eight defects found in the ISDA CDS Standard Model 1.8.3 while porting it to C++20, with sanitizer traces, measured evidence and fix status for each.">
 <meta name="color-scheme" content="light dark">
 <meta property="og:title" content="Eight defects in the ISDA CDS Standard Model">
-<meta property="og:description" content="Found by differential testing a C++20 port against the original C under AddressSanitizer. Six cannot occur in the port; one is reproduced on purpose; one is open.">
+<meta property="og:description" content="Found by differential testing a C++20 port against the original C under AddressSanitizer. Seven cannot occur in the port; one is reproduced on purpose.">
 <meta property="og:type" content="article">
 <title>ISDA CDS Defect Register</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -486,7 +486,7 @@
           <td class="id"><a href="#u8">UPSTREAM-8</a></td>
           <td><code>!price &gt; THRESHOLD</code> precedence bug disables a validation guard, in four places</td>
           <td><span class="chip low">Low · guard only</span></td>
-          <td><span class="chip mid">Open</span></td>
+          <td><span class="chip immune">Resolved · guards the real failure</span></td>
         </tr>
         <tr>
           <td class="id"><a href="#u7">UPSTREAM-7</a></td>
@@ -688,7 +688,7 @@ WRITE of size 1 at 0x00016b2e1e60 thread T0
     </div>
     <div class="chips">
       <span class="chip low">Low · a guard that does not guard</span>
-      <span class="chip mid">Open · decision deferred</span>
+      <span class="chip immune">Resolved · guards the real failure</span>
     </div>
     <p class="locus">contingentleg.c:90 &amp; :97, feeleg.c:101 &amp; :108 — the same line, four times</p>
 
@@ -739,16 +739,30 @@ WRITE of size 1 at 0x00016b2e1e60 thread T0
       would overstate it.
     </p>
 
-    <h3>Status in the port</h3>
+    <h3>Status in the port: resolved, by measurement</h3>
     <p>
-      <strong>Open, deliberately.</strong> The right answer depends on
-      something not yet built: whether the port's own integral is numerically
-      safe in that window. Implementing the stated intent would make the port
-      <em>refuse to price</em> something upstream prices correctly, so
-      "fix the contract violation" here would reduce capability. The current
-      preference is to guard the real failure — a non-finite result — rather
-      than a proxy threshold, but that will be decided by testing once the
-      integral exists.
+      <strong>The port guards the real failure rather than a proxy.</strong>
+      It computes, and rejects a result that is not finite.
+      <code>1e-100</code> was only ever a stand-in for "the logarithm will
+      misbehave"; with the integral built, that condition is directly
+      testable.
+    </p>
+    <p>
+      The measurement: down to survival probabilities around
+      <code>1e-300</code> the logarithms stay finite and the integral
+      converges on <code>notional × (1 − recovery)</code> — the correct limit
+      for a credit certain to default. Only an <em>exactly zero</em> survival
+      gives <code>log(0) = −inf</code> and a NaN. So the honest guard and
+      upstream's broken one fire on <strong>identical inputs</strong>,
+      verified from hazard 0.001 to 200 across the boundary where survival
+      crosses from tiny to underflowed.
+    </p>
+    <p>
+      Upstream's behaviour is therefore preserved while the stated condition
+      is true. Implementing the author's literal intent would have made the
+      port refuse to price cases upstream prices correctly — which is why
+      "fix the contract violation" was the wrong reflex, and why this decision
+      waited for a measurement.
     </p>
     <div class="tests">
       <span>Reproduce:</span> ./build/debug/defect_evidence u8

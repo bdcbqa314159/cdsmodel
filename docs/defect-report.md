@@ -25,7 +25,7 @@ the evidence for each and what the port does about it.
 | UPSTREAM-5 | Days never format as weeks (missing `break`) | Cosmetic | Reproduced deliberately |
 | UPSTREAM-6 | Business-day adjustment never returns for a calendar with no business weekday | **High** — liveness | Cannot occur |
 | UPSTREAM-7 | Date list truncation ignored when fewer than two dates survive; two implementations fail in opposite directions | **High** — silently wrong | Fixed (documented intent) |
-| UPSTREAM-8 | `!price > THRESHOLD` precedence bug disables a validation guard, in four places | Low — a guard that does not guard | Open; see below |
+| UPSTREAM-8 | `!price > THRESHOLD` precedence bug disables a validation guard, in four places | Low — a guard that does not guard | Resolved: the port guards the real failure |
 
 ## What "fixed" means here, precisely
 
@@ -355,29 +355,31 @@ defect rather than a numerical one. Worth knowing precisely because the
 tempting write-up — "precedence bug on the pricing path" — would overstate
 it.
 
-### Status in the port
+### Status in the port: resolved, by measurement
 
-**Open.** Deliberately not decided yet, because the right answer depends on
-something not yet built: whether the port's own integral is numerically safe
-in that window.
+**Option 3 — the port guards the real failure rather than a proxy.** It
+computes, and rejects a result that is not finite.
 
-Three options, and the policy in port-notes.md does not settle it cleanly:
+`1e-100` was only ever a stand-in for "the logarithm will misbehave". With the
+integral built, that condition is directly testable, and the measurement
+settles it:
 
-1. **Implement the intent** — reject survival `<= 1e-100`. Faithful to what
-   the author wrote down, but it makes the port *refuse to price* something
-   upstream prices correctly. Fixing a contract violation here reduces
-   capability.
-2. **Reproduce the effective behaviour** — reject only exactly zero.
-   Bug-compatible, and the bug happens to be harmless.
-3. **Guard the real failure instead of a proxy** — drop the survival
-   threshold and reject only where the arithmetic actually fails to produce a
-   finite result. Principled: validate the thing you need, not a stand-in for
-   it.
+- down to survival probabilities around `1e-300` the logarithms stay finite,
+  the integral converges on `notional * (1 - recovery)`, and the answer is
+  correct;
+- only an **exactly zero** survival probability gives `log(0) = -inf` and
+  hence a NaN.
 
-Current preference is (3), on the grounds that `1e-100` was a proxy for "the
-logarithm will misbehave" and the port can test that directly. But this will
-be decided when the contingent leg integral exists and the claim can be
-tested rather than argued.
+So the honest guard and upstream's broken one fire on exactly the same inputs.
+Verified across hazard rates from 0.001 to 200, including the boundary at 70,
+74 and 80 where survival crosses from tiny to underflowed: the port and
+upstream agree on validity everywhere, and on value bit-for-bit.
+
+The port therefore keeps upstream's behaviour while stating a condition that
+is true. Implementing the author's literal intent would instead have made the
+port refuse to price cases upstream prices correctly — which is why
+"fix the contract violation" was the wrong reflex here, and why the decision
+waited for a measurement.
 
 ---
 

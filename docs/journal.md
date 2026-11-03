@@ -349,6 +349,76 @@ one date, the defect would become reachable, and
 
 ---
 
+## Decision 9 — Bit-exactness survives accumulation, and a proxy guard gets replaced
+
+The vertical slice reached its destination: **the port computes a CDS
+protection leg price, bit-identically to the original.**
+
+### The result that mattered
+
+Decision 7 established bit-exactness for the zero curve and scoped the claim
+on purpose: a handful of operations inside one expression is the easy case.
+The hard case is **accumulation**, because summing over a grid is where a
+compiler is most free to reassociate, vectorise, or contract differently
+between the C and C++ front ends. The contingent leg integral sums one term
+per timeline segment.
+
+It held. Across **720 trades** — six start dates, six tenors from one month
+to fifteen years, five recovery rates including the degenerate 0 and 1, both
+protection-payment conventions, and both settings of `protectStart` — the
+present value is bit-identical. Also with `today`, `valueDate` and
+`stepinDate` all distinct, which exercises the start-date clamping and the
+value-date restatement that a sweep setting them equal would skip entirely.
+
+What made it work was the same discipline as the curve, applied to a loop:
+preserve the expression order, preserve the *branch* structure, and preserve
+the order terms are accumulated in. Upstream's Taylor expansion for small
+denominators sums five terms in a specific order; summing them any other way
+is algebraically identical and numerically is not.
+
+That branch needed its own scenario. It only runs when
+`|lambda + fwdRate| <= 1e-4`, which needs both a near-zero hazard and
+near-zero rates — a realistic sweep never touches it. Half the function would
+have been untested while the suite reported success.
+
+### UPSTREAM-8: replacing a proxy with the thing it stood for
+
+UPSTREAM-8 is a precedence bug — `!price > THRESHOLD` instead of
+`!(price > THRESHOLD)` — that leaves a guard firing only on an exactly zero
+price. It was left **open on purpose**, because the divergence policy pointed
+the wrong way: "fix contract violations" would have made the port refuse to
+price cases upstream prices correctly.
+
+With the integral built, the question became testable instead of arguable. The
+threshold `1e-100` was a proxy for "the logarithm will misbehave", so the port
+checks that directly: compute, and reject a result that is not finite.
+
+The measurement: down to survival around `1e-300` the logarithms stay finite
+and the integral converges on `notional * (1 - recovery)`, the correct limit
+for a credit certain to default. Only an exactly zero survival gives
+`log(0) = -inf` and a NaN. **So the honest guard and the broken guard fire on
+identical inputs** — verified from hazard 0.001 to 200, across the boundary
+where survival crosses from tiny to underflowed.
+
+The generalisable part: **when a guard tests a proxy, port the thing the proxy
+stood for, then measure whether the behaviour changed.** Here it did not,
+which is the best possible outcome — upstream's behaviour preserved, with a
+condition that is actually true.
+
+### A second kind of oracle
+
+With a price to check, a new class of test became available: not
+"does it match upstream" but "is it financially possible". Full recovery is
+worth exactly zero. Protection is monotone in tenor and in recovery. A PV
+never exceeds the undiscounted worst-case loss. Paying at maturity is cheaper
+than paying at default, since it is the same loss discounted further.
+
+None of those compare against the original. They would catch a class of error
+differential testing cannot: one where the port and upstream agree because the
+port reproduced a misreading faithfully.
+
+---
+
 ## What went wrong, and how we found out
 
 The honest section. Eight defects in the port against seven in a
@@ -485,22 +555,22 @@ As of the end of layer 4 and part of layer 5:
 
 | | |
 |---|---|
-| upstream lines retired | 4,832 of 21,775 (22%) |
-| **pricing-path lines ported** | **479 of 8,871 (5%)** — zero curve, timeline |
+| upstream lines retired | 5,168 of 21,775 (24%) |
+| **pricing-path lines ported** | **815 of 8,871 (9%)** — curve, timeline, protection leg |
 | port size | 1,755 lines (≈2.5:1 compression) |
 | tests + generators | 5,407 lines (3:1 over the port) |
-| recorded reference cases | 15,982 |
-| tests | 219 with an oracle, 146 without |
-| defects | 7 upstream, 8 port-side |
+| recorded reference cases | 16,702 |
+| tests | 230 with an oracle, 153 without |
+| defects | 8 upstream, 8 port-side |
 
 **The 22% is the least meaningful number here.** Most of what is done is
 infrastructure — dates, day counts, calendars, lists — where answers are
 crisp integers. Nothing prices a CDS yet.
 
-The floating-point question that worried this section is now answered for the
-curve: bit-exact, see Decision 7. It is **not** answered for the contingent
-leg integral, which accumulates over a timeline and is where a compiler is
-most likely to vectorise or contract differently between the two front ends.
+The floating-point question that worried this section is now answered for
+both the curve (Decision 7) and the accumulating integral (Decision 9):
+bit-exact in both. **The port prices a CDS protection leg identically to the
+original**, which is the result the vertical slice existed to find.
 
 **Lines retired measures effort. It does not measure capability.**
 
@@ -527,6 +597,8 @@ most likely to vectorise or contract differently between the two front ends.
 | #12 | 3 Nov | this journal |
 | #13 | 3 Nov | **the vertical slice begins** — zero curve, and floating point proves bit-exact |
 | #14 | 3 Nov | integration timeline; UPSTREAM-7's price impact measured as none |
+| #15 | 3 Nov | UPSTREAM-8 recorded, decision deliberately deferred |
+| #16 | 3 Nov | **protection leg PV — the port prices a CDS, bit-identically**; UPSTREAM-8 resolved |
 
 Every PR green on Linux, macOS and Windows plus a sanitizer job, with a
 machine-checked floor on tests actually run.

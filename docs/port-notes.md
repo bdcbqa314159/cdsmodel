@@ -105,7 +105,7 @@ there is never a big-bang integration.
 | 5 | intervals / schedules | `convert` ✅ (interval parts), `dtlist` ✅, `schedule`, `datelist`, `cxdatelist`, `stub` | `DateInterval` and the date list operations done. The date lists are the first module to **correct** upstream rather than reproduce it — see Policy |
 | 6 | curves | `tcurve`, `zerocurve`, `cxzerocurve`, `zcall`, `zcswap`, `gtozc` | 3,330 lines; `TCurve` → `std::vector` |
 | 7 | cashflows | `cashflow`, `streamcf`, `fltrate`, `cfinanci` | |
-| 8 | CDS legs | `timeline` ✅, `feeleg`, `contingentleg`, `defaulted` | `timeline` taken early as part of the vertical slice. It is the only pricing-path caller of the UPSTREAM-7 truncation, which is how that correction's price impact got measured |
+| 8 | CDS legs | `timeline` ✅, `contingentleg` ✅, `feeleg`, `defaulted` | **the port now computes a price.** The protection leg PV is bit-identical to upstream across 720 trades, after accumulation over a timeline — see Decision 9 in [journal.md](journal.md) |
 | 9 | solver | `rtbrent` | callback → template parameter / `std::function` |
 | 10 | top-level API | `cds`, `cdsone`, `cdsbootstrap` | the surface users actually call |
 | 11 | deleted outright | `cmemory`, `cerror`, `lprintf`, `lscanf`, `cfileio`, `strutil` | ~2,900 lines replaced by the standard library |
@@ -140,8 +140,8 @@ them reproducible rather than magic.
 A module needs **both**. Tier 2 alone is verified only on the machine that
 has the oracle; tier 1 alone can go stale against a behaviour nobody swept.
 
-Current coverage: 219 tests with an oracle present, 146 without, replaying
-15,982 recorded cases. 600 of those are recorded *intent* rather than
+Current coverage: 230 tests with an oracle present, 153 without, replaying
+16,702 recorded cases. 600 of those are recorded *intent* rather than
 upstream answers, for the date list module that corrects upstream. All of it also runs clean under
 AddressSanitizer and UndefinedBehaviorSanitizer, with UBSan findings **fatal**
 for port code (see PORT-5 below).
@@ -212,7 +212,7 @@ dressed up as a fix.
 
 | UPSTREAM-7 | date list truncation ignored when fewer than two dates survive, in two implementations that fail in opposite directions (39% of a 600-case sweep) | **high** — silently wrong | not yet ported | the two upstream behaviours contradict each other, so "preserve upstream" is not available |
 
-| UPSTREAM-8 | `!price > THRESHOLD` precedence bug disables a validation guard, four sites on the pricing path | low — a guard that does not guard; no mispricing demonstrated | open | the honest severity: the window where it matters is survival `<= 1e-100`, and there the computation returns the correct limit anyway. Decision deferred until the contingent leg integral exists — see the report. |
+| UPSTREAM-8 | `!price > THRESHOLD` precedence bug disables a validation guard, four sites on the pricing path | low — a guard that does not guard; no mispricing demonstrated | **resolved** — the port guards a non-finite result instead of a proxy threshold | `1e-100` stood in for "the logarithm will misbehave"; with the integral built that is directly testable. The honest guard and upstream's broken one fire on identical inputs across hazard 0.001 to 200. |
 
 ### Not yet reported to ISDA
 
