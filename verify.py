@@ -242,6 +242,14 @@ def gate_tests(preset: str) -> None:
         print(proc.stdout)
         print(proc.stderr, file=sys.stderr)
         fail("ctest reported failures")
+
+    # Surface tolerance margins even on success. Tests that compare against
+    # recorded values across platforms report how much of their error budget
+    # they actually consumed; truncating to the tail hides exactly that, and a
+    # tolerance whose margin is invisible is one nobody revisits.
+    margins = [line for line in proc.stdout.splitlines() if "worst relative difference" in line]
+    for line in margins:
+        print(line.strip())
     print(proc.stdout[-4000:])
     # CMake 4 omits the ", N tests failed" clause when nothing failed.
     m = re.search(r"(\d+)% tests passed(?:, (\d+) tests failed)? out of (\d+)", proc.stdout)
