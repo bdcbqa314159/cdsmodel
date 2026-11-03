@@ -171,4 +171,85 @@ TEST_F(BusinessDaysDifferential, HolidayAdjustmentMatchesOverTheClosedInterval) 
   JpmcdsHolidayListDelete(hl);
 }
 
+// --- offsets ---------------------------------------------------------------
+
+TEST_F(BusinessDaysDifferential, AddBusinessDaysMatchesAcrossEveryStartDayAndCount) {
+  // Upstream has three code paths here: a trivial case, a table-driven fast
+  // path (forwards, standard weekends only) and a general stepper. The sweep
+  // has to cross all three, so it covers both signs and several masks.
+  const auto holidays = holiday_set();
+  std::vector<TDate> storage;
+  for (long w : kWeekendSets) {
+    THolidayList *hl = build(holidays, w, storage);
+    ASSERT_NE(hl, nullptr) << "weekends=0x" << std::hex << w;
+    const auto cal = cdsmodel::Calendar::create(holidays, *cdsmodel::weekend_from_upstream(w));
+    ASSERT_TRUE(cal.has_value());
+
+    for (int start = 0; start < 28; ++start) { // four full weeks of start days
+      const cdsmodel::Date from = d(2024, 2, 1) + std::chrono::days{start};
+      for (long n : {-60L, -23L, -11L, -6L, -5L, -4L, -1L, 0L, 1L, 4L, 5L, 6L, 11L, 23L, 60L}) {
+        TDate out = 0;
+        const bool reference_ok =
+            JpmcdsHolidayListAddBusinessDays(cdsmodel::to_tdate(from), n, hl, &out) == SUCCESS;
+        const auto ported = cdsmodel::add_business_days(from, n, *cal);
+
+        ASSERT_EQ(ported.has_value(), reference_ok)
+            << "validity, weekends=0x" << std::hex << w << std::dec
+            << " from=" << cdsmodel::to_tdate(from) << " n=" << n;
+        if (reference_ok) {
+          EXPECT_EQ(cdsmodel::to_tdate(*ported), out)
+              << "value, weekends=0x" << std::hex << w << std::dec
+              << " from=" << cdsmodel::to_tdate(from) << " n=" << n;
+        }
+      }
+    }
+    JpmcdsHolidayListDelete(hl);
+  }
+}
+
+TEST_F(BusinessDaysDifferential, AddZeroBusinessDaysLeavesEvenAWeekendAlone) {
+  // The fast path special-cases n == 0 before consulting offsetTable, whose
+  // Saturday and Sunday rows would otherwise pull back to Friday. So adding
+  // zero is NOT the same as adjusting onto a business day.
+  std::vector<TDate> storage;
+  THolidayList *hl = build({}, 0x60, storage);
+  ASSERT_NE(hl, nullptr);
+  const cdsmodel::Calendar cal = cdsmodel::Calendar::none();
+
+  for (int i = 0; i < 7; ++i) {
+    const cdsmodel::Date day = d(2024, 6, 1) + std::chrono::days{i};
+    TDate out = 0;
+    ASSERT_EQ(JpmcdsHolidayListAddBusinessDays(cdsmodel::to_tdate(day), 0, hl, &out), SUCCESS);
+    EXPECT_EQ(out, cdsmodel::to_tdate(day)) << "upstream moved a zero-day offset";
+    EXPECT_EQ(cdsmodel::add_business_days(day, 0, cal), day);
+  }
+  JpmcdsHolidayListDelete(hl);
+}
+
+TEST_F(BusinessDaysDifferential, BusinessEndOfMonthMatchesOverSeveralYears) {
+  const auto holidays = holiday_set();
+  std::vector<TDate> storage;
+  for (long w : kWeekendSets) {
+    THolidayList *hl = build(holidays, w, storage);
+    ASSERT_NE(hl, nullptr);
+    const auto cal = cdsmodel::Calendar::create(holidays, *cdsmodel::weekend_from_upstream(w));
+    ASSERT_TRUE(cal.has_value());
+
+    for (int i = 0; i < 400; i += 3) {
+      const cdsmodel::Date day = d(2023, 12, 1) + std::chrono::days{i};
+      TDate out = 0;
+      const bool reference_ok =
+          JpmcdsHolidayListDateToBusinessEOM(cdsmodel::to_tdate(day), hl, &out) == SUCCESS;
+      const auto ported = cdsmodel::business_end_of_month(day, *cal);
+      ASSERT_EQ(ported.has_value(), reference_ok) << "validity, weekends=0x" << std::hex << w;
+      if (reference_ok) {
+        EXPECT_EQ(cdsmodel::to_tdate(*ported), out)
+            << "value, weekends=0x" << std::hex << w << std::dec
+            << " tdate=" << cdsmodel::to_tdate(day);
+      }
+    }
+    JpmcdsHolidayListDelete(hl);
+  }
+}
+
 } // namespace
