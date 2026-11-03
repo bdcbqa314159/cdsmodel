@@ -102,7 +102,7 @@ there is never a big-bang integration.
 | 2 | dates | `cdate` ✅, `dateconv` ✅, `ldate` ✅ (except calendar-dependent parts), `date_sup`, `dateadj` | epoch pinned: TDate 0 = 1601-01-01, proleptic Gregorian, verified every 13th day to 2200 |
 | 3 | day counts | `ldate` (DCF part) ✅, `yearfrac` ✅, `convert` | layer complete except `convert.c`, which is date intervals rather than day counts and moves to layer 5 |
 | 4 | calendars | `buscache` ✅, `busday` ✅, `badday` → layer 6 | **layer complete.** No global state left. `BusinessDaysDiff` transcribed, `AddBusinessDays` reimplemented — see "Transcribe or reimplement". `badday.c` holds `TBadDayList`, used only by the zero-curve swap code |
-| 5 | intervals / schedules | `convert` ✅ (interval parts), `schedule`, `datelist`, `dtlist`, `cxdatelist`, `stub` | `DateInterval` done — the type the whole schedule layer is built on |
+| 5 | intervals / schedules | `convert` ✅ (interval parts), `dtlist` ✅, `schedule`, `datelist`, `cxdatelist`, `stub` | `DateInterval` and the date list operations done. The date lists are the first module to **correct** upstream rather than reproduce it — see Policy |
 | 6 | curves | `tcurve`, `zerocurve`, `cxzerocurve`, `zcall`, `zcswap`, `gtozc` | 3,330 lines; `TCurve` → `std::vector` |
 | 7 | cashflows | `cashflow`, `streamcf`, `fltrate`, `cfinanci` | |
 | 8 | CDS legs | `feeleg`, `contingentleg`, `timeline`, `defaulted` | |
@@ -140,8 +140,9 @@ them reproducible rather than magic.
 A module needs **both**. Tier 2 alone is verified only on the machine that
 has the oracle; tier 1 alone can go stale against a behaviour nobody swept.
 
-Current coverage: 183 tests with an oracle present, 124 without, the latter
-replaying 13,266 recorded reference cases. All of it also runs clean under
+Current coverage: 198 tests with an oracle present, 133 without, replaying
+13,866 recorded cases. 600 of those are recorded *intent* rather than
+upstream answers, for the date list module that corrects upstream. All of it also runs clean under
 AddressSanitizer and UndefinedBehaviorSanitizer, with UBSan findings **fatal**
 for port code (see PORT-5 below).
 
@@ -209,7 +210,7 @@ UPSTREAM-5 is the only one deliberately kept, because its output is observable
 by callers and abbreviating `"14D"` to `"2W"` would be a behaviour change
 dressed up as a fix.
 
-| UPSTREAM-7 | date list truncation never examines index 0, in two implementations that fail in opposite directions | **high** — silently wrong | not yet ported | the two upstream behaviours contradict each other, so "preserve upstream" is not available |
+| UPSTREAM-7 | date list truncation ignored when fewer than two dates survive, in two implementations that fail in opposite directions (39% of a 600-case sweep) | **high** — silently wrong | not yet ported | the two upstream behaviours contradict each other, so "preserve upstream" is not available |
 
 ### Not yet reported to ISDA
 
@@ -420,29 +421,53 @@ still *accepts* the calendar — `BadDayDifferential.Upstream6_AllWeekendCalenda
 does, and will fail if a future release rejects it — but it cannot assert the
 hang, because the test would never finish.
 
-### Open question — which truncation behaviour should the port have?
+### Policy — when the port diverges from upstream
 
-UPSTREAM-7 is the first finding where "preserve upstream behaviour" is not an
-available option, because there are **two** upstream behaviours and they
-contradict each other. Truncating `[1,2]` before `2` gives `[]` in
-`dtlist.c` and `[1,2]` in `cxdatelist.c`. Three options:
+Decided after UPSTREAM-7 forced the question, and applied retroactively to
+everything already done. The port had been making this call case by case; the
+cases turned out to follow one rule.
 
-1. **Implement the documented intent** — return `[1]`. Correct, and matches
-   what every caller presumably believes. Diverges from both implementations
-   in the index-0 case, so no differential test can cover it; it would need
-   recorded vectors asserting the *intended* answer instead.
-2. **Reproduce `cxdatelist.c`** — it is the variant on the pricing path, so
-   this preserves whatever prices the model currently produces. Also
-   preserves a bug, and makes the port's own date lists silently un-truncated
-   in the same case.
-3. **Two functions**, one per upstream behaviour, named so the caller must
-   choose. Honest, and ugly.
+**Preserve** when the behaviour is a *convention*: observable at a public API,
+not wrong so much as particular, and a caller could reasonably depend on it.
 
-My recommendation is (1), on the grounds that the port's job is the
-documented model and both implementations plainly disagree with their own
-header comment — but this changes results versus upstream in a reachable
-case, which is a decision for the project owner rather than a default. Until
-it is decided, the date list layer is not ported.
+- `"14D"` never abbreviating to `"2W"` (UPSTREAM-5) is a formatting choice.
+- The convention-string parser accepting `"GARBAGE365"` is leniency.
+- The asymmetric business-day tables **are** the ALIB definition — there is no
+  truth they are failing to match.
+
+**Fix** when the behaviour is wrong *by its own contract*: undefined
+behaviour, non-termination, or a result that contradicts the documented
+intent.
+
+- UPSTREAM-4, a stack buffer overflow. Reproducing it is not fidelity.
+- UPSTREAM-6, a loop that never returns.
+- UPSTREAM-1, -2, -3, made unrepresentable by the type system rather than
+  patched.
+- UPSTREAM-7, where both implementations contradict their own header *and*
+  each other, so there is no single upstream behaviour available to preserve.
+
+**The condition attached to every fix.** A divergence must be enumerable and
+its consequence **measured, not assumed**:
+
+1. a row in "Deliberate differences" above, naming the site;
+2. a test asserting the defect still exists upstream, so a future upstream
+   release that fixes it makes the divergence visible instead of silent;
+3. where the function is on the pricing path, a test that **prices both ways
+   and reports whether the number moves**.
+
+Point 3 is the one that is easy to skip and matters most. The honest position
+today is that no fix has been shown to change a price — but nothing in the
+port prices anything yet, so that is partly true by construction. For
+UPSTREAM-7 specifically, the measurement is owed when `timeline.c` is ported
+in layer 8: `JpmcdsDateListTruncate` is called from there, and a CDS must be
+priced with both truncation behaviours to find out whether the correction is
+free. If it is not free, that is a finding to report rather than a reason to
+keep the bug.
+
+**Why fix at all.** A port that faithfully reproduces defects is a
+translation. A port that corrects them, enumerates the corrections, and
+measures their effect is a contribution. The second is the one worth
+offering.
 
 ## Not doing
 

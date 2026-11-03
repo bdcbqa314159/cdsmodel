@@ -24,7 +24,7 @@ the evidence for each and what the port does about it.
 | UPSTREAM-4 | Stack buffer overflow from string input | **High** — memory safety | Fixed (deliberate divergence) |
 | UPSTREAM-5 | Days never format as weeks (missing `break`) | Cosmetic | Reproduced deliberately |
 | UPSTREAM-6 | Business-day adjustment never returns for a calendar with no business weekday | **High** — liveness | Cannot occur |
-| UPSTREAM-7 | Date list truncation never examines index 0; two implementations fail in opposite directions | **High** — silently wrong | Not yet ported |
+| UPSTREAM-7 | Date list truncation ignored when fewer than two dates survive; two implementations fail in opposite directions | **High** — silently wrong | Fixed (documented intent) |
 
 ## What "fixed" means here, precisely
 
@@ -294,20 +294,21 @@ Test: `DateIntervalParse.RejectsDigitRunsThatWouldOverflowUpstreamsBuffer`.
 
 ---
 
-## UPSTREAM-7 — Date list truncation never examines index 0
+## UPSTREAM-7 — Date list truncation is ignored when fewer than two dates survive
 
 **Location:** `lib/src/dtlist.c:592` (`JpmcdsJpmcdsDateListTruncate`) and
 `lib/src/cxdatelist.c:220` (`JpmcdsDateListTruncate`) — two independent
-implementations with the same defect.
-**Severity:** High. Silently wrong results, and one variant is reachable from
-the pricing path.
+implementations with the same defect and opposite failure modes.
+**Severity:** High. Silently wrong results on 39% of a swept domain, and one
+variant is reachable from the pricing path.
 
 ### Mechanism
 
-Both scan backwards for the truncation point:
+Both scan for the truncation point without examining one end:
 
 ```c
-    truncatePt = -1;                       /* dtlist.c */
+    truncatePt = -1;                       /* dtlist.c   */
+    truncatePt = numItems - 1;             /* cxdatelist.c -- different sentinel */
     for (i = numItems - 1; i > 0; i--)     /* i > 0, so index 0 is never tested */
     {
         if (dateList->fArray[i] < truncationDate) { truncatePt = i; break; }
@@ -316,19 +317,40 @@ Both scan backwards for the truncation point:
     size = truncatePt + 1;
 ```
 
-The loop condition is `i > 0` rather than `i >= 0`, so element 0 is never
-examined. When element 0 is the only one that qualifies, the sentinel value
-survives — and the two files chose **different sentinels**, so they fail in
-opposite directions:
+The loop condition is `i > 0` rather than `i >= 0`, so the scan can fail to
+find any qualifying element. When it does, the sentinel survives — and the two
+files chose **different sentinels**, so they fail in opposite directions.
 
-| file | sentinel | size when index 0 is the answer | effect |
+The consequence is wider than element 0, which an earlier version of this
+report understated. The scan fails to find anything whenever **fewer than two
+dates should survive**, so:
+
+| file | sentinel | result when the scan finds nothing | effect |
 |---|---|---|---|
-| `dtlist.c` | `truncatePt = -1` | `0` | returns an empty list — data loss |
-| `cxdatelist.c` | `truncatePt = numItems - 1` | `numItems` | returns everything — no truncation at all |
+| `dtlist.c` | `-1` | `size = 0` | returns an empty list — data loss |
+| `cxdatelist.c` | `numItems - 1` | `size = numItems` | **the truncation is ignored entirely** |
 
 ### Evidence
 
-Keeping dates before the cut, measured against both implementations:
+Keeping dates before the cut, against `cxdatelist.c` — the variant on the
+pricing path:
+
+```
+  keep-before                  want         cxdatelist.c
+  [5,6,7] @3                   []           [5,6,7]      <- ignored entirely
+  [5,6,7] @5                   []           [5,6,7]      <- ignored entirely
+  [5,6,7] @6                   [5]          [5,6,7]      <- ignored entirely
+  [5,6,7] @7                   [5,6]        [5,6]        correct
+  [5,6,7] @9                   [5,6,7]      [5,6,7]      correct
+```
+
+The forward branch fails too, when the answer is empty:
+
+```
+  [5,6,7] @9 keep-after        []           [5,6,7]
+```
+
+And the two implementations against each other:
 
 ```
   input / cut                want           dtlist.c         cxdatelist.c
@@ -340,9 +362,10 @@ Keeping dates before the cut, measured against both implementations:
   [1,2,3] @3                 [1,2]          [1,2]            [1,2]
 ```
 
-Both are correct whenever two or more elements survive, which is why this
-has not been noticed: the failure needs the answer to be exactly the first
-element.
+Over a 600-case sweep across six lists, every cut position and both
+directions, upstream disagrees with the documented intent on **234 cases —
+39%**. Both are correct whenever two or more dates survive, which is the
+common case and the reason this has gone unnoticed.
 
 Reproduce with `./build/debug/defect_evidence u7`.
 

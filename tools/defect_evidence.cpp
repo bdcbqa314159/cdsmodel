@@ -193,7 +193,7 @@ std::string render(TDateList *dl) {
 }
 
 void u7() {
-  heading("UPSTREAM-7", "date list truncation never examines index 0");
+  heading("UPSTREAM-7", "date list truncation is ignored when <2 dates survive");
   std::printf("Both implementations scan backwards with\n"
               "    for (i = numItems - 1; i > 0; i--)\n"
               "so index 0 is never tested. They differ only in the sentinel, so\n"
@@ -218,7 +218,32 @@ void u7() {
         JpmcdsDateListTruncate(make_list(c.dates), c.cut, c.inclusive ? TRUE : FALSE, FALSE, FALSE);
     std::printf("  %-26s %-14s %-16s %s\n", c.label, c.want, render(a).c_str(), render(b).c_str());
   }
-  std::printf("\nThe cxdatelist.c variant is the one timeline.c calls, which builds\n"
+  std::printf("\nThe failure is broader than element 0. Because the sentinel means\n"
+              "\"keep everything\", cxdatelist.c IGNORES THE TRUNCATION ENTIRELY\n"
+              "whenever fewer than two dates should survive:\n\n");
+  std::printf("  %-28s %-12s %s\n", "keep-before", "want", "cxdatelist.c");
+  struct Wide {
+    const char *l;
+    std::initializer_list<TDate> d;
+    TDate cut;
+    const char *want;
+  };
+  for (const Wide &w : std::initializer_list<Wide>{{"[5,6,7] @3", {5, 6, 7}, 3, "[]"},
+                                                   {"[5,6,7] @5", {5, 6, 7}, 5, "[]"},
+                                                   {"[5,6,7] @6", {5, 6, 7}, 6, "[5]"},
+                                                   {"[5,6,7] @7", {5, 6, 7}, 7, "[5,6]"},
+                                                   {"[5,6,7] @9", {5, 6, 7}, 9, "[5,6,7]"}}) {
+    TDateList *r = JpmcdsDateListTruncate(make_list(w.d), w.cut, FALSE, FALSE, FALSE);
+    std::printf("  %-28s %-12s %s\n", w.l, w.want, render(r).c_str());
+  }
+  std::printf("\n  keep-after also fails when the answer is empty:\n");
+  {
+    TDateList *r = JpmcdsDateListTruncate(make_list({5, 6, 7}), 9, FALSE, TRUE, FALSE);
+    std::printf("  %-28s %-12s %s\n", "[5,6,7] @9 keep-after", "[]", render(r).c_str());
+  }
+  std::printf("\nOver a 600-case sweep the two disagree with the documented intent\n"
+              "on 234 of them -- 39 percent.\n\n"
+              "The cxdatelist.c variant is the one timeline.c calls, which builds\n"
               "the integration timeline for the fee and contingent legs. Whether a\n"
               "CDS price changes as a result is NOT established here -- only that\n"
               "the function misbehaves.\n");
