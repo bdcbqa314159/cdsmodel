@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Six defects found in the ISDA CDS Standard Model 1.8.3 while porting it to C++20, with sanitizer traces, measured evidence and fix status for each.">
+<meta name="description" content="Seven defects found in the ISDA CDS Standard Model 1.8.3 while porting it to C++20, with sanitizer traces, measured evidence and fix status for each.">
 <meta name="color-scheme" content="light dark">
-<meta property="og:title" content="Six defects in the ISDA CDS Standard Model">
-<meta property="og:description" content="Found by differential testing a C++20 port against the original C under AddressSanitizer. Five cannot occur in the port. One is reproduced on purpose.">
+<meta property="og:title" content="Seven defects in the ISDA CDS Standard Model">
+<meta property="og:description" content="Found by differential testing a C++20 port against the original C under AddressSanitizer. Five cannot occur in the port, one is reproduced on purpose, one is still open.">
 <meta property="og:type" content="article">
 <title>ISDA CDS Defect Register</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -410,11 +410,11 @@
 
   <header class="masthead">
     <p class="eyebrow">Defect report · 2026-11-02</p>
-    <h1>Six defects in the ISDA CDS Standard Model</h1>
+    <h1>Seven defects in the ISDA CDS Standard Model</h1>
     <p class="standfirst">
       Found while porting the 2009 C library to C++20, by running both
       implementations side by side under AddressSanitizer. Five cannot occur in
-      the port. One is reproduced on purpose.
+      the port, one is reproduced on purpose, and one is still open.
     </p>
   </header>
 
@@ -481,6 +481,12 @@
           <td>Stack buffer overflow from string input</td>
           <td><span class="chip high">High · memory safety</span></td>
           <td><span class="chip immune">Fixed deliberately</span></td>
+        </tr>
+        <tr>
+          <td class="id"><a href="#u7">UPSTREAM-7</a></td>
+          <td>Date list truncation never examines index 0; two implementations fail in opposite directions</td>
+          <td><span class="chip high">High · silently wrong</span></td>
+          <td><span class="chip mid">Not yet ported</span></td>
         </tr>
         <tr>
           <td class="id"><a href="#u6">UPSTREAM-6</a></td>
@@ -665,6 +671,76 @@ WRITE of size 1 at 0x00016b2e1e60 thread T0
     <div class="tests">
       <span>Tests:</span> DateIntervalParse.RejectsDigitRunsThatWouldOverflowUpstreamsBuffer<br>
       <span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span> DISABLED_Upstream4_LongDigitRunOverflowsStackBuffer <span>(the reproducer)</span>
+    </div>
+  </section>
+
+  <!-- ============ U7 ============ -->
+  <section class="record sev-high" id="u7">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-7</span>
+      <h2>Date list truncation never examines index 0</h2>
+    </div>
+    <div class="chips">
+      <span class="chip high">High · silently wrong</span>
+      <span class="chip mid">Not yet ported · decision open</span>
+    </div>
+    <p class="locus">lib/src/dtlist.c:592 &amp; lib/src/cxdatelist.c:220 — two implementations</p>
+
+    <h3>Mechanism</h3>
+    <p>Both scan backwards for the truncation point:</p>
+<pre><code>truncatePt = -1;                       <span class="c">/* dtlist.c */</span>
+<span class="hit">for (i = numItems - 1; i &gt; 0; i--)</span>     <span class="c">/* index 0 is never tested */</span>
+{
+    if (dateList-&gt;fArray[i] &lt; truncationDate) { truncatePt = i; break; }
+    if (inclusive &amp;&amp; dateList-&gt;fArray[i] == truncationDate) { truncatePt = i; break; }
+}
+size = truncatePt + 1;</code></pre>
+    <p>
+      The condition is <code>i &gt; 0</code> rather than <code>i &gt;= 0</code>.
+      When element 0 is the only one that qualifies, the sentinel survives —
+      and the two files chose <strong>different sentinels</strong>, so they
+      fail in opposite directions.
+    </p>
+
+    <h3>Evidence</h3>
+<pre><code>  input / cut                want           dtlist.c         cxdatelist.c
+                                            (sentinel -1)    (sentinel n-1)
+  [1,2] @2                   [1]            <span class="hit">[]</span>               <span class="hit">[1,2]</span>
+  [10,30] @30                [10]           <span class="hit">[]</span>               <span class="hit">[10,30]</span>
+  [5] @9                     [5]            <span class="hit">[]</span>               [5]
+  [9,10] @9 inclusive        [9]            <span class="hit">[]</span>               <span class="hit">[9,10]</span>
+  [1,2,3] @3                 [1,2]          [1,2]            [1,2]</code></pre>
+    <p>
+      Both are correct whenever two or more elements survive, which is why
+      this has gone unnoticed: the failure needs the answer to be exactly the
+      first element. One loses data; the other silently declines to truncate.
+    </p>
+
+    <h3>Reachability</h3>
+    <p>
+      The <code>cxdatelist.c</code> variant is called from
+      <code>timeline.c</code>, which builds the integration timeline for the
+      fee and contingent legs — so it sits on the CDS pricing path.
+    </p>
+    <p>
+      <strong>What is established and what is not.</strong> The function
+      misbehaves; that is measured above. Whether a CDS price actually changes
+      is <em>not</em> established — that needs a test at the timeline level,
+      which belongs with the layer where <code>timeline.c</code> is ported.
+      Recorded now so it is not rediscovered then.
+    </p>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Not yet ported</strong>, and the first finding where
+      "preserve upstream behaviour" is not available: there are two upstream
+      behaviours and they contradict each other. Implementing the documented
+      intent would diverge from both in the index-0 case, so no differential
+      test could cover it. That is a decision for the project owner rather
+      than a default, and it is written up in <code>docs/port-notes.md</code>.
+    </p>
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u7
     </div>
   </section>
 

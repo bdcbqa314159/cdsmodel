@@ -30,7 +30,9 @@ extern "C" {
 #include "cerror.h"
 #include "cgeneral.h"
 #include "convert.h"
+#include "cxdatelist.h"
 #include "dateconv.h"
+#include "dtlist.h"
 #include "ldate.h"
 #include "mdydate.h"
 #include "yearfrac.h"
@@ -170,6 +172,58 @@ void u5() {
               "\"14D\" to \"2W\" would be a behaviour change dressed up as a fix.\n");
 }
 
+TDateList *make_list(std::initializer_list<TDate> dates) {
+  TDateList *dl = JpmcdsNewEmptyDateList(static_cast<int>(dates.size()));
+  int i = 0;
+  for (TDate d : dates) {
+    dl->fArray[i++] = d;
+  }
+  return dl;
+}
+
+std::string render(TDateList *dl) {
+  if (dl == nullptr) {
+    return "NULL";
+  }
+  std::string out = "[";
+  for (int i = 0; i < dl->fNumItems; ++i) {
+    out += (i ? "," : "") + std::to_string(static_cast<long>(dl->fArray[i]));
+  }
+  return out + "]";
+}
+
+void u7() {
+  heading("UPSTREAM-7", "date list truncation never examines index 0");
+  std::printf("Both implementations scan backwards with\n"
+              "    for (i = numItems - 1; i > 0; i--)\n"
+              "so index 0 is never tested. They differ only in the sentinel, so\n"
+              "they fail in OPPOSITE directions when index 0 is the answer.\n\n");
+  std::printf("  %-26s %-14s %-16s %s\n", "input / cut", "want", "dtlist.c", "cxdatelist.c");
+  std::printf("  %-26s %-14s %-16s %s\n", "", "", "(sentinel -1)", "(sentinel n-1)");
+  struct Case {
+    const char *label;
+    std::initializer_list<TDate> dates;
+    TDate cut;
+    bool inclusive;
+    const char *want;
+  };
+  for (const Case &c : std::initializer_list<Case>{{"[1,2] @2", {1, 2}, 2, false, "[1]"},
+                                                   {"[10,30] @30", {10, 30}, 30, false, "[10]"},
+                                                   {"[5] @9", {5}, 9, false, "[5]"},
+                                                   {"[9,10] @9 inclusive", {9, 10}, 9, true, "[9]"},
+                                                   {"[1,2,3] @3", {1, 2, 3}, 3, false, "[1,2]"}}) {
+    TDateList *a = JpmcdsJpmcdsDateListTruncate(make_list(c.dates), c.cut,
+                                                c.inclusive ? TRUE : FALSE, FALSE, FALSE);
+    TDateList *b =
+        JpmcdsDateListTruncate(make_list(c.dates), c.cut, c.inclusive ? TRUE : FALSE, FALSE, FALSE);
+    std::printf("  %-26s %-14s %-16s %s\n", c.label, c.want, render(a).c_str(), render(b).c_str());
+  }
+  std::printf("\nThe cxdatelist.c variant is the one timeline.c calls, which builds\n"
+              "the integration timeline for the fee and contingent legs. Whether a\n"
+              "CDS price changes as a result is NOT established here -- only that\n"
+              "the function misbehaves.\n");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -209,6 +263,9 @@ int main(int argc, char **argv) {
   }
   if (want("u4")) {
     u4(unsafe);
+  }
+  if (want("u7")) {
+    u7();
   }
   return 0;
 }
