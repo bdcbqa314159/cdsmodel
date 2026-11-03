@@ -1,6 +1,6 @@
 # Defect report — ISDA CDS Standard Model 1.8.3
 
-Six defects found in the upstream C library while porting it to C++20, with
+Seven defects found in the upstream C library while porting it to C++20, with
 the evidence for each and what the port does about it.
 
 - **Library examined:** ISDA CDS Standard Model, version 1.8.3 (C, 2009),
@@ -24,6 +24,7 @@ the evidence for each and what the port does about it.
 | UPSTREAM-4 | Stack buffer overflow from string input | **High** — memory safety | Fixed (deliberate divergence) |
 | UPSTREAM-5 | Days never format as weeks (missing `break`) | Cosmetic | Reproduced deliberately |
 | UPSTREAM-6 | Business-day adjustment never returns for a calendar with no business weekday | **High** — liveness | Cannot occur |
+| UPSTREAM-7 | Date list truncation never examines index 0; two implementations fail in opposite directions | **High** — silently wrong | Not yet ported |
 
 ## What "fixed" means here, precisely
 
@@ -290,6 +291,84 @@ it crashes the sanitizer build on purpose:
 ```
 
 Test: `DateIntervalParse.RejectsDigitRunsThatWouldOverflowUpstreamsBuffer`.
+
+---
+
+## UPSTREAM-7 — Date list truncation never examines index 0
+
+**Location:** `lib/src/dtlist.c:592` (`JpmcdsJpmcdsDateListTruncate`) and
+`lib/src/cxdatelist.c:220` (`JpmcdsDateListTruncate`) — two independent
+implementations with the same defect.
+**Severity:** High. Silently wrong results, and one variant is reachable from
+the pricing path.
+
+### Mechanism
+
+Both scan backwards for the truncation point:
+
+```c
+    truncatePt = -1;                       /* dtlist.c */
+    for (i = numItems - 1; i > 0; i--)     /* i > 0, so index 0 is never tested */
+    {
+        if (dateList->fArray[i] < truncationDate) { truncatePt = i; break; }
+        if (inclusive && dateList->fArray[i] == truncationDate) { truncatePt = i; break; }
+    }
+    size = truncatePt + 1;
+```
+
+The loop condition is `i > 0` rather than `i >= 0`, so element 0 is never
+examined. When element 0 is the only one that qualifies, the sentinel value
+survives — and the two files chose **different sentinels**, so they fail in
+opposite directions:
+
+| file | sentinel | size when index 0 is the answer | effect |
+|---|---|---|---|
+| `dtlist.c` | `truncatePt = -1` | `0` | returns an empty list — data loss |
+| `cxdatelist.c` | `truncatePt = numItems - 1` | `numItems` | returns everything — no truncation at all |
+
+### Evidence
+
+Keeping dates before the cut, measured against both implementations:
+
+```
+  input / cut                want           dtlist.c         cxdatelist.c
+                                            (sentinel -1)    (sentinel n-1)
+  [1,2] @2                   [1]            []               [1,2]
+  [10,30] @30                [10]           []               [10,30]
+  [5] @9                     [5]            []               [5]
+  [9,10] @9 inclusive        [9]            []               [9,10]
+  [1,2,3] @3                 [1,2]          [1,2]            [1,2]
+```
+
+Both are correct whenever two or more elements survive, which is why this
+has not been noticed: the failure needs the answer to be exactly the first
+element.
+
+Reproduce with `./build/debug/defect_evidence u7`.
+
+### Reachability
+
+`JpmcdsDateListTruncate` (the `cxdatelist.c` variant) is called from
+`timeline.c`, which builds the integration timeline for the fee and
+contingent legs — so it sits on the CDS pricing path. `timeline.c` truncates
+at the start and end dates with `inclusive = TRUE`.
+
+**What is established and what is not.** The function misbehaves: that is
+measured above. Whether a CDS price actually changes is **not** established
+here — it would require the qualifying element to land at index 0 of a
+timeline, and that needs a test at the timeline level. That test belongs with
+layer 8, where `timeline.c` is ported. Recording the finding now so it is not
+rediscovered then.
+
+`JpmcdsSubtractDateLists` also depends on the `dtlist.c` variant and inherits
+its data loss.
+
+### Status in the port
+
+**Not yet ported.** This is the first finding where the port cannot simply
+"preserve upstream behaviour", because there are two upstream behaviours and
+they contradict each other. The choice needs deciding rather than defaulting
+— see the open question in `docs/port-notes.md`.
 
 ---
 
