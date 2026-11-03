@@ -376,12 +376,17 @@ Reproduce with `./build/debug/defect_evidence u7`.
 contingent legs — so it sits on the CDS pricing path. `timeline.c` truncates
 at the start and end dates with `inclusive = TRUE`.
 
-**What is established and what is not.** The function misbehaves: that is
-measured above. Whether a CDS price actually changes is **not** established
-here — it would require the qualifying element to land at index 0 of a
-timeline, and that needs a test at the timeline level. That test belongs with
-layer 8, where `timeline.c` is ported. Recording the finding now so it is not
-rediscovered then.
+**Price impact: measured, and it is none.** `timeline.c` is the only caller
+on the pricing path, and it cannot reach the defect. Both of its truncations
+run *after* the start and end dates have been merged into the date list, and
+the contract requires `end > start`, so at least two distinct dates always
+survive — which is precisely the regime where upstream's truncation is
+correct. Confirmed over 96 integration windows plus 8 deliberately minimal
+two-date timelines, every one matching the corrected port exactly.
+
+So the correction is free. Note the form of that answer: the test says it did
+not happen in the cases tried, while the structural argument says it cannot
+happen.
 
 `JpmcdsSubtractDateLists` also depends on the `dtlist.c` variant and inherits
 its data loss.

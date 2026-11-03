@@ -319,6 +319,36 @@ inside a loop it describes as a hotspot.
 
 ---
 
+## Decision 8 — Pay a measurement debt with a reason, not a test
+
+The divergence policy (Decision 5) says a correction on the pricing path owes
+a measurement: price it both ways and report whether the number moves. The
+first such debt came due with the integration timeline, which is the only
+pricing-path caller of the truncation the port corrects (UPSTREAM-7).
+
+**The answer: the correction is free**, and the reason is structural.
+`risky_timeline` merges the start and end dates into the list *before* either
+truncation runs, and the contract requires `end > start`. So at least two
+distinct dates always survive — and two or more survivors is exactly the
+regime where upstream's defective truncation is correct. The minimal possible
+timeline is the two endpoints, which is already safe.
+
+Confirmed empirically too: 96 integration windows, plus 8 constructed to
+produce the minimal two-date timeline on purpose, all matching exactly.
+
+**The form of the answer is the point.** A passing test says the defect did
+not bite in the cases tried. The structural argument says it cannot bite at
+all. When a divergence needs justifying, reach for the second if it is
+available — and a sweep alongside it, because an argument about code you have
+just written is worth less than you think.
+
+A test now pins the reason as well as the result: if a future refactor
+truncated *before* merging the endpoints, the minimal timeline would drop to
+one date, the defect would become reachable, and
+`Timeline.MinimalTimelineIsExactlyTheTwoEndpoints` fails.
+
+---
+
 ## What went wrong, and how we found out
 
 The honest section. Eight defects in the port against seven in a
@@ -455,12 +485,12 @@ As of the end of layer 4 and part of layer 5:
 
 | | |
 |---|---|
-| upstream lines retired | 4,712 of 21,775 (22%) |
-| **pricing-path lines ported** | **359 of 8,871 (4%)** — the zero curve |
+| upstream lines retired | 4,832 of 21,775 (22%) |
+| **pricing-path lines ported** | **479 of 8,871 (5%)** — zero curve, timeline |
 | port size | 1,755 lines (≈2.5:1 compression) |
 | tests + generators | 5,407 lines (3:1 over the port) |
-| recorded reference cases | 15,886 |
-| tests | 209 with an oracle, 140 without |
+| recorded reference cases | 15,982 |
+| tests | 219 with an oracle, 146 without |
 | defects | 7 upstream, 8 port-side |
 
 **The 22% is the least meaningful number here.** Most of what is done is
@@ -496,6 +526,7 @@ most likely to vectorise or contract differently between the two front ends.
 | #11 | 3 Nov | date lists, correcting UPSTREAM-7; the divergence **policy** written down |
 | #12 | 3 Nov | this journal |
 | #13 | 3 Nov | **the vertical slice begins** — zero curve, and floating point proves bit-exact |
+| #14 | 3 Nov | integration timeline; UPSTREAM-7's price impact measured as none |
 
 Every PR green on Linux, macOS and Windows plus a sanitizer job, with a
 machine-checked floor on tests actually run.

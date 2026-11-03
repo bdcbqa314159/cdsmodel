@@ -105,7 +105,7 @@ there is never a big-bang integration.
 | 5 | intervals / schedules | `convert` ✅ (interval parts), `dtlist` ✅, `schedule`, `datelist`, `cxdatelist`, `stub` | `DateInterval` and the date list operations done. The date lists are the first module to **correct** upstream rather than reproduce it — see Policy |
 | 6 | curves | `tcurve`, `zerocurve`, `cxzerocurve`, `zcall`, `zcswap`, `gtozc` | 3,330 lines; `TCurve` → `std::vector` |
 | 7 | cashflows | `cashflow`, `streamcf`, `fltrate`, `cfinanci` | |
-| 8 | CDS legs | `feeleg`, `contingentleg`, `timeline`, `defaulted` | |
+| 8 | CDS legs | `timeline` ✅, `feeleg`, `contingentleg`, `defaulted` | `timeline` taken early as part of the vertical slice. It is the only pricing-path caller of the UPSTREAM-7 truncation, which is how that correction's price impact got measured |
 | 9 | solver | `rtbrent` | callback → template parameter / `std::function` |
 | 10 | top-level API | `cds`, `cdsone`, `cdsbootstrap` | the surface users actually call |
 | 11 | deleted outright | `cmemory`, `cerror`, `lprintf`, `lscanf`, `cfileio`, `strutil` | ~2,900 lines replaced by the standard library |
@@ -140,8 +140,8 @@ them reproducible rather than magic.
 A module needs **both**. Tier 2 alone is verified only on the machine that
 has the oracle; tier 1 alone can go stale against a behaviour nobody swept.
 
-Current coverage: 209 tests with an oracle present, 140 without, replaying
-15,886 recorded cases. 600 of those are recorded *intent* rather than
+Current coverage: 219 tests with an oracle present, 146 without, replaying
+15,982 recorded cases. 600 of those are recorded *intent* rather than
 upstream answers, for the date list module that corrects upstream. All of it also runs clean under
 AddressSanitizer and UndefinedBehaviorSanitizer, with UBSan findings **fatal**
 for port code (see PORT-5 below).
@@ -455,14 +455,23 @@ its consequence **measured, not assumed**:
 3. where the function is on the pricing path, a test that **prices both ways
    and reports whether the number moves**.
 
-Point 3 is the one that is easy to skip and matters most. The honest position
-today is that no fix has been shown to change a price — but nothing in the
-port prices anything yet, so that is partly true by construction. For
-UPSTREAM-7 specifically, the measurement is owed when `timeline.c` is ported
-in layer 8: `JpmcdsDateListTruncate` is called from there, and a CDS must be
-priced with both truncation behaviours to find out whether the correction is
-free. If it is not free, that is a finding to report rather than a reason to
-keep the bug.
+Point 3 is the one that is easy to skip and matters most.
+
+**The first such debt has now been paid.** UPSTREAM-7's correction was owed a
+measurement because `timeline.c` calls the defective truncation. The answer
+is that the correction is **free**, and the reason is structural rather than
+statistical: both truncations run *after* the start and end dates have been
+merged into the list, and the contract requires `end > start`, so at least two
+distinct dates always survive — which is exactly the regime where upstream is
+correct. Confirmed over 96 windows plus 8 deliberately minimal two-date
+timelines, all matching exactly.
+
+That is the shape a discharged debt should take: a reason, not just a green
+test. A test tells you it did not happen in the cases you tried; the argument
+tells you it cannot happen.
+
+Still outstanding: no *other* fix has been shown to change a price, and the
+port still does not compute one. The contingent leg integral is next.
 
 **Why fix at all.** A port that faithfully reproduces defects is a
 translation. A port that corrects them, enumerates the corrections, and
