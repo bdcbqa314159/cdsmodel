@@ -909,3 +909,75 @@ generation time: 859 of 1,302 agreed, 443 did not. If a regeneration turns
 those all true, upstream fixed it and the correction should be revisited. The
 differential suite asserts the disagreement still exists, so that cannot pass
 unnoticed.
+
+## UPSTREAM-12 — A lunar-month interval computes correctly, then fails
+
+**Location:** `lib/src/date_sup.c`, inside `JpmcdsDateIntervalToYears`.
+**Severity:** Low, and the reachability is why — see below.
+
+### Mechanism
+
+```c
+case 'U':
+    *years = (double)interval->prd *
+             (double)JPMCDS_DAYS_PER_LUNAR_MONTH/JPMCDS_DAYS_PER_YEAR;
+default:
+    JpmcdsErrMsg("%s: unknown interval type %c.\n", routine, interval->prd_typ);
+    return FAILURE;
+```
+
+`case 'U'` has no `break`, so it falls into `default:`. Second of its family
+after UPSTREAM-5.
+
+### Evidence
+
+```
+type   rc         years          note
+A      SUCCESS    1              annual
+M      SUCCESS    0.08333333333  monthly
+D      SUCCESS    0.002739726027 daily
+U      FAILURE    0.07671232877  LUNAR MONTH
+Z      FAILURE    -999           genuinely unknown
+
+28/365 = 0.07671232877  <- what 'U' computes before falling through
+```
+
+The distinguishing detail is the last row. A genuinely unrecognised letter
+leaves the output untouched at its sentinel; `'U'` writes the correct value and
+*then* returns FAILURE. The computation ran; only the `break` is gone.
+
+Reproduce with `./build/debug/defect_evidence u12`.
+
+### Reachability, stated precisely
+
+This is low severity for one reason, and the first draft of this report
+overstated it before the reachability was measured.
+
+`JpmcdsMakeDateInterval('U')` normalises to **28 days**, so an interval built
+the way callers build one arrives at the ACT/365F branch and works. The missing
+`break` is reachable only through a hand-constructed `TDateInterval`.
+
+That is not a hypothetical. Upstream contemplates hand-built intervals
+explicitly: the switch in `JpmcdsDtFwdAny` retains code for `'A'`, `'S'` and
+`'Q'` with the comment *"left here for people who have set up their own
+TDateIntervals without calling JpmcdsMakeDateInterval"*. It extends that
+courtesy to `'W'` and not to `'U'` — so a hand-built lunar interval is refused
+by `JpmcdsDtFwdAny` and mishandled by `JpmcdsDateIntervalToYears`.
+
+It propagates as far as it can: `JpmcdsDateIntervalToFreq` and
+`JpmcdsCountDates` both consume this function, so neither works for a
+hand-built lunar interval.
+
+### In the port
+
+**Cannot occur.** `make_date_interval('U')` yields `{28 * periods, Days}`, so
+no `DateInterval` ever carries the unit letter the bug keys on, and
+`interval_to_years` has two total branches where upstream has eleven partial
+ones.
+
+The equivalence that makes this safe is checked rather than argued: for every
+letter the parser accepts, the normalised interval's year fraction is compared
+bit-for-bit against what upstream computes from an interval built through its
+own constructor. Normalisation divides numerator and denominator by the same
+factor — `'Q'` with 5 periods becomes 15 months, and 15/12 is exactly 5/4 — so
+the correctly-rounded quotient is unchanged, across 120 recorded cases.

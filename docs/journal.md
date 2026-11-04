@@ -1368,6 +1368,97 @@ difference was representable. Ten slices of "preserve the expression order"
 and I still wrote it left to right -- which is the argument for the harness
 rather than for being careful.
 
+## Decision 17 — The harness caught the test, not the code
+
+Core-first from here: finish the library, then interface. `date_sup.c` plus
+`dateadj.c` is the first slice of the remaining 8,711 lines, chosen because
+`date_sup` is a leaf with six modules above it -- the highest unlock per line
+left in the project.
+
+The slice went cleanly and then taught something about my own testing.
+
+### Three failures, and the code was right
+
+The differential suite reported three failures, all on the lunar-month
+interval `'U'`, all of the same shape: the port succeeded where upstream
+failed. My first reading was that I had found a second defect in
+`JpmcdsDtFwdAny`, which refuses `'U'` outright.
+
+Then I built the comparison table properly:
+
+| letter | `JpmcdsMakeDateInterval` gives | `DtFwdAny(raw)` | `DtFwdAny(constructed)` | `IntervalToYears(raw)` |
+|---|---|---|---|---|
+| W | 7D | ok | ok | ok |
+| U | **28D** | **FAILURE** | **ok** | **FAILURE** |
+
+`JpmcdsMakeDateInterval('U')` normalises to 28 days -- **exactly what the
+port's `make_date_interval` does.** So through the official constructor, `'U'`
+works everywhere in upstream and the port agrees. My test had been comparing
+the port's normalised interval against a hand-built `TDateInterval{n,'U',0}`,
+which is a different animal.
+
+The port was right. The comparison was not like for like. Fixed by building
+the upstream interval through its own constructor, as callers do; hand-built
+structs now appear only in the test that is *about* them.
+
+### What that does to the finding
+
+UPSTREAM-12 is real -- `case 'U'` has no `break`, so it computes 28/365 and
+then returns FAILURE -- but it is reachable only through a hand-constructed
+interval, and the first draft of my write-up did not say so.
+
+The reachability is not a technicality I invented to deflate my own finding.
+Upstream contemplates hand-built intervals explicitly: `JpmcdsDtFwdAny` keeps
+code for `'A'`, `'S'` and `'Q'` with the comment *"left here for people who
+have set up their own TDateIntervals without calling
+JpmcdsMakeDateInterval"*. It extends that courtesy to `'W'` and not to `'U'`.
+So a hand-built lunar interval is refused by one function and mishandled by
+the other -- a genuine inconsistency, at low severity, with the condition
+stated.
+
+The evidence tool now prints the self-proving version: the same function, on
+the same semantic interval, returns FAILURE for the hand-built form and
+SUCCESS for the constructed one, with identical values in both.
+
+### An argument that had to become a measurement
+
+`interval_to_years` has two branches where upstream has eleven, because a
+`DateInterval` carries only days or months. The claim that this is safe is
+arithmetic: normalisation divides numerator and denominator by the same
+factor, so `'Q'` with 5 periods becomes 15 months and 15/12 is exactly 5/4.
+
+That is a correct argument and it is still an argument. It is now 120 recorded
+cases comparing the normalised quotient bit-for-bit against upstream's, across
+every letter the parser accepts and period counts from 1 to 1000. The habit
+that keeps earning its place: **if the reasoning is sound, the measurement is
+cheap; if the measurement is expensive, the reasoning was probably wrong.**
+
+### One design change forced by a decision six modules old
+
+`JpmcdsDtFwdAdj` branches on `isBusDays` and then branches AGAIN on whether
+the unit letter is literally `'D'`. So its BUSINESS case means two different
+things: step this many business days, or advance by a period with
+end-of-month carry.
+
+A `DateInterval` cannot express that, because `'W'` and `'U'` were normalised
+to days at construction. Under upstream's test a weekly interval is *not*
+`'D'` and takes the period path; a naive port would send it down the other
+one.
+
+Rather than smuggle the unit letter back in, the choice became explicit:
+`OffsetBasis` has four values where upstream had three, splitting BUSINESS
+into `BusinessDays` and `BusinessPeriod`. The caller states which it means
+instead of encoding it in a character the type no longer carries. The one
+caller in the library -- `streamcf.c`, for a floating rate's spot offset --
+knows perfectly well which it wants.
+
+### And a small piece of tidying that paid immediately
+
+`detail::advance_multiple` was living in `schedule.hpp`, where it was first
+needed. Multiplying an interval is interval arithmetic, not scheduling, and
+the moment a second module wanted it the misplacement showed. Moved to
+`date_interval.hpp`; 338 tests confirmed nothing shifted.
+
 ## The collaboration record
 
 Started at the schedule slice, which means the earlier rows were reconstructed
@@ -1428,6 +1519,10 @@ From here: one line per slice naming what had to be redone and why.
 - **cds** — one real defect introduced and fixed (PORT-9); one comment corrected
   that had argued the defect was not a defect; two wrong argument orders caught
   by the compiler.
+- **date_sup** — zero port defects; **three test failures where the test was
+  wrong**, comparing a normalised interval against a hand-built upstream
+  struct. Also deflated my own UPSTREAM-12 write-up once reachability was
+  measured.
 - **defaulted** — one defect introduced and caught by the differential suite
   within seconds (PORT-10: wrote `fraction * coupon * notional` where upstream
   computes `fraction * (coupon * notional)`, one ULP apart on 30/360). Found
