@@ -463,6 +463,56 @@ port reproduced a misreading faithfully.
 
 ---
 
+## Decision 10 — Bit-exactness survives nested accumulation too
+
+The premium leg is the larger half of a CDS and the fiddlier one: a sum over
+coupon periods, each of which may carry its own integral for the accrual owed
+if default interrupts it. So where the protection leg tested one integral,
+this tests **a sum of integrals** — the deepest nesting in the model.
+
+It held. **576 configurations** bit-identical: one to sixty coupon periods,
+four coupon rates including zero, three day count conventions, both accrual
+conventions, both settings of `obsStartOfDay`, and clean and dirty prices.
+Plus step-in dates inside a coupon period, which is what exercises the
+accrued-interest deduction and the part-period integral — a sweep anchored on
+schedule dates reaches neither.
+
+The accrual integral has its **own** Taylor expansion, different from the
+protection leg's: five terms where each carries a `(t0 + k*t1)` factor and the
+coefficients nest differently. It needed its own near-zero-rate scenario; the
+other module's coverage says nothing about it.
+
+So the conclusion from Decision 7, scoped then to a single expression, now
+holds for a single integral and for a sum of integrals. The discipline that
+carried it all the way was unchanged: **preserve the expression order,
+preserve the branch structure, preserve the order of accumulation.** Nothing
+cleverer was needed, and anything cleverer would have cost the result.
+
+### Three parallel arrays become one vector
+
+Worth recording as a port improvement with a concrete failure mode behind it.
+Upstream carries the schedule as
+
+```c
+int    nbDates;
+TDate *accStartDates;
+TDate *accEndDates;
+TDate *payDates;
+```
+
+Nothing ties the three arrays to each other or to `nbDates`. A caller can
+hand over arrays of different lengths and the library will read past the end
+of two of them, with no diagnostic. The port uses one
+`std::vector<FeePayment>`, which makes a mismatched schedule unrepresentable
+rather than merely discouraged.
+
+That is the same move as the month that cannot be 13 and the period type
+normalised at construction: **the bug stops being expressible.** It is now
+happened four times in this port, which is enough to call it the single most
+productive technique here — more productive than any amount of review.
+
+---
+
 ## What went wrong, and how we found out
 
 The honest section. Eight defects in the port against seven in a
@@ -599,12 +649,12 @@ As of the end of layer 4 and part of layer 5:
 
 | | |
 |---|---|
-| upstream lines retired | 5,168 of 21,775 (24%) |
-| **pricing-path lines ported** | **815 of 8,871 (9%)** — curve, timeline, protection leg |
+| upstream lines retired | 5,768 of 21,775 (26%) |
+| **pricing-path lines ported** | **1,415 of 8,871 (16%)** — curve, timeline, both legs |
 | port size | 1,755 lines (≈2.5:1 compression) |
 | tests + generators | 5,407 lines (3:1 over the port) |
-| recorded reference cases | 16,702 |
-| tests | 230 with an oracle, 153 without |
+| recorded reference cases | 18,142 |
+| tests | 242 with an oracle, 161 without |
 | defects | 8 upstream, 8 port-side |
 
 **The 22% is the least meaningful number here.** Most of what is done is
@@ -643,6 +693,7 @@ original**, which is the result the vertical slice existed to find.
 | #14 | 3 Nov | integration timeline; UPSTREAM-7's price impact measured as none |
 | #15 | 3 Nov | UPSTREAM-8 recorded, decision deliberately deferred |
 | #16 | 3 Nov | **protection leg PV — the port prices a CDS, bit-identically**; UPSTREAM-8 resolved |
+| #17 | 4 Nov | premium leg — **both legs now price bit-identically**; schedule becomes one vector |
 
 Every PR green on Linux, macOS and Windows plus a sanitizer job, with a
 machine-checked floor on tests actually run.
