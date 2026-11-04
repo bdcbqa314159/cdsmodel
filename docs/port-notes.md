@@ -105,7 +105,7 @@ there is never a big-bang integration.
 | 5 | intervals / schedules | `convert` ✅ (interval parts), `dtlist` ✅, `schedule`, `datelist`, `cxdatelist`, `stub` | `DateInterval` and the date list operations done. The date lists are the first module to **correct** upstream rather than reproduce it — see Policy |
 | 6 | curves | `tcurve`, `zerocurve`, `cxzerocurve`, `zcall`, `zcswap`, `gtozc` | 3,330 lines; `TCurve` → `std::vector` |
 | 7 | cashflows | `cashflow`, `streamcf`, `fltrate`, `cfinanci` | |
-| 8 | CDS legs | `timeline` ✅, `contingentleg` ✅, `feeleg`, `defaulted` | **the port now computes a price.** The protection leg PV is bit-identical to upstream across 720 trades, after accumulation over a timeline — see Decision 9 in [journal.md](journal.md) |
+| 8 | CDS legs | `timeline` ✅, `contingentleg` ✅, `feeleg` ✅, `defaulted` | **both legs of a CDS price bit-identically.** Protection leg across 720 trades, premium leg across 576 configurations — see Decisions 9 and 10 in [journal.md](journal.md) |
 | 9 | solver | `rtbrent` | callback → template parameter / `std::function` |
 | 10 | top-level API | `cds`, `cdsone`, `cdsbootstrap` | the surface users actually call |
 | 11 | deleted outright | `cmemory`, `cerror`, `lprintf`, `lscanf`, `cfileio`, `strutil` | ~2,900 lines replaced by the standard library |
@@ -140,8 +140,8 @@ them reproducible rather than magic.
 A module needs **both**. Tier 2 alone is verified only on the machine that
 has the oracle; tier 1 alone can go stale against a behaviour nobody swept.
 
-Current coverage: 230 tests with an oracle present, 153 without, replaying
-16,702 recorded cases. 600 of those are recorded *intent* rather than
+Current coverage: 242 tests with an oracle present, 161 without, replaying
+18,142 recorded cases. 600 of those are recorded *intent* rather than
 upstream answers, for the date list module that corrects upstream. All of it also runs clean under
 AddressSanitizer and UndefinedBehaviorSanitizer, with UBSan findings **fatal**
 for port code (see PORT-5 below).
@@ -157,6 +157,7 @@ a comment at the site and listed below.
 | `bsearch` index type | `int`, allows `hi = mid - 1` to go negative | `std::ptrdiff_t` | `std::size_t` would underflow here and read out of bounds. Signedness is load-bearing. |
 | `bsearch` `skip` stride | byte stride plus a power-of-two shift optimisation | contiguous `std::span` | the 2009 multiply-to-shift trick is strictly worse than what the compiler now emits. A projection overload arrives when layer 1 reaches `interpc`. |
 | order-check selection | `bSearchCheckOrder_g` global flag | `bracket` vs `bracket_checked` | removes process-wide state that changed every caller's behaviour |
+| the fee leg schedule | three parallel arrays (`accStartDates`, `accEndDates`, `payDates`) sharing one `nbDates`, with nothing tying them together | one `std::vector<FeePayment>` | a caller could hand upstream three arrays of different lengths and it would read past the end of two of them. The port makes a mismatched schedule unrepresentable. |
 | the holiday cache | a process-wide linked list reached by name, with `JpmcdsHolidayListFromCache` returning a borrowed pointer into it | `Calendar` is a value the caller owns and copies | the headline fix of this layer, and it is not a lock — it is an owner. Nothing to invalidate, nothing to synchronise, and `JpmcdsHolidayEmptyCache` has no analogue because there is no cache to empty. |
 | unsorted holiday lists | rejected by `verifyHolidayList` | rejected | the port does **not** quietly sort. `JpmcdsHolidayListIsHoliday` `bsearch`es the list, so upstream must reject unsorted input, and accepting what upstream refuses would be a behaviour change. |
 | holidays falling on a weekend | stripped from the stored list by `verifyHolidayList`, so `is_holiday` reports false for a Saturday holiday the caller supplied | identical | observable through the stored list as well as the predicate |
@@ -212,7 +213,7 @@ dressed up as a fix.
 
 | UPSTREAM-7 | date list truncation ignored when fewer than two dates survive, in two implementations that fail in opposite directions (39% of a 600-case sweep) | **high** — silently wrong | not yet ported | the two upstream behaviours contradict each other, so "preserve upstream" is not available |
 
-| UPSTREAM-8 | `!price > THRESHOLD` precedence bug disables a validation guard, four sites on the pricing path | low — a guard that does not guard; no mispricing demonstrated | **resolved** — the port guards a non-finite result instead of a proxy threshold | `1e-100` stood in for "the logarithm will misbehave"; with the integral built that is directly testable. The honest guard and upstream's broken one fire on identical inputs across hazard 0.001 to 200. |
+| UPSTREAM-8 | `!price > THRESHOLD` precedence bug disables a validation guard, four sites on the pricing path | low — a guard that does not guard; no mispricing demonstrated | **resolved** — the port guards a non-finite result instead of a proxy threshold | `1e-100` stood in for "the logarithm will misbehave"; with the integrals built that is directly testable. The honest guard and upstream's broken one fire on identical inputs across hazard 0.001 to 200. Applied at all four sites: two in the protection leg, two in the premium leg. |
 
 ### Not yet reported to ISDA
 
