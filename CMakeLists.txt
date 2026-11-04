@@ -144,6 +144,7 @@ if(CDSMODEL_BUILD_TESTS)
                  tests/cdsone_test.cpp
                  tests/defaulted_test.cpp
                  tests/date_sup_test.cpp
+                 tests/interpolation_test.cpp
                  tests/adversarial_test.cpp)
   target_link_libraries(cdsmodel_tests PRIVATE cdsmodel GTest::gtest_main)
   target_include_directories(cdsmodel_tests PRIVATE tests)
@@ -173,7 +174,8 @@ if(CDSMODEL_BUILD_TESTS)
                    tests/bootstrap_differential_test.cpp
                    tests/cdsone_differential_test.cpp
                    tests/defaulted_differential_test.cpp
-                   tests/date_sup_differential_test.cpp)
+                   tests/date_sup_differential_test.cpp
+                   tests/interpolation_differential_test.cpp)
     target_link_libraries(cdsmodel_differential_tests
                           PRIVATE cdsmodel cds_reference GTest::gtest_main)
     target_include_directories(cdsmodel_differential_tests PRIVATE tests)
@@ -184,7 +186,7 @@ if(CDSMODEL_BUILD_TESTS)
     foreach(gen bsearch date day_count day_count_string date_interval calendar bad_day
                  business_days date_list zero_curve timeline contingent_leg
                  fee_leg schedule cds root_find bootstrap cdsone defaulted
-                 date_sup)
+                 date_sup interpolation)
       add_executable(gen_${gen}_golden tools/gen_${gen}_golden.cpp)
       target_link_libraries(gen_${gen}_golden PRIVATE cdsmodel cds_reference)
       target_include_directories(gen_${gen}_golden PRIVATE tests)

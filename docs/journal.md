@@ -1459,6 +1459,119 @@ needed. Multiplying an interval is interval arithmetic, not scheduling, and
 the moment a second module wanted it the misplacement showed. Moved to
 `date_interval.hpp`; 338 tests confirmed nothing shifted.
 
+## Decision 18 — The generator found what the targeted sweeps missed
+
+`interpc.c`'s interpolation layer: `lintrp1.inc` -- the second
+preprocessor-as-template in the distribution after `bsearch.inc` -- plus the
+three x-axis metric functions from `yearfrac.c`. Two defects, and both were
+found by something other than reading the code or writing the obvious test.
+
+### UPSTREAM-13, and a taste judgement that paid off eighteen slices later
+
+Upstream cannot say "search without checking order" per call, because that
+choice lives in a mutable global: `bSearchCheckOrder_g`, consulted by both
+binary-search entry points before validating that their domain is sorted.
+
+The discontinuous interpolator legitimately needs the unchecked search --
+repeated abscissae *are* the discontinuities -- so it clears the global and
+restores it afterwards. On two error paths it returns before the restore:
+
+```
+baseline:                      JpmcdsBSearchLong(unordered) -> FAILURE (validated)
+one failed call ...            -> FAILURE
+after that single failed call: JpmcdsBSearchLong(unordered) -> SUCCESS
+current global state:          FALSE (leaked)
+```
+
+One failed call disables sorted-input validation for every binary search in
+the process, for the rest of its life.
+
+What makes this one satisfying: **the port was already immune, and for the
+right reason.** `bsearch.hpp` was written in the very first slice of this
+project with `bracket` and `bracket_checked` as two functions, and its comment
+read *"process-wide state that silently changed the behaviour of every
+caller"*. That was a taste judgement about a design smell. Eighteen slices
+later it turns out to be literally true -- not through explicit toggling, but
+through a leak.
+
+The clearest statement of the problem is operational rather than rhetorical:
+**this module's differential suite has to restore the global in `TearDown`, or
+one test corrupts every test after it.** A test suite that must clean up after
+the code under test is telling you something.
+
+### UPSTREAM-14, and what a full cross-product buys
+
+```
+DaysDiff(-50, 100, 30/360) -> FAILURE  days = -123456789  <- NEVER WRITTEN
+metric(-50, 100)           -> 6101050560                  <- uninitialised read
+interpolate at -50         -> -667794.1351                (curve is 0.01-0.02)
+```
+
+`bondDaysDiff` discards the status of `JpmcdsDaysDiff` over an uninitialised
+local. The call fails for a TDate before the 1601 epoch without writing its
+out parameter, so the metric returns whatever was on the stack -- and the
+interpolation reports SUCCESS.
+
+Two things about this are worth more than the defect.
+
+**The value is not stable.** Two binaries built from the same sources gave
+`metric(-50, 100)` as 6101050560 and as 4, interpolating to -667794.1351 and
+-619018.2639. My first write-up quoted one figure as though it were the
+answer; it is one observation of a stack slot. Correcting that is more honest
+than pedantic: a reader who runs the reproducer and sees a different number
+should conclude the defect is worse than described, not that the description
+is wrong.
+
+**AddressSanitizer is blind to it.** An uninitialised read needs
+MemorySanitizer, which this project does not run. The sanitizer job is green.
+That is a real gap in the harness and it is now written down.
+
+**The differential suite did not find it; the golden generator did.** My
+differential sweeps paired each metric with realistic dates -- bond metrics
+got real TDates, the plain metric got a wide numeric range. The generator
+swept the full cross-product of abscissae against metrics, hit `-50` with
+30/360, and the replay failed by 438406. Targeted sweeps encode an assumption
+about which combinations matter. A cross-product does not.
+
+And I had explicitly dismissed this in the header comment I wrote an hour
+earlier: *"It cannot fail: the convention is a compile-time constant and both
+are calculable."* Wrong, and disproved by my own vectors.
+
+### A claim that was almost right
+
+`interpolation.hpp`'s first draft collapsed upstream's `mfunc == NULL` default
+into the actual-days metric, with what looked like a solid argument: the null
+branch computes `(desired - x_lo)/(x_hi - x_lo)`, the metric branch computes
+`metric(desired, x_lo)/metric(x_hi, x_lo)`, `actualDaysDiff(a,b)` is `b - a`,
+so numerator and denominator are both negated, negation is exact, quotient
+unchanged.
+
+True -- unless the denominator is zero, because `-0.0` is not `0.0`. A
+zero-width bracket, reachable when a repeated abscissa sits at the end of a
+discontinuous curve, gives `+inf` down one path and `-inf` down the other:
+
+```
+desired    mfunc=NULL     mfunc=ACT/365F agree?
+400        inf            -inf           *** NO ***
+```
+
+Neither is wrong -- the fraction is undefined there -- so this is a quirk, not
+a numbered defect. But they are not interchangeable, and both forms are used
+in the library, so `Metric::Direct` and `Metric::ActualDays` stay separate.
+The differential suite caught the collapse within minutes of my writing it.
+
+### Smaller things
+
+The generator needed a fix no previous one did: `%.17g` renders an infinity as
+`inf`, which is not a C++ literal. This is the first module whose results can
+be infinite, because a zero-width bracket divides by zero. It now emits
+`std::numeric_limits<double>::infinity()`.
+
+And the affected UPSTREAM-14 combinations are **omitted** from the recorded
+vectors rather than recorded with a flag. Recording the output of undefined
+behaviour would enshrine it -- the same rule that kept UPSTREAM-4's buffer
+overflow out of the vectors.
+
 ## The collaboration record
 
 Started at the schedule slice, which means the earlier rows were reconstructed
@@ -1519,6 +1632,11 @@ From here: one line per slice naming what had to be redone and why.
 - **cds** — one real defect introduced and fixed (PORT-9); one comment corrected
   that had argued the defect was not a defect; two wrong argument orders caught
   by the compiler.
+- **interpolation** — zero port defects; one header claim collapsed two
+  non-equivalent code paths and was corrected within minutes; one arithmetic
+  slip in a test assertion (hand-computed 0.0085 where the answer is -0.005,
+  now derived in code); one dismissal of UPSTREAM-14 as unreachable, disproved
+  by my own generated vectors an hour later.
 - **date_sup** — zero port defects; **three test failures where the test was
   wrong**, comparing a normalised interval against a hand-built upstream
   struct. Also deflated my own UPSTREAM-12 write-up once reachability was

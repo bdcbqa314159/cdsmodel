@@ -483,6 +483,18 @@
           <td><span class="chip immune">Fixed deliberately</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u14">UPSTREAM-14</a></td>
+          <td>Bond day-count metrics return <strong>uninitialised stack memory</strong> for a pre-1601 date, and report success</td>
+          <td><span class="chip mid">Medium · wrong answer</span></td>
+          <td><span class="chip immune">Cannot occur · port is correct</span></td>
+        </tr>
+        <tr>
+          <td class="id"><a href="#u13">UPSTREAM-13</a></td>
+          <td>One failed interpolation call leaks a global and disables sorted-input validation <strong>process-wide</strong></td>
+          <td><span class="chip mid">Medium · permanent effect</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u12">UPSTREAM-12</a></td>
           <td>A lunar-month interval computes its value and then falls through a missing <code>break</code> into the error branch</td>
           <td><span class="chip low">Low · hand-built intervals only</span></td>
@@ -1136,6 +1148,160 @@ Z      FAILURE    -999           genuinely unknown
       denominator by the same factor — <code>'Q'</code> with 5 periods becomes
       15 months, and 15/12 is exactly 5/4 — so the correctly-rounded quotient is
       unchanged, across 120 recorded cases.
+    </p>
+  </section>
+
+  <!-- ============ U13 ============ -->
+  <section class="record sev-mid" id="u13">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-13</span>
+      <h2>A leaked global that disables validation process-wide</h2>
+    </div>
+    <div class="chips">
+      <span class="chip mid">Medium · one failed call, permanent effect</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">lintrp1.inc, expanded as JpmcdsLinInterpLongPoint1Discontinuous</p>
+
+    <h3>Mechanism</h3>
+    <p>
+      Upstream cannot say "search without checking order" per call, because
+      that choice lives in a mutable global: <code>bSearchCheckOrder_g</code>
+      in <code>bsearch.c</code>, default TRUE, consulted by <em>both</em>
+      <code>JpmcdsBSearchDouble</code> and <code>JpmcdsBSearchLong</code>
+      before validating that their input array is sorted.
+    </p>
+    <p>
+      The discontinuous interpolator legitimately needs the unchecked search —
+      repeated abscissae <em>are</em> the discontinuities — so it clears the
+      global, checks order itself, searches, and restores it:
+    </p>
+<pre><code>checkOrder = JpmcdsBSearchCheckOrder(FALSE);
+if (checkOrder)
+{
+    for (idx = 0; idx &lt; N-1; idx++)
+        if (XARRAY(idx) &gt; XARRAY(idx+1))
+        {
+            JpmcdsErrMsg(...);
+            <span class="hit">return FAILURE;</span>                     /* leaks */
+        }
+}
+if (SEARCH_ROUTINE_NAME(xDesired, x, xskip, N, &amp;lo, &amp;hi) == FAILURE)
+    <span class="hit">goto done;</span>                                  /* leaks */
+JpmcdsBSearchCheckOrder(checkOrder);            /* only on success */</code></pre>
+    <p>Both error paths leave before the restore.</p>
+
+    <h3>Evidence</h3>
+<pre><code>  baseline:                      JpmcdsBSearchLong(unordered) -&gt; FAILURE (validated)
+  one failed call ...            -&gt; FAILURE
+  after that single failed call: JpmcdsBSearchLong(unordered) -&gt; <span class="hit">SUCCESS  *** VALIDATION IS OFF ***</span>
+  current global state:          <span class="hit">FALSE (leaked)</span></code></pre>
+
+    <h3>Scope</h3>
+    <p>
+      Afterwards, every binary search in the process stops checking that its
+      domain is sorted — including inside the zero curve and the whole CDS
+      pricing path. A binary search over an unsorted array does not fail; it
+      returns a bracket that is simply wrong, and the interpolation built on it
+      is silently wrong too.
+    </p>
+    <p>
+      Medium rather than high, for reachability rather than consequence: the
+      function has no caller inside the library and no declaration in any
+      public header — but it is an exported symbol and it is in the XLL's
+      surface, so a spreadsheet can reach it.
+    </p>
+    <p>
+      The clearest statement of the problem is operational: this module's
+      differential suite has to restore the global in <code>TearDown</code>, or
+      one test corrupts every test after it.
+    </p>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Cannot occur.</strong> <code>bracket</code> and
+      <code>bracket_checked</code> are two functions and there is no global at
+      all. That was a taste judgement made in the first slice of this port,
+      whose comment read <em>"process-wide state that silently changed the
+      behaviour of every caller"</em>. UPSTREAM-13 is that sentence turning out
+      to be literally true — not through explicit toggling, but through a leak.
+    </p>
+  </section>
+
+  <!-- ============ U14 ============ -->
+  <section class="record sev-mid" id="u14">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-14</span>
+      <h2>Bond metrics return stack garbage before the epoch</h2>
+    </div>
+    <div class="chips">
+      <span class="chip mid">Medium · uninitialised read, wrong answer, reports success</span>
+      <span class="chip immune">Cannot occur · port is correct</span>
+    </div>
+    <p class="locus">yearfrac.c — bondDaysDiff / bondEDaysDiff, behind JpmcdsDayCountToMetricFunc</p>
+
+    <h3>Mechanism</h3>
+<pre><code>static double bondDaysDiff(double startDate, double endDate)
+{
+    long days;                                        <span class="hit">/* uninitialised */</span>
+    <span class="hit">(void)</span>JpmcdsDaysDiff((TDate)startDate, (TDate)endDate,
+                         JPMCDS_B30_360, &amp;days);
+    return ((double)days);                            <span class="hit">/* garbage if it failed */</span>
+}</code></pre>
+    <p>
+      The status is discarded. <code>JpmcdsDaysDiff</code> fails for a TDate
+      before the 1601 epoch and <strong>does not write its out
+      parameter</strong>, so the metric returns whatever was on the stack.
+    </p>
+
+    <h3>Evidence</h3>
+<pre><code>DaysDiff(-50  , 100, 30/360) -&gt; FAILURE  days = -123456789 <span class="hit">&lt;- OUT PARAM NEVER WRITTEN</span>
+DaysDiff(0    , 100, 30/360) -&gt; SUCCESS  days = 100
+
+metric(-50, 100) -&gt; <span class="hit">6101050560</span>          &lt;- uninitialised stack read
+
+interpolate at -50 with the 30/360 metric -&gt; <span class="hit">-667794.1351</span></code></pre>
+    <p>
+      The curve interpolated is <code>f = {0.01, 0.02}</code>, and
+      <code>JpmcdsLinInterpLongPoint1</code> reports SUCCESS.
+    </p>
+    <p>
+      <strong>The value is not stable, and that is the point.</strong> A second
+      binary built from the same sources gave
+      <code>metric(-50, 100) = 4</code> and an interpolated
+      <strong>−619018.2639</strong>. Whatever occupies that stack slot is
+      what the caller gets, so any single figure above is one observation
+      rather than the answer.
+    </p>
+
+    <h3>Two notes on how it was found</h3>
+    <p>
+      It is an <strong>uninitialised read</strong>, which AddressSanitizer
+      cannot detect — MemorySanitizer would, and this project does not run one.
+      The sanitizer job is green on it.
+    </p>
+    <p>
+      And it was found by the <strong>golden generator's full cross-product</strong>
+      of abscissae against metrics, not by the differential suite, whose sweeps
+      used realistic dates for each metric. A generator that sweeps everything
+      found what targeted sweeps missed.
+    </p>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Cannot occur</strong>, and the port additionally diverges by being
+      <em>correct</em>. <code>metric_distance</code> checks the status it is
+      given, so a failure becomes <code>nullopt</code>. In practice the branch
+      rarely fires: <code>std::chrono</code> has no 1601 epoch, so a pre-epoch
+      abscissa is simply a date in 1600 and the 30/360 difference is well
+      defined. The port returns a sensible extrapolation where upstream returns
+      garbage.
+    </p>
+    <p>
+      The recorded vectors deliberately <strong>omit</strong> the affected
+      combinations. Recording the output of undefined behaviour would enshrine
+      it — the same rule that kept UPSTREAM-4's buffer overflow out of the
+      vectors.
     </p>
   </section>
 

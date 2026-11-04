@@ -21,6 +21,7 @@
 #include <cdsmodel/day_count.hpp>
 #include <cdsmodel/day_count_string.hpp>
 #include <cdsmodel/defaulted.hpp>
+#include <cdsmodel/interpolation.hpp>
 #include <cdsmodel/stub.hpp>
 #include <cdsmodel/version.hpp>
 
@@ -32,6 +33,7 @@
 #include <vector>
 
 extern "C" {
+#include "bsearch.h"
 #include "cdate.h"
 #include "cerror.h"
 #include "cgeneral.h"
@@ -45,11 +47,17 @@ extern "C" {
 #include "defaulted.h"
 #include "dtlist.h"
 #include "ldate.h"
+#include "lintrp.h"
 #include "macros.h"
 #include "mdydate.h"
 #include "stub.h"
 #include "tcurve.h"
 #include "yearfrac.h"
+
+// Exported from the library but declared in no public header.
+int JpmcdsLinInterpLongPoint1Discontinuous(long *x, int xskip, int N, double *f, int fskip,
+                                           double xDesired, TMetricDoubleFunc mfunc,
+                                           TBoolean rightLimit, double *fInterp);
 }
 
 namespace {
@@ -591,6 +599,113 @@ void u12() {
               cdsmodel::interval_to_years(*cdsmodel::make_date_interval(1, 'U')));
 }
 
+void u13() {
+  heading("UPSTREAM-13", "a leaked global that disables validation process-wide");
+  std::printf("bSearchCheckOrder_g is a static in bsearch.c, default TRUE, consulted\n"
+              "by BOTH JpmcdsBSearchLong and JpmcdsBSearchDouble before validating\n"
+              "that their input array is sorted.\n\n"
+              "The discontinuous interpolator needs the UNCHECKED search, so it\n"
+              "clears that global -- and returns on two error paths without putting\n"
+              "it back:\n\n"
+              "    checkOrder = JpmcdsBSearchCheckOrder(FALSE);\n"
+              "    if (checkOrder) { ... return FAILURE; }      /* leaks */\n"
+              "    if (SEARCH_ROUTINE_NAME(...) == FAILURE) goto done;  /* leaks */\n"
+              "    JpmcdsBSearchCheckOrder(checkOrder);         /* only on success */\n\n");
+
+  JpmcdsBSearchCheckOrder(TRUE);
+  long unordered[4] = {10, 50, 20, 90};
+  const auto validates = [&unordered]() {
+    int lo = -1;
+    int hi = -1;
+    return JpmcdsBSearchLong(30.0, unordered, sizeof(long), 4, &lo, &hi) != SUCCESS;
+  };
+  std::printf("  %-34s %s\n",
+              "baseline:", validates() ? "unordered array REJECTED (validated)" : "accepted?!");
+
+  long bad_x[3] = {100, 50, 200};
+  double f[3] = {1.0, 2.0, 3.0};
+  double out = 0.0;
+  const int rc = JpmcdsLinInterpLongPoint1Discontinuous(bad_x, sizeof(long), 3, f, sizeof(double),
+                                                        120.0, nullptr, TRUE, &out);
+  std::printf("  %-34s %s\n", "one failed call:", rc == SUCCESS ? "SUCCESS" : "FAILURE");
+  std::printf("  %-34s %s\n", "after it:",
+              validates() ? "still validated" : "*** ACCEPTED -- VALIDATION IS OFF ***");
+  std::printf("  %-34s %s\n",
+              "global via the getter:", JpmcdsBSearchCheckOrder(TRUE) ? "TRUE" : "FALSE (leaked)");
+
+  std::printf("\nAfterwards every binary search in the process stops checking that\n"
+              "its domain is sorted -- including inside the zero curve and the CDS\n"
+              "pricing path. A binary search over an unsorted array does not fail;\n"
+              "it returns a bracket that is simply wrong.\n\n"
+              "Medium rather than high for reachability, not consequence: no caller\n"
+              "inside the library and no public declaration, but it IS an exported\n"
+              "symbol and it IS in the XLL surface.\n\n"
+              "The port cannot express it. bracket() and bracket_checked() are two\n"
+              "functions and there is no global -- a choice made in slice 1 whose\n"
+              "comment read \"process-wide state that silently changed the behaviour\n"
+              "of every caller\". This is that sentence turning out literally true.\n");
+}
+
+void u14() {
+  heading("UPSTREAM-14", "bond metrics return stack garbage before the epoch");
+  std::printf("yearfrac.c:\n\n"
+              "    static double bondDaysDiff(double startDate, double endDate)\n"
+              "    {\n"
+              "        long days;                            /* uninitialised */\n"
+              "        (void)JpmcdsDaysDiff((TDate)startDate, (TDate)endDate,\n"
+              "                             JPMCDS_B30_360, &days);\n"
+              "        return ((double)days);                /* garbage if it failed */\n"
+              "    }\n\n");
+
+  std::printf("  %-36s %-10s %s\n", "JpmcdsDaysDiff(start, 100, 30/360)", "status", "out param");
+  const long starts[] = {-50, -1, 0, 1, 100};
+  for (long start : starts) {
+    long days = -123456789; // a sentinel no real answer could be
+    const int rc =
+        JpmcdsDaysDiff(static_cast<TDate>(start), static_cast<TDate>(100), JPMCDS_B30_360, &days);
+    char label[48];
+    std::snprintf(label, sizeof label, "  start = %ld", start);
+    std::printf("  %-36s %-10s %ld%s\n", label, rc == SUCCESS ? "SUCCESS" : "FAILURE", days,
+                (rc != SUCCESS && days == -123456789) ? "  <- NEVER WRITTEN" : "");
+  }
+
+  TMetricDoubleFunc metric = JpmcdsDayCountToMetricFunc(JPMCDS_B30_360);
+  std::printf("\n  metric(-50, 100) -> %.0f   <- uninitialised stack read\n", metric(-50.0, 100.0));
+  std::printf("  metric(100, 200) -> %.0f    <- the defined case, for contrast\n",
+              metric(100.0, 200.0));
+
+  long x[2] = {100, 200};
+  double f[2] = {0.01, 0.02};
+  double garbage = 0.0;
+  const int rc =
+      JpmcdsLinInterpLongPoint1(x, sizeof(long), 2, f, sizeof(double), -50.0, metric, &garbage);
+  std::printf("\n  interpolating a {0.01, 0.02} curve at -50 with 30/360:\n");
+  std::printf("    upstream -> %.10g   (reported %s)\n", garbage,
+              rc == SUCCESS ? "SUCCESS" : "FAILURE");
+  const std::optional<double> ported =
+      cdsmodel::linear_interpolate(std::vector<long>{100, 200}, std::vector<double>{0.01, 0.02},
+                                   -50.0, cdsmodel::Metric::Bond30_360);
+  std::printf("    port     -> %.10g   (a defined extrapolation below the first node)\n",
+              ported.value_or(0.0));
+
+  std::printf("\nThe figures above are NOT stable: two binaries built from the same\n"
+              "sources gave metric(-50, 100) as 6101050560 and as 4, interpolating\n"
+              "to -667794.1351 and -619018.2639. Whatever is in that stack slot is\n"
+              "what the caller gets, so run this and expect your own number.\n");
+  std::printf("\nIt is an UNINITIALISED READ, so AddressSanitizer cannot see it --\n"
+              "MemorySanitizer would, and this project does not run one. The\n"
+              "sanitizer job is green on it.\n\n"
+              "It was found by the golden generator's full cross-product of\n"
+              "abscissae against metrics, not by the differential sweeps, which\n"
+              "used realistic dates for each metric.\n\n"
+              "The port checks the status it is given. std::chrono has no 1601\n"
+              "epoch, so a pre-epoch abscissa is just a date in 1600 and the\n"
+              "30/360 difference is well defined -- the port is correct where\n"
+              "upstream is garbage. The affected combinations are omitted from the\n"
+              "recorded vectors: recording the output of undefined behaviour would\n"
+              "enshrine it.\n");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -648,6 +763,12 @@ int main(int argc, char **argv) {
   }
   if (want("u12")) {
     u12();
+  }
+  if (want("u13")) {
+    u13();
+  }
+  if (want("u14")) {
+    u14();
   }
   return 0;
 }
