@@ -78,7 +78,36 @@ TEST(RootFind, MatchesRecordedRoots) {
     const std::optional<double> got = root_find_brent(obj, opt);
     const std::string where = std::string(name_of(obj.which)) + " case " + std::to_string(checked);
 
-    ASSERT_EQ(got.has_value(), c.solved) << where;
+    if (has_single_root(obj.which)) {
+      // Whether the search CONVERGES is portable for a well-posed objective,
+      // and is not for a pathological one. CI found exactly one case where it
+      // differs: `TwoRoots` has a root on the lower bound and another near
+      // 3.75, and with one bracket/guess combination out of 10,296 the search
+      // exhausts its 100 iterations on macOS and converges on Linux. Same
+      // code, same inputs, different floating-point contraction.
+      //
+      // Neither verdict is wrong -- "did not converge in 100 steps" is a
+      // statement about the path, and the path is not portable. So the verdict
+      // is asserted only where the objective makes it meaningful, and the
+      // pathological case is covered instead by the contract check below and
+      // by MultipleRootsArePathDependent.
+      ASSERT_EQ(got.has_value(), c.solved) << where;
+    }
+    if (!got) {
+      ++checked;
+      continue;
+    }
+    if (!c.solved) {
+      // Converged here, not where this was recorded. Nothing to compare the
+      // root against, but it still has to be a root.
+      Objective probe{obj.which};
+      const std::optional<double> value = probe(*got);
+      ASSERT_TRUE(value.has_value()) << where;
+      EXPECT_LE(std::fabs(*value), opt.f_tolerance)
+          << where << " -- converged where the recording did not, to a non-root";
+      ++checked;
+      continue;
+    }
     // The recorded count is still checked, but as a BAND rather than an
     // equality, so it catches an algorithmic divergence without failing on
     // the platform variation measured above. Worst observed ratio across
@@ -88,14 +117,12 @@ TEST(RootFind, MatchesRecordedRoots) {
     EXPECT_GT(obj.calls, 0) << where << " -- the objective was never evaluated";
     EXPECT_LE(obj.calls, 4 * c.calls + 8) << where << " -- far more evaluations than upstream";
     EXPECT_LE(c.calls, 4 * obj.calls + 8) << where << " -- far fewer evaluations than upstream";
-    if (c.solved) {
-      // Relative 1e-12 for a well-posed objective; widened to the objective's
-      // own resolution where it has plateaus, because within a plateau the
-      // returned point is a property of the path and not of the function.
-      const double tolerance =
-          std::max(1.0e-12 * std::max(1.0, std::fabs(c.root)), root_resolution(obj.which));
-      EXPECT_NEAR(*got, c.root, tolerance) << where;
-    }
+    // Relative 1e-12 for a well-posed objective; widened to the objective's
+    // own resolution where it has plateaus, because within a plateau the
+    // returned point is a property of the path and not of the function.
+    const double tolerance =
+        std::max(1.0e-12 * std::max(1.0, std::fabs(c.root)), root_resolution(obj.which));
+    EXPECT_NEAR(*got, c.root, tolerance) << where;
     ++checked;
   }
   EXPECT_EQ(checked, static_cast<int>(cdsmodel::golden::kRootFindCases.size()));

@@ -826,6 +826,31 @@ say what is true: **the root is determined only to the resolution of the
 objective.** Objectives now declare that resolution, and the replay test
 widens to it where it is non-zero.
 
+### Three properties, three different answers
+
+The correction took two CI rounds, because I fixed the root tolerance and the
+count assertion and still had one assertion left. The second round found the
+property I had not separated: **whether the search converges at all.**
+
+One case out of 10,296. `TwoRoots` has a root on the lower bound and another
+near 3.75; with one bracket-and-guess combination the search exhausts its 100
+iterations on macOS and converges on Linux. Same code, same inputs, different
+contraction. Neither verdict is wrong -- "did not converge in 100 steps" is a
+statement about the path, and the path is not portable.
+
+So an iterative result has three properties and they do not travel together:
+
+| property | portable across platforms? |
+|---|---|
+| the root, for a well-posed objective | **yes** -- relative 1e-12, verified on three platforms |
+| the root, for an objective with plateaus | only to the plateau width (6.3e-9 observed, 3.5e-7 bound) |
+| the number of evaluations | **no** -- 146 of 10,296 cases differ, up to 1.93x |
+| whether it converged at all | **yes** for a well-posed objective; **no** for a pathological one |
+
+Working that out took publishing a wrong conclusion and then being corrected
+twice by the same CI job. Each round removed one assertion that was true on
+one platform and presented as though it were true everywhere.
+
 ### What the standard actually says now
 
 The three tiers survive **for the root**. Every smooth objective agreed to
@@ -1093,7 +1118,9 @@ From here: one line per slice naming what had to be redone and why.
   result that would have changed a project-wide standard; one name collision
   with a private member of `testing::Test`; **one conclusion published to a PR
   and then withdrawn when CI contradicted it**, taking the journal entry,
-  the test name and two assertions with it.
+  the test name and two assertions with it; **a second CI round** then found a
+  third platform-dependent property (the convergence verdict) that the first
+  correction had missed.
 
 ## Metrics, with the caveat that matters
 
