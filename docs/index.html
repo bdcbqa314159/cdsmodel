@@ -483,6 +483,18 @@
           <td><span class="chip immune">Fixed deliberately</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u10">UPSTREAM-10</a></td>
+          <td>Unbounded <code>vsprintf</code> into a 4096-byte stack buffer — the single function every error message passes through</td>
+          <td><span class="chip mid">Medium · memory safety</span></td>
+          <td><span class="chip immune">Cannot occur · no error log exists</span></td>
+        </tr>
+        <tr>
+          <td class="id"><a href="#u9">UPSTREAM-9</a></td>
+          <td>An error message with two <code>%s</code> conversions formatted with one argument</td>
+          <td><span class="chip mid">Medium · undefined behaviour</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u8">UPSTREAM-8</a></td>
           <td><code>!price &gt; THRESHOLD</code> precedence bug disables a validation guard, in four places</td>
           <td><span class="chip low">Low · guard only</span></td>
@@ -767,6 +779,176 @@ WRITE of size 1 at 0x00016b2e1e60 thread T0
     <div class="tests">
       <span>Reproduce:</span> ./build/debug/defect_evidence u8
     </div>
+  </section>
+
+  <!-- ============ U9 ============ -->
+  <section class="record sev-mid" id="u9">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-9</span>
+      <h2>An error message formatted with one argument too few</h2>
+    </div>
+    <div class="chips">
+      <span class="chip mid">Medium · undefined behaviour on a reject path</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">stub.c:173, inside JpmcdsStringToStubMethod</p>
+
+    <h3>Mechanism</h3>
+    <p>One message is declared with <strong>two</strong> <code>%s</code> conversions:</p>
+<pre><code>static char invalidFormatMsg[]  = "<span class="hit">%s</span>: Invalid stub method format <span class="hit">%s</span>. "
+    "Format is LOCATION/TYPE/[LENGTH].\n" ...</code></pre>
+    <p>The bad-LOCATION branch passes both arguments. The bad-LENGTH branch, twelve lines below it, passes one:</p>
+<pre><code>JpmcdsErrMsg (invalidFormatMsg, routine, name);   /* correct   */
+JpmcdsErrMsg(invalidFormatMsg, routine);          <span class="hit">/* one short */</span></code></pre>
+    <p>
+      So <code>vsprintf</code> reaches for a second argument that was never
+      pushed, takes whatever occupies that varargs slot, and dereferences it
+      as a string. Any input whose LENGTH field is present but does not begin
+      with <code>s</code>, <code>S</code>, <code>l</code> or <code>L</code>
+      reaches it — including <code>"f/"</code>, where the field is present but
+      empty.
+    </p>
+
+    <h3>Evidence</h3>
+<pre><code>AddressSanitizer: stack-buffer-underflow, READ of size 5
+  #0 strlen                      <span class="hit">&lt;- consuming the second %s</span>
+  #3 __vsprintf_chk
+  #5 JpmcdsErrMsgV
+  #7 JpmcdsStringToStubMethod+0x120</code></pre>
+
+    <h3>On manifestation, stated carefully</h3>
+    <p>
+      The read is undefined whenever the branch is taken, but whether it
+      <em>faults</em> depends on what the caller left in that varargs slot.
+      Measured on arm64 macOS it faults in a minimal standalone frame, and
+      does <strong>not</strong> fault inside the differential test binary or
+      inside the evidence tool.
+    </p>
+    <p>
+      A dedicated reproducer target was written and then deleted, because it
+      stopped faulting once it was a CMake target rather than a scratch file —
+      the frame layout changed and the slot stopped holding a poisoned
+      address. So the evidence here is the source, not a crash. Behaviour that
+      appears in one caller and not another is what undefined behaviour looks
+      like; that is not grounds for calling it benign, and not grounds for
+      claiming a reliable crash either.
+    </p>
+
+    <h3>A documentation divergence found alongside it</h3>
+    <p>
+      The same message documents the format as
+      <code>LOCATION/TYPE/[LENGTH]</code> — three fields. The parser splits on
+      a <em>single</em> <code>/</code> and reads field two as LENGTH. There is
+      no TYPE field, and a third field is silently ignored:
+      <code>"f/n/l"</code> is read as LENGTH <code>'n'</code> and rejected
+      without ever reaching the <code>'l'</code>. The code is the
+      specification; the message describes an interface that was never built.
+    </p>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Cannot occur.</strong> <code>parse_stub_method</code> returns
+      <code>nullopt</code> and formats nothing. It also drops upstream's
+      <code>toupper(*locStr)</code> call — whose domain excludes negative
+      values, i.e. any byte above <code>0x7F</code> where <code>char</code> is
+      signed — in favour of comparing both cases directly.
+    </p>
+    <p>
+      Two upstream behaviours are <em>kept</em> on purpose: single-character
+      field matching, so <code>"fromage/sausage"</code> still parses as
+      front/short, and the <code>"f"</code>-succeeds / <code>"f/"</code>-fails
+      asymmetry, which comes from upstream distinguishing a missing field from
+      an empty one. Both are observable at a public API.
+    </p>
+  </section>
+
+  <!-- ============ U10 ============ -->
+  <section class="record sev-mid" id="u10">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-10</span>
+      <h2>Unbounded <code>vsprintf</code> into a 4096-byte stack buffer</h2>
+    </div>
+    <div class="chips">
+      <span class="chip mid">Medium · caller-controlled stack overflow</span>
+      <span class="chip immune">Cannot occur · no error log exists</span>
+    </div>
+    <p class="locus">cerror.c:533 — the one function every formatted error message passes through</p>
+
+    <h3>Mechanism</h3>
+<pre><code>static int JpmcdsWriteToLog(TBoolean formatted, char *format, va_list parminfo)
+{
+    char buffer[JPMCDS_ERR_MSG_BUFFER];   /* 4096 */
+    ...
+    if (formatted)
+    {
+        <span class="hit">vsprintf(buffer, format, parminfo);</span>
+    }</code></pre>
+    <p>
+      <code>vsprintf</code>, not <code>vsnprintf</code>. Of the 452
+      <code>JpmcdsErrMsg</code> call sites, <strong>67</strong> interpolate a
+      caller-supplied string after the routine name — day count strings, date
+      interval strings, stub strings, calendar and file names. A caller
+      passing roughly 4KB or more of string writes past the end of this buffer
+      with content it chose.
+    </p>
+
+    <h3>Evidence</h3>
+    <p>
+      Measured threshold, two independent public entry points, messages
+      enabled. The prefix is about 200 characters, so the cliff lands where
+      prefix plus argument reaches 4096:
+    </p>
+<pre><code>length   JpmcdsStringToStubMethod      JpmcdsStringToDayCountConv
+1000     returns FAILURE               returns FAILURE
+3800     returns FAILURE               returns FAILURE
+3900     <span class="hit">ABORT (fortify check fires)</span>   <span class="hit">ABORT (fortify check fires)</span>
+4200     ABORT                         ABORT
+9000     ABORT                         ABORT</code></pre>
+    <p>
+      Survives at 3800, dies at 3900, identically from both entry points. On a
+      fortified libc the overflow is detected and the process aborts; on an
+      unfortified build it is a plain stack smash with caller-controlled bytes.
+    </p>
+
+    <h3>Why Medium and not High</h3>
+    <p>
+      The formatting is only reached once a host has called
+      <code>JpmcdsErrMsgOn</code>. Messages are off by default and nothing in
+      the shipped distribution turns them on — with messages off, a
+      50,000-character argument is harmless.
+    </p>
+    <p>
+      So it is latent in the library and live in any host that enabled
+      diagnostics — which is exactly the configuration someone debugging a
+      pricing discrepancy would be running, and the configuration an Excel
+      add-in surfacing error text would want.
+    </p>
+
+    <h3>How it was found, because the route matters</h3>
+    <p>
+      This is the mechanism that makes UPSTREAM-9 more than a cosmetic slip:
+      the stray pointer U9 produces is dereferenced by this same
+      <code>vsprintf</code>. U9 supplies a bad pointer; U10 is the unbounded
+      write it feeds.
+    </p>
+    <p>
+      Finding them in that order was luck. U9 was visible by reading
+      <code>stub.c</code> while porting the stub parser. U10 only appeared
+      because U9's reproducer behaved <em>inconsistently</em>, and the question
+      "why does this sometimes fault" led into <code>cerror.c</code>. An
+      inconsistent reproducer turned out to be a more useful signal than a
+      reliable one would have been.
+    </p>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Cannot occur</strong> — and not because it was fixed. There is
+      no global error log to format into: a failure is an empty
+      <code>std::optional</code>, and a caller-supplied string is never copied
+      anywhere. The defect is absent structurally rather than patched, which
+      is the fifth time in this port that a defect died from the shape of the
+      code rather than from a correction.
+    </p>
   </section>
 
   <!-- ============ U7 ============ -->

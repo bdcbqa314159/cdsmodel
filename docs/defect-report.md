@@ -652,3 +652,167 @@ Current coverage: 102 tests with a local oracle present, 61 without, replaying
   top-level pricing API have not been examined yet.
 - No attempt was made to assess exploitability of UPSTREAM-4 beyond
   confirming the out-of-bounds write.
+
+## UPSTREAM-9 — An error message formatted with one argument too few
+
+**Location:** `lib/src/stub.c:173`, inside `JpmcdsStringToStubMethod`.
+**Severity:** Medium. Undefined behaviour on a reject path, reachable from any
+caller that passes a stub string with a malformed LENGTH field.
+
+### Mechanism
+
+One message is declared with **two** `%s` conversions:
+
+```c
+static char invalidFormatMsg[]  = "%s: Invalid stub method format %s. "
+    "Format is LOCATION/TYPE/[LENGTH].\n" ...
+```
+
+The bad-LOCATION branch passes both arguments:
+
+```c
+JpmcdsErrMsg (invalidFormatMsg, routine, name);
+```
+
+The bad-LENGTH branch, twelve lines below it, passes one:
+
+```c
+JpmcdsErrMsg(invalidFormatMsg, routine);
+```
+
+So `vsprintf` reaches for a second argument that was never pushed, takes
+whatever occupies that varargs slot, and dereferences it as a string.
+
+Any input whose LENGTH field is present but does not begin with `s`, `S`, `l`
+or `L` reaches it — including `"f/"`, where the field is present but empty.
+
+### Evidence
+
+```
+AddressSanitizer: stack-buffer-underflow, READ of size 5
+  #0 strlen                      <- consuming the second %s
+  #3 __vsprintf_chk
+  #5 JpmcdsErrMsgV
+  #7 JpmcdsStringToStubMethod+0x120
+```
+
+Reproduce with `./build/debug/defect_evidence u9 --unsafe`.
+
+### On manifestation, stated carefully
+
+The read is undefined whenever the branch is taken, but whether it **faults**
+depends on what the caller left in that varargs slot. Measured on arm64 macOS,
+it faults in a minimal standalone frame and does *not* fault inside
+`cdsmodel_differential_tests` or inside `defect_evidence`.
+
+A dedicated reproducer target was written and then deleted, because it stopped
+faulting once it was a CMake target rather than a scratch file — the frame
+layout changed and the slot stopped holding a poisoned address.
+
+So the evidence here is the source, not a crash. Behaviour that appears in one
+caller and not another is what undefined behaviour looks like; that is not
+grounds for calling it benign, and not grounds for claiming a reliable crash
+either. See UPSTREAM-10 for the mechanism that makes it dangerous.
+
+### A documentation divergence found alongside it
+
+The same message documents the format as `LOCATION/TYPE/[LENGTH]` — three
+fields. The parser calls `JpmcdsStringParser(buf, "/", &lengthStr)`, which
+splits on a *single* `/` and reads field two as LENGTH. There is no TYPE field,
+and a third field is silently ignored: `"f/n/l"` is read as LENGTH `'n'` and
+rejected without ever reaching the `'l'`.
+
+The code is the specification; the message describes an interface that was
+never implemented.
+
+### In the port
+
+Not reproduced. `parse_stub_method` returns `std::nullopt` and formats
+nothing, so the defect cannot occur. The port also drops upstream's
+`toupper(*locStr)` call — whose domain excludes negative values, i.e. any byte
+above `0x7F` where `char` is signed — in favour of comparing both cases
+directly.
+
+The two preserved behaviours are kept deliberately: single-character field
+matching (`"fromage/sausage"` parses as front/short), and the `"f"` succeeds /
+`"f/"` fails asymmetry, which comes from upstream distinguishing a missing
+field (null pointer) from an empty one (`""`).
+
+## UPSTREAM-10 — Unbounded `vsprintf` into a 4096-byte stack buffer
+
+**Location:** `lib/src/cerror.c:533`, `JpmcdsWriteToLog`. Every formatted
+error message in the library passes through this one function.
+**Severity:** Medium. Deterministic, caller-controlled stack overflow —
+limited only by requiring the host to have enabled error messages.
+
+### Mechanism
+
+```c
+static int JpmcdsWriteToLog(TBoolean formatted, char *format, va_list parminfo)
+{
+    char buffer[JPMCDS_ERR_MSG_BUFFER];   /* 4096 */
+    ...
+    if (formatted)
+    {
+        vsprintf(buffer, format, parminfo);
+    }
+```
+
+`vsprintf`, not `vsnprintf`. Of the 452 `JpmcdsErrMsg` call sites, **67**
+interpolate a caller-supplied string after the routine name — day count
+strings, date interval strings, stub strings, calendar and file names. A
+caller passing roughly 4KB or more of string therefore writes past the end of
+this buffer with content it chose.
+
+### Evidence
+
+Measured threshold, two independent public entry points, messages enabled. The
+message prefix is about 200 characters, so the cliff lands where prefix plus
+argument reaches 4096:
+
+```
+length   JpmcdsStringToStubMethod      JpmcdsStringToDayCountConv
+1000     returns FAILURE               returns FAILURE
+3800     returns FAILURE               returns FAILURE
+3900     ABORT (fortify check fires)   ABORT (fortify check fires)
+4200     ABORT                         ABORT
+9000     ABORT                         ABORT
+```
+
+Survives at 3800, dies at 3900, identically from both entry points. On a
+fortified libc the overflow is detected and the process aborts; on an
+unfortified build it is a plain stack smash with caller-controlled bytes.
+
+Reproduce with `./build/debug/defect_evidence u10 --unsafe` (exits 133).
+
+### Why Medium and not High
+
+The formatting is only reached once a host has called `JpmcdsErrMsgOn`.
+Messages are off by default, and nothing in the shipped distribution turns
+them on — with messages off, `JpmcdsErrMsgV` returns before reaching
+`JpmcdsWriteToLog` and a 50,000-character argument is harmless.
+
+So it is latent in the library and live in any host that enabled diagnostics —
+which is exactly the configuration someone debugging a pricing discrepancy
+would be running, and the configuration an Excel add-in surfacing error text
+would want.
+
+### Relationship to UPSTREAM-9
+
+This is the mechanism that makes UPSTREAM-9 more than a cosmetic slip: the
+stray pointer U9 produces is dereferenced by this same `vsprintf`. U9 supplies
+a bad pointer; U10 is the unbounded write it feeds.
+
+Finding them in that order was luck. U9 was visible by reading `stub.c` while
+porting the stub parser; U10 only appeared because U9's reproducer behaved
+inconsistently and the question "why does this sometimes fault" led into
+`cerror.c`. An inconsistent reproducer was the more useful signal than a
+reliable one would have been.
+
+### In the port
+
+No equivalent exists, and not because it was fixed. There is no global error
+log to format into: a failure is an empty `std::optional`, and a
+caller-supplied string is never copied anywhere. The defect is absent
+structurally rather than patched — the fifth time in this port that a defect
+died from the shape of the code rather than from a correction.

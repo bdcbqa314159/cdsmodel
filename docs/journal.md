@@ -513,6 +513,138 @@ productive technique here — more productive than any amount of review.
 
 ---
 
+## Decision 11 — An unreliable reproducer is a lead, not a failure
+
+The schedule generator was supposed to be a dull slice: turn a start date, an
+end date and a period into the list of coupon dates. It is the last piece
+between the two priced legs and an actual CDS price, and the algorithm has no
+numerics in it at all — just dates.
+
+Reading `stub.c` to port the stub-position parser turned up **UPSTREAM-9**.
+One error message carries two `%s` conversions. The branch for a bad LOCATION
+field passes both arguments. The branch for a bad LENGTH field, twelve lines
+below it, passes one. So `vsprintf` reaches for an argument nobody pushed,
+takes whatever is in that varargs slot, and dereferences it as a string.
+
+A ten-line reproducer caught it immediately:
+
+```
+AddressSanitizer: stack-buffer-underflow, READ of size 5
+  #0 strlen                      <- consuming the second %s
+  #5 JpmcdsErrMsgV
+  #7 JpmcdsStringToStubMethod+0x120
+```
+
+Then it stopped reproducing.
+
+The same call inside the GoogleTest binary did not fault. Added to the
+evidence tool — did not fault. Promoted to its own CMake target, deliberately
+minimal, C rather than C++, nothing before the call under test — **did not
+fault.** The scratch file faulted; the committed target did not.
+
+There were two ways to handle that. Write up the crash seen once and move on,
+which is how a finding becomes folklore. Or treat the inconsistency as the
+actual finding and ask *why* a read of an arbitrary pointer sometimes lands on
+mapped memory and sometimes does not.
+
+The second question leads straight into `cerror.c`, and there is
+**UPSTREAM-10**:
+
+```c
+char buffer[JPMCDS_ERR_MSG_BUFFER];   /* 4096 */
+vsprintf(buffer, format, parminfo);
+```
+
+`vsprintf`, not `vsnprintf`. Every formatted error message in the library goes
+through this one function, and 67 of the 452 message sites interpolate a
+caller-supplied string. Pass a day count name of 3,900 characters and the
+process dies, deterministically, from two independent public entry points —
+survives at 3,800, aborts at 3,900, which is exactly where the ~200-character
+prefix plus the argument reaches 4,096.
+
+That is the more serious defect, and it is the mechanism that makes U9 more
+than a cosmetic slip: **U9 supplies a bad pointer, U10 is the unbounded write
+it feeds.** It was only found because U9's reproducer misbehaved.
+
+### What got deleted
+
+The U9 reproducer target. It was written, wired into CMake, and removed in the
+same slice, because it did not do the thing its own comment claimed. Shipping
+a file called `u9_reproducer.c` that exits 0 would have been worse than
+shipping nothing — the next person to run it concludes the defect is not real.
+
+The write-up changed shape too. The first draft of the differential test said
+"this test CRASHES under AddressSanitizer". It does not. What replaced it says
+the manifestation is caller-dependent, names the three callers where it does
+not fault and the one where it does, and states that the evidence is the
+source rather than the crash. The test stays disabled — not because it
+crashes, but because running known undefined behaviour in CI means a future
+libc can fail the build for a reason nobody will connect back to this test.
+
+### The honest severity
+
+Both are **medium**, and the reasoning is the part worth keeping.
+
+U10 only fires once a host has called `JpmcdsErrMsgOn`. Messages are off by
+default and nothing in the shipped distribution turns them on. With messages
+off, a 50,000-character argument is harmless. So it is latent in the library
+and live in whatever host enabled diagnostics — which is precisely the
+configuration someone debugging a pricing discrepancy would be running, and
+what an Excel add-in surfacing error text would want.
+
+Calling it "remote code execution in the ISDA CDS model" would be a lie.
+Calling it benign because the default configuration is safe would also be a
+lie. Medium, with the condition stated, is the only version that survives
+someone checking.
+
+### Neither defect exists in the port, and neither was fixed
+
+There is no global error log to format into. A failure is an empty
+`std::optional` and a caller's string is never copied anywhere. That is the
+fifth defect in this port to die from the shape of the code rather than from a
+correction — and the only kind of fix that cannot regress, because there is no
+longer a line of code for a future edit to get wrong.
+
+### And the dull part was dull
+
+The schedule generator itself ported cleanly: **1,024 of 1,024** configurations
+exactly equal to upstream — sixteen date spans built around month ends and leap
+days, twelve intervals, both stub positions, both stub lengths. Dates are
+integers, so the bar is exact equality and nothing softer was accepted.
+
+Two structural simplifications, both of which delete code. Upstream
+accumulates into a fixed `TDate tmpDates[100]`, flushing each full block into a
+growing date list through a routine that performs a **sorted merge dropping
+duplicates** — so the block scheme only produces the right count because the
+schedule happens to be strictly monotone, an invariant guarded by `ASSERT`,
+which compiles away under `NDEBUG`. A `std::vector` removes the blocks, the
+merge, and the unchecked invariant together. And upstream's two `TBoolean`s,
+`stubAtEnd` and `longStub`, became two enums, so no call site can swap them.
+
+One thing was transcribed exactly rather than tidied, and it is the one that
+matters numerically: every date is computed **from the anchor** with a
+multiplied interval, never by stepping from the previous date. Stepping one
+month at a time from 31 January clamps to the 28th and then stays there;
+anchored arithmetic returns to the 31st whenever the month is long enough. A
+schedule that drifts to month-end and never recovers would move every
+subsequent accrual.
+
+### A test that was wrong about the code
+
+One assertion failed, and the code was right. `HugePeriodDoesNotOverflow`
+claimed a period near `INT_MAX` would be rejected; it is not — the first step
+lands outside the span, the loop exits after one iteration, and the schedule
+collapses to its two endpoints. Upstream does exactly the same thing, measured.
+
+Following that through gives a small result worth having: the widened
+multiplication in `advance_multiple` is **unreachable**. Reaching a multiplier
+of 2 requires the step at multiplier 1 to land *inside* the span, which bounds
+the period by the span length — so while the `periods > 0` precondition holds,
+the product cannot overflow. The check stays, because `DateInterval` is an
+aggregate with no invariant of its own, but it is now documented as defensive
+rather than load-bearing. The test now asserts the behaviour that was measured
+instead of the behaviour that was assumed.
+
 ## What went wrong, and how we found out
 
 The honest section. Eight defects in the port against seven in a

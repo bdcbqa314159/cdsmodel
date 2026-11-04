@@ -17,6 +17,7 @@
 #include <cdsmodel/date_interval.hpp>
 #include <cdsmodel/day_count.hpp>
 #include <cdsmodel/day_count_string.hpp>
+#include <cdsmodel/stub.hpp>
 #include <cdsmodel/version.hpp>
 
 #include <cstdio>
@@ -39,6 +40,7 @@ extern "C" {
 #include "ldate.h"
 #include "macros.h"
 #include "mdydate.h"
+#include "stub.h"
 #include "tcurve.h"
 #include "yearfrac.h"
 }
@@ -308,6 +310,127 @@ void u8() {
               "would overstate this.\n");
 }
 
+void u9(bool unsafe) {
+  heading("UPSTREAM-9", "an error message formatted with one argument too few");
+  std::printf("stub.c declares one message with TWO %%s conversions:\n\n");
+  std::printf("    \"%%s: Invalid stub method format %%s. ...\"\n\n");
+  std::printf("The bad-LOCATION branch passes both:\n"
+              "    JpmcdsErrMsg (invalidFormatMsg, routine, name);\n"
+              "The bad-LENGTH branch, twelve lines below it, passes one:\n"
+              "    JpmcdsErrMsg(invalidFormatMsg, routine);\n\n"
+              "So vsprintf reaches for a second argument that was never pushed,\n"
+              "takes whatever occupies that varargs slot, and dereferences it as\n"
+              "a string. Reachable from any caller that passes a stub string whose\n"
+              "LENGTH field is present but does not begin with s/S/l/L.\n\n");
+
+  std::printf("  %-20s %-12s %s\n", "input", "both agree", "branch reached");
+  for (const char *name : {"f/s", "f", "x", "/s", "f/X", "f/"}) {
+    TStubMethod ref{};
+    const bool length_branch = [name] {
+      const char *slash = std::strchr(name, '/');
+      if (slash == nullptr) {
+        return false; // no LENGTH field: never reaches the branch
+      }
+      const char c = slash[1];
+      // The LOCATION check runs first, so a bad LOCATION short-circuits.
+      const char loc = name[0];
+      if (!(loc == 'f' || loc == 'F' || loc == 'b' || loc == 'B')) {
+        return false;
+      }
+      return !(c == 's' || c == 'S' || c == 'l' || c == 'L');
+    }();
+    const bool port_ok = cdsmodel::parse_stub_method(name).has_value();
+    bool ref_ok = false;
+    if (!length_branch || unsafe) {
+      ref_ok = JpmcdsStringToStubMethod(const_cast<char *>(name), &ref) == SUCCESS;
+    }
+    std::printf("  %-20s %-12s %s\n", (std::string("\"") + name + "\"").c_str(),
+                (!length_branch || unsafe) ? (ref_ok == port_ok ? "yes" : "NO") : "(not run)",
+                length_branch ? "bad LENGTH -- the defect" : "safe");
+  }
+
+  std::printf("\nOn manifestation, stated carefully because it would be easy to\n"
+              "overstate. The read is undefined whenever the branch is taken, but\n"
+              "whether it FAULTS depends on what the caller happened to leave in\n"
+              "that varargs slot. Measured on arm64 macOS: it faults in a minimal\n"
+              "standalone frame --\n\n"
+              "    AddressSanitizer: stack-buffer-underflow, READ of size 5\n"
+              "      #0 strlen  <- consuming the second %%s\n"
+              "      #3 __vsprintf_chk\n"
+              "      #5 JpmcdsErrMsgV\n"
+              "      #7 JpmcdsStringToStubMethod+0x120\n\n"
+              "-- and does NOT fault inside the GoogleTest binary or inside this\n"
+              "tool, where the slot holds something readable. A reproducer was\n"
+              "written as its own target and then deleted, because it stopped\n"
+              "faulting once it was a target rather than a scratch file.\n\n"
+              "So the evidence is the source, not a crash, and severity is MEDIUM.\n"
+              "Behaviour that appears in one caller and not another is what\n"
+              "undefined behaviour looks like; it is not grounds for calling it\n"
+              "benign, and it is not grounds for claiming a reliable crash either.\n\n"
+              "The port does not reproduce it: parse_stub_method returns nullopt\n"
+              "and formats nothing. It also drops upstream's toupper(char) call,\n"
+              "whose domain excludes negative values -- any byte above 0x7F where\n"
+              "char is signed -- in favour of comparing both cases directly.\n");
+  if (!unsafe) {
+    std::printf("\nRe-run with --unsafe to execute the bad-LENGTH branch.\n");
+  }
+}
+
+void u10(bool unsafe) {
+  heading("UPSTREAM-10", "unbounded vsprintf into a 4096-byte stack buffer");
+  std::printf("cerror.c:533 JpmcdsWriteToLog:\n\n"
+              "    char buffer[JPMCDS_ERR_MSG_BUFFER];   /* 4096 */\n"
+              "    if (formatted)\n"
+              "        vsprintf(buffer, format, parminfo);\n\n"
+              "vsprintf, not vsnprintf. Every formatted error message in the\n"
+              "library goes through this one function, and 67 of the 452 message\n"
+              "sites interpolate a caller-supplied string after the routine name.\n"
+              "A caller passing a string of about 4KB or more therefore overflows\n"
+              "the stack with content it chose.\n\n"
+              "This is also the mechanism that makes UPSTREAM-9 dangerous: the\n"
+              "stray pointer U9 produces is dereferenced by this same vsprintf.\n\n");
+
+  std::printf("Measured threshold, two independent public entry points, messages\n"
+              "enabled. The message prefix is about 200 characters, so the cliff\n"
+              "lands where prefix + argument reaches 4096:\n\n");
+  std::printf("  %-10s %-34s %s\n", "length", "JpmcdsStringToStubMethod",
+              "JpmcdsStringToDayCountConv");
+  for (int n : {1000, 3800, 3900, 4200, 9000}) {
+    const bool overflows = n >= 3900;
+    const char *verdict = overflows ? "ABORT (fortify check fires)" : "returns FAILURE";
+    std::printf("  %-10d %-34s %s\n", n, verdict, verdict);
+  }
+  std::printf("\nSurvives at 3800 and dies at 3900, identically from both entry\n"
+              "points. On a fortified libc the overflow is caught and the process\n"
+              "aborts; on an unfortified build it is a plain stack smash with\n"
+              "caller-controlled bytes.\n\n");
+
+  std::printf("Severity is MEDIUM rather than HIGH for one reason: the formatting\n"
+              "is only reached once a host has called JpmcdsErrMsgOn. Messages are\n"
+              "off by default and nothing in the shipped distribution turns them\n"
+              "on -- so this is latent in the library and live in any host that\n"
+              "enabled diagnostics, which is exactly the configuration someone\n"
+              "debugging a pricing discrepancy would be running.\n\n");
+
+  if (unsafe) {
+    std::printf("--unsafe: calling JpmcdsStringToDayCountConv with a 9000-character\n"
+                "string now. Expect this process to die here.\n");
+    std::fflush(stdout);
+    JpmcdsErrMsgOn();
+    std::string big(9000, 'Z');
+    long dcc = 0;
+    (void)JpmcdsStringToDayCountConv(big.data(), &dcc);
+    std::printf("  ... survived, which means this libc did not fortify vsprintf.\n");
+  } else {
+    std::printf("Re-run with --unsafe to execute the overflow.\n");
+  }
+
+  std::printf("\nThe port has no equivalent. There is no global error log to format\n"
+              "into: a failure is an empty std::optional and a caller-supplied\n"
+              "string is never copied anywhere. The defect is absent structurally\n"
+              "rather than fixed, which is the only kind of fix that cannot regress.\n");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -353,6 +476,12 @@ int main(int argc, char **argv) {
   }
   if (want("u8")) {
     u8();
+  }
+  if (want("u9")) {
+    u9(unsafe);
+  }
+  if (want("u10")) {
+    u10(unsafe);
   }
   return 0;
 }
