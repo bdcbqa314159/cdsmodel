@@ -17,6 +17,7 @@
 #include <cdsmodel/cds.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_interval.hpp>
+#include <cdsmodel/date_sup.hpp>
 #include <cdsmodel/day_count.hpp>
 #include <cdsmodel/day_count_string.hpp>
 #include <cdsmodel/defaulted.hpp>
@@ -39,6 +40,7 @@ extern "C" {
 #include "cx.h"
 #include "cxdatelist.h"
 #include "cxzerocurve.h"
+#include "date_sup.h"
 #include "dateconv.h"
 #include "defaulted.h"
 #include "dtlist.h"
@@ -538,6 +540,57 @@ void u11() {
               "trade date. One date changed; the arithmetic is untouched.\n");
 }
 
+void u12() {
+  heading("UPSTREAM-12", "a lunar month computes correctly, then fails");
+  std::printf("date_sup.c, JpmcdsDateIntervalToYears:\n\n"
+              "    case 'U':\n"
+              "        *years = (double)interval->prd *\n"
+              "                 (double)JPMCDS_DAYS_PER_LUNAR_MONTH/JPMCDS_DAYS_PER_YEAR;\n"
+              "    default:                        /* no break above */\n"
+              "        JpmcdsErrMsg(\"...unknown interval type...\");\n"
+              "        return FAILURE;\n\n");
+
+  std::printf("  %-7s %-10s %-16s %s\n", "letter", "rc", "years written", "note");
+  struct Row {
+    char letter;
+    const char *note;
+  };
+  for (const Row &r : {Row{'A', "annual"}, Row{'M', "monthly"}, Row{'D', "daily"},
+                       Row{'U', "LUNAR MONTH"}, Row{'Z', "genuinely unknown"}}) {
+    TDateInterval raw{1, r.letter, 0};
+    double years = -999.0;
+    const int rc = JpmcdsDateIntervalToYears(&raw, &years);
+    std::printf("  %-7c %-10s %-16.10g %s\n", r.letter, rc == SUCCESS ? "SUCCESS" : "FAILURE",
+                years, r.note);
+  }
+  std::printf("\n28/365 = %.10g  <- what 'U' computes before falling through\n\n", 28.0 / 365.0);
+  std::printf("The last row is the one that matters. An unrecognised letter leaves\n"
+              "the output at its sentinel; 'U' writes the correct value and THEN\n"
+              "returns FAILURE. The computation ran; only the break is gone.\n\n");
+
+  std::printf("Reachability, which is why severity is low:\n\n");
+  TDateInterval made{};
+  const int mk = JpmcdsMakeDateInterval(1, 'U', &made);
+  std::printf("  JpmcdsMakeDateInterval(1, 'U') -> %s", mk == SUCCESS ? "" : "FAILURE\n");
+  if (mk == SUCCESS) {
+    std::printf("%d%c  -- normalised to DAYS\n", made.prd, made.prd_typ);
+    double years = -999.0;
+    const int rc = JpmcdsDateIntervalToYears(&made, &years);
+    std::printf("  the SAME function on that interval -> %s, years = %.10g\n",
+                rc == SUCCESS ? "SUCCESS" : "FAILURE", years);
+  }
+  std::printf("\nSo an interval built the way callers build one works. The missing\n"
+              "break is reachable only through a hand-constructed TDateInterval --\n"
+              "which upstream explicitly supports for other letters: JpmcdsDtFwdAny\n"
+              "keeps code for A, S and Q \"for people who have set up their own\n"
+              "TDateIntervals without calling JpmcdsMakeDateInterval\". It extends\n"
+              "that courtesy to 'W' and not to 'U'.\n\n");
+  std::printf("The port cannot express the defect: make_date_interval('U') yields\n"
+              "{28 * periods, Days}, so no DateInterval carries the letter the bug\n"
+              "keys on. Port value for one lunar period: %.10g\n",
+              cdsmodel::interval_to_years(*cdsmodel::make_date_interval(1, 'U')));
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -592,6 +645,9 @@ int main(int argc, char **argv) {
   }
   if (want("u11")) {
     u11();
+  }
+  if (want("u12")) {
+    u12();
   }
   return 0;
 }

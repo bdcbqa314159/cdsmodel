@@ -39,28 +39,6 @@
 
 namespace cdsmodel {
 
-namespace detail {
-
-/// `start` advanced by `count` whole intervals, with the multiplication done
-/// wide. `detail::scale` cannot be used here: it is only correct for a
-/// positive factor, and the front-stub branch steps backwards.
-///
-/// The range check is defensive, not load-bearing. Reaching |count| >= 2
-/// requires the count == 1 step to land inside the span, which bounds
-/// `periods` by the span length in days -- so while the caller's
-/// `periods > 0` precondition holds, the product cannot overflow. It is kept
-/// because DateInterval is an aggregate with no invariant of its own.
-[[nodiscard]] constexpr std::optional<Date> advance_multiple(Date start, DateInterval iv,
-                                                             int count) noexcept {
-  const long long periods = static_cast<long long>(iv.periods) * count;
-  if (periods < std::numeric_limits<int>::min() || periods > std::numeric_limits<int>::max()) {
-    return std::nullopt;
-  }
-  return advance(start, DateInterval{static_cast<int>(periods), iv.unit});
-}
-
-} // namespace detail
-
 /// The coupon schedule for a regular stream. Replaces
 /// `JpmcdsDateListMakeRegular`.
 ///

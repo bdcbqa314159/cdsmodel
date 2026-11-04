@@ -483,6 +483,12 @@
           <td><span class="chip immune">Fixed deliberately</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u12">UPSTREAM-12</a></td>
+          <td>A lunar-month interval computes its value and then falls through a missing <code>break</code> into the error branch</td>
+          <td><span class="chip low">Low · hand-built intervals only</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u11">UPSTREAM-11</a></td>
           <td>Accrual on a defaulted CDS goes <strong>negative</strong> once settlement crosses a coupon date — returned as success</td>
           <td><span class="chip high">High · wrong money</span></td>
@@ -1052,6 +1058,84 @@ JpmcdsErrMsg(invalidFormatMsg, routine);          <span class="hit">/* one short
       443 did not. The differential suite asserts the disagreement still
       exists, so an upstream fix becomes visible rather than leaving a
       correction nobody revisits.
+    </p>
+  </section>
+
+  <!-- ============ U12 ============ -->
+  <section class="record sev-low" id="u12">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-12</span>
+      <h2>A lunar-month interval computes correctly, then fails</h2>
+    </div>
+    <div class="chips">
+      <span class="chip low">Low · reachable only via a hand-built interval</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">date_sup.c, inside JpmcdsDateIntervalToYears</p>
+
+    <h3>Mechanism</h3>
+<pre><code>case 'U':
+    *years = (double)interval-&gt;prd *
+             (double)JPMCDS_DAYS_PER_LUNAR_MONTH/JPMCDS_DAYS_PER_YEAR;
+<span class="hit">default:</span>                        <span class="hit">/* no break above */</span>
+    JpmcdsErrMsg("%s: unknown interval type %c.\n", routine, interval-&gt;prd_typ);
+    return FAILURE;</code></pre>
+    <p>Second of its family after UPSTREAM-5.</p>
+
+    <h3>Evidence</h3>
+<pre><code>type   rc         years          note
+A      SUCCESS    1              annual
+M      SUCCESS    0.08333333333  monthly
+D      SUCCESS    0.002739726027 daily
+U      <span class="hit">FAILURE</span>    <span class="hit">0.07671232877</span>  LUNAR MONTH
+Z      FAILURE    -999           genuinely unknown
+
+28/365 = 0.07671232877  &lt;- what 'U' computes before falling through</code></pre>
+    <p>
+      The last row is the one that matters. A genuinely unrecognised letter
+      leaves the output untouched at its sentinel; <code>'U'</code> writes the
+      correct value and <em>then</em> returns FAILURE. The computation ran;
+      only the <code>break</code> is gone.
+    </p>
+
+    <h3>Reachability, stated precisely</h3>
+    <p>
+      This is low severity for one reason, and the first draft of this entry
+      overstated it before the reachability was measured.
+      <code>JpmcdsMakeDateInterval('U')</code> normalises to <strong>28
+      days</strong>, so an interval built the way callers build one reaches the
+      ACT/365F branch and works. The missing <code>break</code> is reachable
+      only through a hand-constructed <code>TDateInterval</code>.
+    </p>
+    <p>
+      That is not hypothetical — upstream contemplates it. The switch in
+      <code>JpmcdsDtFwdAny</code> retains code for <code>'A'</code>,
+      <code>'S'</code> and <code>'Q'</code> with the comment <em>"left here for
+      people who have set up their own TDateIntervals without calling
+      JpmcdsMakeDateInterval"</em>. It extends that courtesy to
+      <code>'W'</code> and not to <code>'U'</code>, so a hand-built lunar
+      interval is refused by one function and mishandled by the other.
+    </p>
+    <p>
+      It propagates as far as it can: <code>JpmcdsDateIntervalToFreq</code> and
+      <code>JpmcdsCountDates</code> both consume this function.
+    </p>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Cannot occur.</strong> <code>make_date_interval('U')</code> yields
+      <code>{28 × periods, Days}</code>, so no <code>DateInterval</code> ever
+      carries the unit letter the bug keys on, and <code>interval_to_years</code>
+      has two total branches where upstream has eleven partial ones.
+    </p>
+    <p>
+      The equivalence that makes that safe is checked rather than argued: for
+      every letter the parser accepts, the normalised interval's year fraction
+      is compared bit-for-bit against what upstream computes from an interval
+      built through its own constructor. Normalisation divides numerator and
+      denominator by the same factor — <code>'Q'</code> with 5 periods becomes
+      15 months, and 15/12 is exactly 5/4 — so the correctly-rounded quotient is
+      unchanged, across 120 recorded cases.
     </p>
   </section>
 
