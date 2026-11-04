@@ -706,6 +706,74 @@ void u14() {
               "enshrine it.\n");
 }
 
+void u15() {
+  heading("UPSTREAM-15", "a validating constructor that admits unpriceable curves");
+  std::printf("tcurve.c's checkTCurve exists \"to guarantee we can generate positive\n"
+              "discount factors\". It validates the day count with JpmcdsDayCountValid,\n"
+              "which correctly accepts 30/360, and it accepts an empty curve -- its\n"
+              "only size test is `fNumItems < 0`.\n\n"
+              "Neither can be priced: JpmcdsZeroPrice routes through\n"
+              "JpmcdsConvertCompoundRate, which supports ACT/365F and ACT/360 and\n"
+              "rejects the rest. And JpmcdsZeroPrice returns a bare double, so it has\n"
+              "nowhere to report that.\n\n");
+
+  const TDate base = JpmcdsDate(2024, 1, 1);
+  const TDate mat = JpmcdsDate(2029, 1, 1);
+  TDate dates[1] = {mat};
+  double rates[1] = {0.05};
+
+  std::printf("  %-10s %-20s %s\n", "day count", "construct", "JpmcdsZeroPrice");
+  struct Row {
+    long dcc;
+    const char *name;
+  };
+  for (const Row &r : {Row{JPMCDS_ACT_365F, "ACT/365F"}, Row{JPMCDS_ACT_360, "ACT/360"},
+                       Row{JPMCDS_B30_360, "30/360"}, Row{JPMCDS_B30E_360, "30E/360"}}) {
+    TCurve *c = JpmcdsMakeTCurve(base, dates, rates, 1, 1.0, r.dcc);
+    char priced[40] = "-";
+    if (c != nullptr) {
+      std::snprintf(priced, sizeof priced, "%.10g", JpmcdsZeroPrice(c, mat));
+    }
+    std::printf("  %-10s %-20s %s\n", r.name, c != nullptr ? "accepted" : "REJECTED", priced);
+    JpmcdsFreeTCurve(c);
+  }
+  TCurve *empty = JpmcdsMakeTCurve(base, nullptr, nullptr, 0, 1.0, JPMCDS_ACT_365F);
+  if (empty != nullptr) {
+    std::printf("  %-10s %-20s %.10g\n", "(empty)", "accepted", JpmcdsZeroPrice(empty, mat));
+    JpmcdsFreeTCurve(empty);
+  }
+
+  std::printf("\nSo a caller picks a standard day count, a constructor named Make...\n"
+              "with an explicit validation pass accepts it, and every discount factor\n"
+              "afterwards is NaN. Same problem as UPSTREAM-2 in a new disguise: no\n"
+              "error channel, so the error becomes a number.\n\n");
+
+  std::printf("Infinity is NOT part of this finding, and conflating them would\n"
+              "overstate it. A continuous-basis rate of -400 over three years is\n"
+              "exp(1200):\n\n");
+  TDate three[1] = {JpmcdsDate(2027, 1, 1)};
+  double big[1] = {-400.0};
+  TCurve *over = JpmcdsMakeTCurve(base, three, big, 1, JPMCDS_CONTINUOUS_BASIS, JPMCDS_ACT_365F);
+  if (over != nullptr) {
+    std::printf("  upstream -> %g\n", JpmcdsZeroPrice(over, three[0]));
+    JpmcdsFreeTCurve(over);
+  }
+  const std::vector<cdsmodel::RatePoint> pts{{cdsmodel::from_tdate(three[0]), -400.0}};
+  const std::optional<cdsmodel::ZeroCurve> ported = cdsmodel::ZeroCurve::create(
+      cdsmodel::from_tdate(base), pts, cdsmodel::kContinuousBasis, cdsmodel::DayCount::Act365Fixed);
+  std::printf("  port     -> %g\n",
+              ported ? ported->zero_price(cdsmodel::from_tdate(three[0])) : 0.0);
+  std::printf("\nBoth accept it and both return the same infinity. That is a VALUE --\n"
+              "the answer is enormous. NaN is not a value; above, it is an error\n"
+              "channel.\n\n");
+
+  std::printf("The port rejects at construction what cannot be priced, which is why\n"
+              "ZeroCurve::create is stricter than checkTCurve on exactly two counts\n"
+              "(non-empty, and a day count the conversion supports) and why\n"
+              "zero_price needs no NaN sentinel: every curve that exists is\n"
+              "priceable. Pinned by a tier-1 invariant over 810 discount factors.\n");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -769,6 +837,9 @@ int main(int argc, char **argv) {
   }
   if (want("u14")) {
     u14();
+  }
+  if (want("u15")) {
+    u15();
   }
   return 0;
 }

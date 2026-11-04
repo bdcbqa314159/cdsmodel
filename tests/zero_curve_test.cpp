@@ -174,4 +174,102 @@ TEST(ZeroCurve, FlatCurveGivesTheAnalyticDiscountFactor) {
   }
 }
 
+// =====================================================================
+// Added with the tcurve.c slice.
+// =====================================================================
+
+TEST(ZeroCurve, RateValidityMatchesUpstreamsRule) {
+  // Upstream's JpmcdsRateValidYearFrac: continuous accepts any rate, a
+  // compounding frequency n accepts rate > -n.
+  EXPECT_TRUE(cdsmodel::rate_is_valid(-1e300, cdsmodel::kContinuousBasis));
+  EXPECT_TRUE(cdsmodel::rate_is_valid(1e300, cdsmodel::kContinuousBasis));
+  for (double basis : {1.0, 2.0, 4.0, 12.0, 365.0}) {
+    EXPECT_TRUE(cdsmodel::rate_is_valid(0.0, basis)) << basis;
+    EXPECT_TRUE(cdsmodel::rate_is_valid(-basis + 1.0e-9, basis)) << basis;
+    EXPECT_FALSE(cdsmodel::rate_is_valid(-basis, basis)) << basis << " (boundary is exclusive)";
+    EXPECT_FALSE(cdsmodel::rate_is_valid(-basis - 1.0e-9, basis)) << basis;
+  }
+}
+
+TEST(ZeroCurve, EveryConstructibleCurveCanBePriced) {
+  // The invariant UPSTREAM-15 violates and the port guarantees: if `create`
+  // returns a curve, no discount factor it yields is ever NaN.
+  //
+  // The distinction between NaN and infinity is the whole point, and the
+  // first version of this test got it wrong by demanding finiteness. A
+  // continuous-basis rate of -400 over three years is exp(1200), which
+  // overflows to +inf -- in the port AND in upstream, which accepts the same
+  // curve and returns the same infinity. That is a VALUE: the answer is
+  // enormous. NaN is not a value; it is "I could not compute this", used as
+  // an error channel because JpmcdsZeroPrice returns a bare double and has
+  // nowhere else to put a failure.
+  //
+  // So the guarantee is "never NaN", not "never overflows". Upstream has
+  // neither: JpmcdsMakeTCurve accepts a 30/360 curve and an empty curve, and
+  // JpmcdsZeroPrice returns NaN for both.
+  const cdsmodel::Date base = *cdsmodel::make_date(2024, 1, 1);
+  int priced = 0;
+  int refused = 0;
+  for (double basis :
+       {1.0, 2.0, 4.0, 12.0, 365.0, cdsmodel::kContinuousBasis, 0.0, -2.0, 512.0, 1000.0}) {
+    for (cdsmodel::DayCount dcc : {cdsmodel::DayCount::Act365Fixed, cdsmodel::DayCount::Act360,
+                                   cdsmodel::DayCount::Thirty360, cdsmodel::DayCount::ThirtyE360,
+                                   cdsmodel::DayCount::Act365, cdsmodel::DayCount::EffectiveRate}) {
+      for (double rate : {0.05, 0.0, -0.5, -0.999, -1.0, -1.5, -3.0, -400.0, 1.0e3}) {
+        std::vector<cdsmodel::RatePoint> pts;
+        for (int years = 1; years <= 4; ++years) {
+          pts.push_back({*cdsmodel::make_date(2024 + years, 1, 1), rate});
+        }
+        const std::optional<cdsmodel::ZeroCurve> curve =
+            cdsmodel::ZeroCurve::create(base, pts, basis, dcc);
+        if (!curve) {
+          ++refused;
+          continue;
+        }
+        for (int months = 0; months <= 60; months += 7) {
+          const cdsmodel::Date at = *cdsmodel::make_date(2024 + months / 12, 1 + months % 12, 1);
+          const double z = curve->zero_price(at);
+          ASSERT_FALSE(std::isnan(z))
+              << "basis " << basis << " rate " << rate << " at " << cdsmodel::to_tdate(at)
+              << " gave NaN -- a discount factor must never be an error channel";
+          ASSERT_GE(z, 0.0) << "basis " << basis << " rate " << rate;
+          // And for any rate a market could quote, it is finite too.
+          if (rate > -1.0 && rate < 1.0) {
+            ASSERT_TRUE(std::isfinite(z)) << "basis " << basis << " rate " << rate;
+          }
+          ++priced;
+        }
+      }
+    }
+  }
+  // 810 discount factors across the curves `create` accepts, from a grid of
+  // 540 (basis, day count, rate) combinations of which 450 are refused.
+  EXPECT_GT(priced, 700) << "too few discount factors checked: " << priced;
+  EXPECT_GT(refused, 100) << "the rejection paths were barely exercised: " << refused;
+}
+
+TEST(ZeroCurve, ARateAtOrBelowMinusBasisIsRefused) {
+  // The concrete shape of PORT-11: these were accepted before the rate check
+  // existed, and zero_price returned inf or NaN.
+  const cdsmodel::Date base = *cdsmodel::make_date(2024, 1, 1);
+  const std::vector<cdsmodel::RatePoint> at_one{{*cdsmodel::make_date(2029, 1, 1), -1.0}};
+  EXPECT_FALSE(
+      cdsmodel::ZeroCurve::create(base, at_one, 1.0, cdsmodel::DayCount::Act365Fixed).has_value());
+  const std::vector<cdsmodel::RatePoint> below{{*cdsmodel::make_date(2029, 1, 1), -1.5}};
+  EXPECT_FALSE(
+      cdsmodel::ZeroCurve::create(base, below, 1.0, cdsmodel::DayCount::Act365Fixed).has_value());
+  // Just inside the boundary is fine, and prices finitely.
+  const std::vector<cdsmodel::RatePoint> inside{{*cdsmodel::make_date(2029, 1, 1), -0.9999}};
+  const std::optional<cdsmodel::ZeroCurve> ok =
+      cdsmodel::ZeroCurve::create(base, inside, 1.0, cdsmodel::DayCount::Act365Fixed);
+  ASSERT_TRUE(ok.has_value());
+  EXPECT_TRUE(std::isfinite(ok->zero_price(*cdsmodel::make_date(2029, 1, 1))));
+  // One bad point among good ones is enough to refuse the whole curve.
+  const std::vector<cdsmodel::RatePoint> mixed{{*cdsmodel::make_date(2025, 1, 1), 0.03},
+                                               {*cdsmodel::make_date(2026, 1, 1), -2.0},
+                                               {*cdsmodel::make_date(2027, 1, 1), 0.04}};
+  EXPECT_FALSE(
+      cdsmodel::ZeroCurve::create(base, mixed, 1.0, cdsmodel::DayCount::Act365Fixed).has_value());
+}
+
 } // namespace

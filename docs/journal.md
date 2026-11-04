@@ -1572,6 +1572,101 @@ vectors rather than recorded with a flag. Recording the output of undefined
 behaviour would enshrine it -- the same rule that kept UPSTREAM-4's buffer
 overflow out of the vectors.
 
+## Decision 19 — The type was already right; the validation was not
+
+`tcurve.c` looked like the easiest 528 lines left. `TCurve` is
+`{base date, array of (date, rate), basis, day count}` -- field for field the
+port's `ZeroCurve`. So the slice began with a question rather than a port:
+**is any of this a second type, or just a second spelling?**
+
+Just a spelling. `JpmcdsNewTCurve`, `JpmcdsFreeTCurve` and `JpmcdsCopyCurve`
+are allocation, deallocation and copying, which a value type does for free.
+No new header was written. What the slice turned into was the far more
+interesting question of what `checkTCurve` validates that `ZeroCurve::create`
+did not.
+
+### PORT-11, and the third time the same blind spot has hidden a defect
+
+`checkTCurve` calls `JpmcdsRateValid` on every point, "to guarantee we can
+generate positive discount factors". `ZeroCurve::create` had **no rate check
+at all**:
+
+| basis | rate | upstream | port | port `zero_price` |
+|---|---|---|---|---|
+| 1 | -0.5 | accepted | accepted | 32.12 |
+| 1 | -1 | REJECTED | accepted | **inf** |
+| 1 | -1.5 | REJECTED | accepted | **nan** |
+| 2 | -2 | REJECTED | accepted | **inf** |
+
+Upstream's rule is exactly `rate > -basis` for a compounding frequency, and
+anything for continuous compounding. One line, now applied per point, and the
+accept/reject behaviour matches across a 66-case sweep.
+
+The way it was found is the part worth recording, because it is **the third
+time**: every curve differential test built a *valid* curve on both sides and
+compared prices, so the constructor's rejection behaviour was never in the
+comparison. PORT-9 was the protection-leg factory. PORT-11 is the curve
+factory. The lesson has been written down twice and it keeps costing me
+anyway, which suggests writing it down is not the fix -- the fix is a habit:
+**when porting a factory, sweep the inputs it must refuse before sweeping the
+ones it accepts.**
+
+### UPSTREAM-15, which justifies the port being stricter
+
+Having found what the port was missing, the reverse question: `create` is
+*stricter* than `checkTCurve` in two ways -- it requires a non-empty curve,
+and it allows only the day counts the rate conversion supports. Were those
+divergences improvements or regressions?
+
+Measured:
+
+```
+ACT/365F   construct=accepted  JpmcdsZeroPrice=0.7833167239
+30/360     construct=accepted  JpmcdsZeroPrice=nan
+30E/360    construct=accepted  JpmcdsZeroPrice=nan
+(empty)    construct=accepted  JpmcdsZeroPrice=nan
+```
+
+Improvements. `checkTCurve` promises to guarantee positive discount factors
+and then admits curves that cannot produce any. A caller picks 30/360 -- a
+standard convention, accepted by `JpmcdsDayCountValid` because it *is* valid
+-- and every discount factor afterwards is NaN, because `JpmcdsZeroPrice`
+returns a bare `double` and has nowhere to report a failure.
+
+That is UPSTREAM-2's problem in a new disguise: no error channel, so the error
+becomes a number. And it is why the port can return a plain `double` from
+`zero_price` with no NaN sentinel -- every curve that exists is priceable.
+
+### A distinction I nearly fumbled
+
+The tier-1 invariant was first written as "every constructible curve prices to
+a FINITE non-negative number". It failed immediately: a continuous-basis rate
+of -400 over three years is `exp(1200)`, which overflows to `+inf`.
+
+Checking upstream before adjusting the test: it accepts the same curve and
+returns the same infinity. So this is not a divergence and not a defect --
+
+**infinity is a value; NaN is an error channel.** `exp(1200)` genuinely is
+larger than a double can hold, and saying so with `+inf` is correct. Saying
+"I could not compute this" with NaN, from a function whose signature has no
+other way to say it, is not.
+
+The invariant is now "never NaN, non-negative, and finite for any rate a
+market could quote", over 810 discount factors. Weaker, true, and it makes the
+point the stronger version would have obscured.
+
+### One behaviour deliberately dropped
+
+`JpmcdsMakeTCurveNoRateCheck` treats a `TDate` of 0 as an array terminator:
+*"This allows spreadsheet users to select a big range of dates, but use less
+than the whole range by terminating with a 1 or 0."* Five dates with a zero at
+index 2 produce a curve of two points.
+
+Not reproduced. A `std::span` carries its length, so a terminator has nothing
+to mean -- and TDate 0 is a legitimate date, 1601-01-01, which a span-based
+caller could reasonably include. The same input is now refused as out of order
+rather than silently truncated, which is the better failure.
+
 ## The collaboration record
 
 Started at the schedule slice, which means the earlier rows were reconstructed
@@ -1586,12 +1681,12 @@ Nine defects introduced by the port itself, by what found each one:
 |---|---|---|
 | a sanitizer, run deliberately | 3 | PORT-1, PORT-2, PORT-3 |
 | the differential suite against the oracle | 1 | PORT-10 |
+| comparing a FACTORY rather than its output | 2 | PORT-9, PORT-11 |
 | the 3-OS CI matrix | 2 | PORT-6, PORT-8 |
 | a test written to probe extremes | 2 | PORT-4, PORT-7 |
 | noticing a *passing* test print a warning | 1 | PORT-5 |
-| the next layer up composing the module | 1 | PORT-9 |
 
-**Nothing was caught by re-reading the code.** Every one of the ten was found
+**Nothing was caught by re-reading the code.** Every one of the eleven was found
 by running something — which is the argument for building the harness before
 writing the port, and an argument against trusting a careful review of
 generated code.
@@ -1632,6 +1727,12 @@ From here: one line per slice naming what had to be redone and why.
 - **cds** — one real defect introduced and fixed (PORT-9); one comment corrected
   that had argued the defect was not a defect; two wrong argument orders caught
   by the compiler.
+- **tcurve** — no new header: `TCurve` is field-for-field the port's
+  `ZeroCurve`, so the slice became a validation audit instead. Found PORT-11
+  (missing rate check) and UPSTREAM-15. One tier-1 invariant written too
+  strong — demanded finiteness where `exp(1200)` legitimately overflows — and
+  corrected after checking upstream does the same; one count floor guessed at
+  2000 where the measurement is 810.
 - **interpolation** — zero port defects; one header claim collapsed two
   non-equivalent code paths and was corrected within minutes; one arithmetic
   slip in a test assertion (hand-computed 0.0085 where the answer is -0.005,

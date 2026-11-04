@@ -483,6 +483,12 @@
           <td><span class="chip immune">Fixed deliberately</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u15">UPSTREAM-15</a></td>
+          <td>A validating curve constructor accepts 30/360 and empty curves that <code>JpmcdsZeroPrice</code> then prices as <strong>NaN</strong></td>
+          <td><span class="chip mid">Medium · silent NaN</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u14">UPSTREAM-14</a></td>
           <td>Bond day-count metrics return <strong>uninitialised stack memory</strong> for a pre-1601 date, and report success</td>
           <td><span class="chip mid">Medium · wrong answer</span></td>
@@ -1302,6 +1308,90 @@ interpolate at -50 with the 30/360 metric -&gt; <span class="hit">-667794.1351</
       combinations. Recording the output of undefined behaviour would enshrine
       it — the same rule that kept UPSTREAM-4's buffer overflow out of the
       vectors.
+    </p>
+  </section>
+
+  <!-- ============ U15 ============ -->
+  <section class="record sev-mid" id="u15">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-15</span>
+      <h2>A validating constructor that admits unpriceable curves</h2>
+    </div>
+    <div class="chips">
+      <span class="chip mid">Medium · a silent NaN where an error belongs</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">tcurve.c — checkTCurve, reached through JpmcdsMakeTCurve</p>
+
+    <h3>Mechanism</h3>
+    <p>
+      <code>checkTCurve</code>'s stated purpose is <em>"to guarantee we can
+      generate positive discount factors"</em>. It checks the day count with
+      <code>JpmcdsDayCountValid</code>, which correctly accepts 30/360 — a
+      thoroughly standard convention — and it accepts an empty curve, since
+      its only size test is <code>fNumItems &lt; 0</code>.
+    </p>
+    <p>
+      Neither can be priced. <code>JpmcdsZeroPrice</code> routes through
+      <code>JpmcdsConvertCompoundRate</code>, which supports ACT/365F and
+      ACT/360 and rejects everything else explicitly. And
+      <code>JpmcdsZeroPrice</code> returns a bare <code>double</code>, so it
+      has nowhere to report the failure.
+    </p>
+
+    <h3>Evidence</h3>
+<pre><code>ACT/365F   construct=accepted  JpmcdsZeroPrice=0.7833167239
+30/360     construct=accepted  JpmcdsZeroPrice=<span class="hit">nan</span>
+30E/360    construct=accepted  JpmcdsZeroPrice=<span class="hit">nan</span>
+empty      construct=accepted  JpmcdsZeroPrice=<span class="hit">nan</span></code></pre>
+    <p>
+      So a caller picks a standard day count, a constructor named
+      <code>Make…</code> with an explicit validation pass accepts it, and every
+      discount factor afterwards is NaN. The same problem as UPSTREAM-2 in a
+      different disguise: there is no error channel, so the error becomes a
+      number.
+    </p>
+
+    <h3>The distinction that matters</h3>
+    <p>
+      Infinity is <strong>not</strong> part of this finding, and conflating the
+      two would overstate it. A continuous-basis rate of −400 over three years
+      is <code>exp(1200)</code>, which overflows to <code>+inf</code> in
+      upstream and in the port alike — both accept the curve and both return
+      the same infinity. That is a <em>value</em>: the answer is enormous. NaN
+      is not a value; here it is an error channel.
+    </p>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Cannot occur.</strong> <code>ZeroCurve::create</code> rejects at
+      construction what cannot be priced: a non-empty curve is required, and
+      the day count must be one the conversion supports. That is why
+      <code>create</code> is deliberately stricter than <code>checkTCurve</code>
+      on those two counts, and why <code>zero_price</code> can return a plain
+      <code>double</code> with no NaN sentinel — every curve that exists can be
+      priced.
+    </p>
+    <p>
+      The guarantee is pinned as a tier-1 property over 810 discount factors
+      drawn from the curves <code>create</code> accepts: <strong>never
+      NaN</strong>, non-negative, and finite for any rate a market could quote.
+    </p>
+
+    <h3>And what else was dropped</h3>
+    <p>
+      <code>JpmcdsMakeTCurveNoRateCheck</code> treats a <code>TDate</code> of 0
+      as an array terminator — <em>"This allows spreadsheet users to select a
+      big range of dates, but use less than the whole range by terminating with
+      a 1 or 0."</em> Measured: five dates with a zero at index 2 produce a
+      curve of <strong>two</strong> points.
+    </p>
+    <p>
+      Not reproduced. The port takes a <code>std::span</code>, so the length is
+      explicit and a terminator has nothing to mean — and date 0 is a
+      legitimate date, 1601-01-01, that a span-based caller could reasonably
+      include. The same input is refused outright as out of order rather than
+      silently truncated.
     </p>
   </section>
 
