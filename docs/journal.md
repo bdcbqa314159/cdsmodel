@@ -748,6 +748,183 @@ following a guard through to "is this actually reachable?" turned a would-be
 finding into a documented non-finding. Both times the honest answer was less
 impressive and more useful.
 
+## Decision 13 — A sensitivity probe is not evidence of reproducibility
+
+The root finder was the slice I expected to break the verification standard.
+
+Every module ported before it evaluates a formula. A one-ULP difference in an
+intermediate produces a one-ULP difference in the answer, which is why the
+three tiers worked: exact for integers, 4 ULPs for a single `exp`, relative
+1e-12 once differences accumulate across segments.
+
+A root finder is categorically different. Its arithmetic feeds **comparisons
+that choose the next iterate**. A difference far below any tolerance can flip
+a branch, change the iteration path, and move the answer by orders of
+magnitude more than the difference that caused it. If that happened, recorded
+roots could not be replayed cross-platform at 1e-12, and the standard would
+need a fourth and much looser tier for iterative results.
+
+### So it was measured rather than assumed
+
+Perturb the objective's return value by exactly one ULP — `std::nextafter` in
+each direction — and see what the returned root does. That is the right proxy
+for a cross-platform libm difference, because that is precisely how one shows
+up: the search is identical, the function values differ in the last bit.
+
+| objective | root | evaluations | effect of one ULP |
+|---|---|---|---|
+| Linear, Cubic, Quadratic, Exponential, SteepTanh, CdsMonotone | — | 5–25 | **identical root, identical evaluation count** |
+| Quantised (output truncated to 6 digits) | 1.4142132 | 21 | 3.1e-16 relative, ±2 evaluations |
+
+No amplification, and the reasoning looked sound: the convergence tolerance
+**is** a quantiser. The search stops when `|f| <= 1e-8` and the iterates are
+within `1e-8`, so a perturbation of 1e-17 cannot change which iterate first
+satisfies that test unless it sits exactly on the boundary.
+
+I wrote that up, committed it, pushed it, and CI disagreed within the hour.
+
+### What CI found that the probe could not
+
+Linux, Windows and the sanitizer job all failed one test. macOS passed. 156
+failing assertions out of 10,296 recorded cases, and the split matters:
+
+- **146 were evaluation COUNTS** -- a different number of iterations on a
+  different platform. Including for `Quadratic` (97 cases) and `Cubic` (36),
+  which are **pure polynomials with no libm anywhere in them.** Worst
+  observed ratio 1.93x: 108 evaluations against 208.
+- **9 were roots**, all of them the same objective, discussed below.
+
+The cause of the count differences is almost certainly floating-point
+contraction. A compiler may fuse `a*b + c` into a single FMA with one rounding
+instead of two, and `-ffp-contract=fast` is the default for both GCC and
+Clang. That changes values **mid-expression**, and by different amounts at
+different points.
+
+Which is exactly what my probe could not model. Shifting the objective's
+return value by one ULP, uniformly, is a strictly weaker disturbance than
+re-rounding the middle of an expression at every evaluation. The probe passed
+on all three platforms; the property it measures is true. It simply is not the
+property that mattered, and I presented it as though it were.
+
+**A single-platform sensitivity probe is not evidence of cross-platform
+reproducibility. The three-OS matrix is.** That is the actual decision here,
+and it was made for me.
+
+### The nine root differences, which are not a defect
+
+All nine are `Quantised`, whose output is truncated to six digits. The
+disagreements are 1.1e-10 and 6.3e-9 on a root of 1.414.
+
+That function is **flat in steps**. Near its root the derivative is about
+2.83, so with a 1e-6 output quantum every x within roughly 3.5e-7 produces an
+identical value. Every point on a step satisfies `|f| <= f_tolerance` equally
+well. Which point a search lands on is a property of the path, not of the
+function -- and both observed differences sit comfortably inside one step.
+
+So neither platform is wrong, and the fix is not a tolerance fudge. It is to
+say what is true: **the root is determined only to the resolution of the
+objective.** Objectives now declare that resolution, and the replay test
+widens to it where it is non-zero.
+
+### Three properties, three different answers
+
+The correction took two CI rounds, because I fixed the root tolerance and the
+count assertion and still had one assertion left. The second round found the
+property I had not separated: **whether the search converges at all.**
+
+One case out of 10,296. `TwoRoots` has a root on the lower bound and another
+near 3.75; with one bracket-and-guess combination the search exhausts its 100
+iterations on macOS and converges on Linux. Same code, same inputs, different
+contraction. Neither verdict is wrong -- "did not converge in 100 steps" is a
+statement about the path, and the path is not portable.
+
+So an iterative result has three properties and they do not travel together:
+
+| property | portable across platforms? |
+|---|---|
+| the root, for a well-posed objective | **yes** -- relative 1e-12, verified on three platforms |
+| the root, for an objective with plateaus | only to the plateau width (6.3e-9 observed, 3.5e-7 bound) |
+| the number of evaluations | **no** -- 146 of 10,296 cases differ, up to 1.93x |
+| whether it converged at all | **yes** for a well-posed objective; **no** for a pathological one |
+
+Working that out took publishing a wrong conclusion and then being corrected
+twice by the same CI job. Each round removed one assertion that was true on
+one platform and presented as though it were true everywhere.
+
+### What the standard actually says now
+
+The three tiers survive **for the root**. Every smooth objective agreed to
+relative 1e-12 on all three platforms. No fourth tier.
+
+What does not survive is my idea of recording the iteration path as a
+portable check. The path is in-process evidence -- the tier-2 differential
+suite asserts count equality against the oracle and passes -- and it is NOT a
+cross-platform claim. The recorded count is now checked as a 4x band, which
+catches a port iterating an order of magnitude more than upstream while
+tolerating the 1.93x the platforms actually differ by.
+
+And the replay test gained the check that should have been there first:
+**every returned root is verified to satisfy the solver's own contract**,
+`|f(root)| <= f_tolerance`, with the root inside the bracket. That needs
+neither an oracle nor a recorded number, holds identically everywhere, and is
+the property a caller actually depends on. A recorded root says "macOS got
+this number". This says "the returned point solves the equation to the
+accuracy requested".
+
+### The case that does amplify, and is not a defect
+
+One objective moves by 3.75 under a one-ULP perturbation. It took a second
+look to describe correctly.
+
+`0.045(1 - e^{-4x}) - 0.012x` is zero at `x = 0` and again near `x = 3.75`.
+The cdsone call site puts a bound at exactly 0, so unperturbed the search
+accepts `x = 0` through the exact `y == 0.0` test, in three evaluations. One
+ULP disqualifies it, and the search goes and finds the other root.
+
+My first reading of that table said "AMPLIFIED" and I nearly wrote it up as
+the fourth tier being necessary after all. It is not amplification: it is a
+function with two roots, and the finder promises *a* root, not a particular
+one. The objective was mis-designed — I had intended it to be monotone — and
+the fix was to split it into a genuinely monotone case and a deliberately
+two-rooted one.
+
+Both are now executable facts, because "the root finder is robust to one ULP"
+is true **only for single-rooted objectives** and the unqualified claim would
+be false.
+
+### Recording the iteration count, not just the answer
+
+For every other module a recorded answer is sufficient evidence, because the
+computation is a formula. Here the answer is the end of a path, so the
+differential suite and the recorded vectors both compare the **number of
+objective evaluations** as well as the root.
+
+That matters: two different paths can land on the same root whenever the
+tolerance absorbs the difference, and a root-only check would pass. **10,296
+recorded cases** carry their evaluation count, and the live differential sweep
+matched root and count on the first run across 2,000+ option combinations.
+
+### A convergence test that depends on where the bounds are
+
+Preserved, documented, and not counted as a defect:
+
+```c
+if (y0 == 0.0 || (ABS(y0) <= facc && (ABS(boundLo-x0) <= xacc ||
+                                      ABS(boundHi-x0) <= xacc)))
+```
+
+The initial guess is accepted when its function value is inside `facc` **and
+the guess happens to lie within `xacc` of either bound**. Proximity to a bound
+is not evidence about a root. It is standing in for the "did the last two
+iterates converge" test that the later checks use and that cannot run when
+there is no previous iterate.
+
+The consequence is real: the same guess, with the same function value, is
+accepted in a narrow bracket and rejected in a wide one. It only ever accepts
+a point already inside `facc`, so it cannot return something the caller
+declared unacceptable — which is why it is a quirk rather than a defect. It is
+pinned by a test that demonstrates both outcomes from the same guess.
+
 ## What went wrong, and how we found out
 
 The honest section. Eight defects in the port against seven in a
@@ -877,6 +1054,73 @@ That is the strongest argument for the port existing, and it is not
 being expressible.**
 
 ---
+
+## The collaboration record
+
+Started at the schedule slice, which means the earlier rows were reconstructed
+from the commit history and the PORT register rather than recorded live. Kept
+from here because the interesting question about working this way is not "did
+it work" but **what catches the mistakes**, and that is only answerable with
+the data.
+
+Nine defects introduced by the port itself, by what found each one:
+
+| caught by | count | which |
+|---|---|---|
+| a sanitizer, run deliberately | 3 | PORT-1, PORT-2, PORT-3 |
+| the 3-OS CI matrix | 2 | PORT-6, PORT-8 |
+| a test written to probe extremes | 2 | PORT-4, PORT-7 |
+| noticing a *passing* test print a warning | 1 | PORT-5 |
+| the next layer up composing the module | 1 | PORT-9 |
+
+**Nothing was caught by re-reading the code.** Every one of the nine was found
+by running something — which is the argument for building the harness before
+writing the port, and an argument against trusting a careful review of
+generated code.
+
+The distribution also says where the money is. Two defects needed three
+operating systems to appear, and one of those (PORT-8) rejected *ordinary*
+backward date offsets on Linux while macOS and Windows both passed. One needed
+a composition layer that did not exist yet. None of those four would have been
+found by any amount of looking at the file they were in.
+
+### Claims made and withdrawn
+
+The other half of the record, and the half that would be easy to leave out.
+Five times a conclusion was stated and then corrected on measurement:
+
+| claim | what measurement showed |
+|---|---|
+| a use-after-free in `JpmcdsSubtractDateLists` | ASan found nothing; the logic is deterministic. A mechanism was named before being checked |
+| UPSTREAM-7 "never examines index 0" | the real scope is any truncation leaving fewer than two dates — 234 of 600 cases, not an edge |
+| UPSTREAM-9 "crashes under ASan" | it faults in one frame and not three others; the reproducer was deleted for not reproducing |
+| the par-spread zero-annuity guard "fixes an unchecked division" | no reachable input produces a zero annuity; recorded as defensive, not counted as a defect |
+| the root finder's `TwoRoots` case "AMPLIFIED" | a mis-designed objective with two roots, not amplification. Nearly became a fourth tolerance tier |
+| the root finder "does not need an iterative tolerance tier", concluded from a one-ULP probe | the probe was too weak to model FMA contraction. CI found 146 of 10,296 cases taking a different iteration count on Linux and Windows, pure polynomials included. The ROOT claim survived; the claim that the iteration path is portable did not |
+
+Three of those five were overstatements in the direction of a more impressive
+finding. That is the bias worth knowing about, and the reason every severity
+claim in `defect-report.md` now carries the measurement that bounds it.
+
+### What the numbers do not say
+
+Rework per slice is not recorded, and reconstructing it from the commit
+history would be guesswork, because the history shows only what was committed.
+From here: one line per slice naming what had to be redone and why.
+
+- **schedule** — one test assertion wrong about the code (`HugePeriodDoesNotOverflow`
+  asserted a rejection that does not happen); one deleted file (`u9_reproducer.c`);
+  one write-up rewritten after the crash claim failed to hold.
+- **cds** — one real defect introduced and fixed (PORT-9); one comment corrected
+  that had argued the defect was not a defect; two wrong argument orders caught
+  by the compiler.
+- **root_find** — one mis-designed test objective, corrected after it produced a
+  result that would have changed a project-wide standard; one name collision
+  with a private member of `testing::Test`; **one conclusion published to a PR
+  and then withdrawn when CI contradicted it**, taking the journal entry,
+  the test name and two assertions with it; **a second CI round** then found a
+  third platform-dependent property (the convergence verdict) that the first
+  correction had missed.
 
 ## Metrics, with the caveat that matters
 
