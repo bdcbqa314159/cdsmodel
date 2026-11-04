@@ -332,6 +332,37 @@ the oracle. Numbered separately from the UPSTREAM series: these are ours.
 | PORT-9 | `cds_contingent_leg` omitted the one-day shift that `JpmcdsContingentLegMake` applies when `protectStart` is set, costing exactly one day of protection — a relative price error around 2e-5 | the FIRST test to compare a composed price. The protection leg's own differential suite could not see it: that suite fed a pre-built leg to both sides, so leg CONSTRUCTION was never compared | fixed — the shift applied in the factory, plus a construction differential test so the gap is closed at its source rather than only one layer up |
 | PORT-5 | **UBSan findings were not fatal in CI**, so every pure-UB finding had been silently ignored since the sanitizer job was added | noticed when PORT-2 "passed" while printing a runtime error | fixed — `CDSMODEL_FATAL_UBSAN`, on for the asan preset |
 
+**The bootstrap is the first module verified contract-first.** Its defining
+property -- a curve bootstrapped from quoted benchmarks reprices those
+benchmarks to zero -- is asserted before any comparison against upstream,
+needs no oracle, and holds on every platform. 1,488 repricings within 1e-9.
+The differential comparison sits behind it and is still bit-exact: 588 solved
+rates equal to the last bit.
+
+Recorded-rate tolerance is **1e-9 absolute, derived**: the solve stops at
+`|pv| <= 1e-10`, two platforms may return different spreads both satisfying
+that bounded by `2e-10 / |dpv/ds|`, the risky duration is at least about 1 for
+the shortest benchmark, and the continuous-to-annual conversion amplifies by at
+most about 1.7. Deliberately not the relative 1e-12 of accumulating values: a
+solver's output is set by where it stopped, not by how the arithmetic rounded.
+
+**The feasible region is part of the contract.** About a tenth of the
+realistic quote space cannot be bootstrapped at high recovery -- at recovery
+0.8 a distressed ladder solves four nodes (hazards 0.287, 0.326, 0.375, 0.542)
+and fails the fifth, because reaching a 7-year 800bp quote would need a
+forward hazard the curve cannot deliver arbitrage-free. Upstream refuses
+exactly the same combinations and the 32 infeasible cases are recorded with
+`n == 0` rather than omitted. Unlike the root finder's convergence verdict
+this one IS portable: "does a root exist in [0, 1e10]" is a property of the
+market data, where "did this converge in 100 steps" was a property of the path.
+
+Measured permissiveness, not defects: `guess = coupon/(1-recovery)` is
+unguarded, and `recovery == 1` with a zero coupon produces a NaN guess that
+passes the solver's bounds check (neither comparison holds for a NaN) and then
+fails to bracket -- no wrong answer. Negative recovery is **accepted**, since
+an LGD above 1 is coherent arithmetic; measured at -0.5 and -2.0, both
+bootstrap with hazards falling as LGD rises.
+
 **The root finder is where the three-tier floating-point standard was expected
 to break. The root tier held; the claim that the iteration PATH is portable
 did not, and CI is what established both.**
