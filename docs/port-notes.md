@@ -332,6 +332,33 @@ the oracle. Numbered separately from the UPSTREAM series: these are ours.
 | PORT-9 | `cds_contingent_leg` omitted the one-day shift that `JpmcdsContingentLegMake` applies when `protectStart` is set, costing exactly one day of protection — a relative price error around 2e-5 | the FIRST test to compare a composed price. The protection leg's own differential suite could not see it: that suite fed a pre-built leg to both sides, so leg CONSTRUCTION was never compared | fixed — the shift applied in the factory, plus a construction differential test so the gap is closed at its source rather than only one layer up |
 | PORT-5 | **UBSan findings were not fatal in CI**, so every pure-UB finding had been silently ignored since the sanitizer job was added | noticed when PORT-2 "passed" while printing a runtime error | fixed — `CDSMODEL_FATAL_UBSAN`, on for the asan preset |
 
+**The upfront charge completes the pricing chain, and reproduces ISDA's own
+published numbers.** The example program shipped in the distribution prints
+three upfront charges; the port matches all three, in CI, with no oracle. Its
+discount curve comes from `JpmcdsBuildIRZeroCurve` -- the single entry point of
+the unported interest-rate stack -- so the curve is recorded as input data
+(derived data, licence 4(b)), which is legitimate because the CDS model takes a
+discount curve as an input.
+
+**A caveat worth publishing, not a defect.** The upfront charge SATURATES in
+the quoted spread: measured on a five-year contract at recovery 0.4,
+`d(charge)/d(spread)` falls from 4.98 at 25bps to 0.22 at 3600bps, 0.053 at
+5000bps, and **-0.008 at 7200bps**. Past roughly 5000bps the map is not
+injective, so `JpmcdsCdsoneSpread` cannot uniquely invert a charge at
+distressed quote levels and no implementation could. The port therefore
+asserts the contract the solver actually guarantees -- the returned spread
+reproduces the target charge to within `f_tolerance` -- and keeps the
+spread-recovers-spread round trip as a separate test restricted below 1000bps,
+where the derivative exceeds 2. Nothing in upstream documents this.
+
+`UpfrontDates` exists because this is the published entry point and upstream
+passes four adjacent `TDate`s that do different jobs. Two are independently
+load-bearing and easy to conflate: the benchmark CDS start (which implies the
+flat curve) and the traded contract start (upstream's comment: "cds can start
+from past"). A test asserts moving either changes the answer. Also preserved:
+upstream's `payAccruedAtStart` is passed straight through as `isPriceClean`,
+two names suggesting opposite polarity that the code treats as identical.
+
 **The bootstrap is the first module verified contract-first.** Its defining
 property -- a curve bootstrapped from quoted benchmarks reprices those
 benchmarks to zero -- is asserted before any comparison against upstream,

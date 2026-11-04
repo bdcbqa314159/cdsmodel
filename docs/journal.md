@@ -1161,6 +1161,113 @@ That is three slices in a row where following "is this actually reachable?" or
 non-finding. The pattern is consistent enough to be worth stating as a habit:
 **an unguarded division is a question, not a defect.**
 
+## Decision 15 — The model produces its number, and the contract is what the solver promises
+
+`cdsone.c` is 234 lines and does almost nothing: bootstrap one quoted spread
+into a flat curve, price the contract against it. Every dependency was already
+verified. All six differential tests passed on the first run, including the one
+that matters most.
+
+### ISDA's own numbers
+
+The distribution ships one example program, and it prints three numbers. They
+are the only published output in the whole package, and the only external
+reference this project has -- everything else is either upstream's behaviour
+observed, or a property argued from first principles.
+
+```
+Upfront charge @ cpn = 0bps    =  38651.944609
+Upfront charge @ cpn = 3600bps =  -10682.519172
+Upfront charge @ cpn = 7200bps = -60016.982954
+```
+
+The port reproduces all three, and in CI with no oracle present.
+
+That last clause took one decision. The example builds its discount curve with
+`JpmcdsBuildIRZeroCurve`, the single public entry point of the 5,126-line
+interest-rate stack this port does not implement. Rather than port 5,126 lines
+to check three numbers, the curve is **recorded as input data** -- it is
+derived from running the model, so licence section 4(b) covers it exactly like
+every other recorded vector. 22 nodes generated from 14 quoted instruments,
+every rate 1e-9.
+
+That is a defensible split rather than a shortcut: the CDS model takes a
+discount curve as an input, and a caller with a curve already in hand -- which
+is every realistic caller -- never touches that stack.
+
+### The contract I asserted wrongly, and what it taught
+
+The obvious contract for an invertible pair is a round trip: feed
+`cdsone_spread` the charge that `cdsone_upfront_charge` produced, get the
+spread back. I asserted it and it failed at 7200bps, by 7.9e-4 -- six orders
+of magnitude outside the tolerance.
+
+Not a defect. The wrong contract. Measured sensitivity, five-year contract,
+recovery 0.4:
+
+| quoted spread | upfront charge | d(charge)/d(spread) |
+|---|---|---|
+| 25bps | 0.0126 | 4.98 |
+| 500bps | 0.207 | 3.32 |
+| 2000bps | 0.487 | 0.91 |
+| 3600bps | 0.565 | 0.22 |
+| 5000bps | 0.582 | 0.053 |
+| 7200bps | 0.585 | **-0.008** |
+
+The charge **saturates**. At wide spreads survival has already collapsed, so
+nearly all protection is paid regardless and the charge stops responding to
+the quote. Past about 5000bps the derivative changes sign: the map is not
+injective, and **no implementation can invert it uniquely there.**
+
+So the honest contract is the one the solver actually promises --
+`|charge(returned_spread) - target| <= f_tolerance` -- which is well posed
+everywhere it converges. That is now the assertion, with the spread round trip
+kept as a separate test restricted to spreads below 1000bps, where the
+derivative exceeds 2 and a 1e-8 charge tolerance bounds the spread error near
+5e-9.
+
+This is worth more than a passing test. **A user quoting a distressed name and
+asking for the implied flat spread will get an unreliable answer**, and
+nothing in upstream says so. It is not a bug in either implementation; it is a
+property of inverting a saturating function, and it is now written down.
+
+### Four dates of the same type, finally given a struct
+
+`cds.hpp` flagged adjacent same-typed dates as the hazard argument order
+cannot protect against, and then did nothing about it, because it mirrors
+upstream's internal composition layer. `cdsone` is the published entry point
+-- the one Python and spreadsheet bindings will wrap -- so here it was worth
+paying for:
+
+```cpp
+struct UpfrontDates { Date today, value, benchmark_start, stepin; };
+```
+
+Two of those four do jobs that are easy to conflate and genuinely independent:
+`benchmark_start` is the start of the synthetic CDS used to imply the flat
+curve, while `Cds::start` is the traded contract's, carrying upstream's own
+comment "cds can start from past". A test asserts that moving either one
+changes the answer, so neither can be silently ignored by a future edit.
+
+A third mapping is worth naming because the names lie: upstream's
+`payAccruedAtStart` is passed straight through as `JpmcdsCdsPrice`'s
+`isPriceClean`. The two terms suggest opposite polarity and the code treats
+them as identical. The code is the specification.
+
+### Where this leaves the project
+
+The CDS pricing chain is complete: curve, timeline, both legs, composition,
+schedule, stub, root finder, bootstrap, upfront charge. **325 tests with the
+oracle, 214 without.** The port prices a CDS and computes an upfront charge
+bit-identically to the 2009 C, and reproduces ISDA's published example on
+three platforms with no oracle anywhere.
+
+What remains is not capability. `defaulted.c` (95 lines) handles accrual on a
+name that has already defaulted; `JpmcdsCdsFeeLegFlows` needs `cashflow.c` to
+report cash flows rather than price them; and the 5,126-line interest-rate
+stack sits behind one function signature for callers who want upstream to
+build their discount curve too. All three are API completeness, not pricing.
+
 ## The collaboration record
 
 Started at the schedule slice, which means the earlier rows were reconstructed
@@ -1220,6 +1327,11 @@ From here: one line per slice naming what had to be redone and why.
 - **cds** — one real defect introduced and fixed (PORT-9); one comment corrected
   that had argued the defect was not a defect; two wrong argument orders caught
   by the compiler.
+- **cdsone** — one contract asserted wrongly (the spread round trip, which is
+  ill-posed above ~5000bps where the charge saturates and the derivative turns
+  negative); replaced with the charge round trip the solver actually
+  guarantees. The port itself needed no correction: six differential tests
+  green on the first run, ISDA's three published numbers reproduced.
 - **bootstrap** — three test premises wrong and corrected against measurement
   (every ladder bootstraps: false, about a tenth are infeasible; negative
   recovery is rejected: false, it is accepted; two case-count floors set above

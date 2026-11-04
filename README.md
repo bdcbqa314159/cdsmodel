@@ -10,9 +10,9 @@ codebase that only ever shipped a Windows-only Excel XLL.
 ISDA and Markit are not affiliated with this project and do not endorse it.
 See [NOTICE.md](NOTICE.md) for the full attribution and licence position.
 
-📋 **[Defect report](https://bdcbqa314159.github.io/cdsmodel/)** — five defects
-found in the original library while porting it, with sanitizer traces and the
-fix status of each.
+📋 **[Defect report](https://bdcbqa314159.github.io/cdsmodel/)** — ten defects
+found in the original library while porting it, with sanitizer traces,
+reproducers and the fix status of each.
 
 ## Why
 
@@ -100,9 +100,26 @@ plainly whether the oracle was found.
 | component | state |
 |---|---|
 | CMake build, 3-OS CI, differential test harness | working |
-| C++20 port | layers 1-4 complete; **both legs of a CDS price bit-identically to the original** |
+| **CDS pricing chain** | **complete** — prices a CDS and computes an upfront charge bit-identically to the original |
+| ISDA's published example | **reproduced**, on three platforms, with no upstream copy present |
+| API completeness (`defaulted.c`, fee-leg cash flows, IR curve bootstrap) | not started |
 | Python bindings (nanobind) | not started |
 | Cross-platform spreadsheet interface | not started |
+
+325 tests pass with a local upstream copy as the oracle, 214 without one.
+
+The three upfront charges printed by upstream's own example program are
+reproduced to the precision they are printed at — the only externally
+published numbers in the distribution, and the only reference in this project
+that is not either upstream's observed behaviour or a property argued from
+first principles.
+
+What is left is API surface rather than capability. The remaining pieces are
+`defaulted.c` (95 lines, accrual on an already-defaulted name),
+`JpmcdsCdsFeeLegFlows` (reporting cash flows rather than pricing them, needs
+`cashflow.c`), and `JpmcdsBuildIRZeroCurve` — one function signature in front
+of a 5,126-line interest-rate stack, for callers who want upstream to build
+their discount curve as well. This port takes a discount curve as an input.
 
 The migration plan, the measured legacy-pattern inventory, and every
 deliberate deviation from upstream behaviour are documented in
