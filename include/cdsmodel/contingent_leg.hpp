@@ -44,10 +44,22 @@ struct ContingentLeg {
   double notional = 0.0;
   ProtectionPayment pay = ProtectionPayment::AtDefault;
 
-  /// Upstream documents this as "if TRUE, startDate -= 1", but the code
-  /// applies it as an offset subtracted from the step-in and trade dates
-  /// rather than from the leg's own start date. The code is reproduced, not
-  /// the comment.
+  /// Whether protection covers `start` itself.
+  ///
+  /// The one-day offset this implies is applied in TWO places, in two
+  /// different upstream files, and they are not alternatives:
+  ///
+  ///   * `JpmcdsContingentLegMake` (cx.c) stores `startDate - 1`, because
+  ///     `startDate` means "protection begins at the end of this day". That
+  ///     belongs to leg CONSTRUCTION -- see `cds_contingent_leg`.
+  ///   * `JpmcdsContingentLegPV` (contingentleg.c) subtracts the same offset
+  ///     from the step-in and trade dates when clamping the integration
+  ///     start. That is what the code below does.
+  ///
+  /// An earlier revision of this comment claimed the second replaced the
+  /// first. It does not, and the differential suite could not catch the error
+  /// because it fed both sides a pre-built leg -- so construction was never
+  /// compared. `cds_differential_test` compares composed prices and found it.
   bool protect_start = true;
 };
 

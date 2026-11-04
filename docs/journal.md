@@ -645,6 +645,109 @@ aggregate with no invariant of its own, but it is now documented as defensive
 rather than load-bearing. The test now asserts the behaviour that was measured
 instead of the behaviour that was assumed.
 
+## Decision 12 — The composition layer is where the pieces are first required to agree
+
+`cds.c` is 505 lines and contains almost no arithmetic. It builds a premium
+leg, builds a protection leg, and subtracts one PV from the other. On the
+layer map it looked like the lowest-risk slice in the project — glue over four
+modules that were already bit-exact against the oracle.
+
+It found a defect in the first run.
+
+### What the earlier suites could not see
+
+The port's protection leg had a passing differential suite with a bit-exact
+sweep behind it. It built a `TContingentLeg` by hand on the upstream side, a
+`ContingentLeg` by hand on the port side, and compared the PV. That verified
+the integral thoroughly and verified the **constructor** not at all.
+
+Upstream's constructor is in `cx.c` — a different file from the PV routine in
+`contingentleg.c` — and it does this:
+
+```c
+/* p->startDate is defined as giving protection from end of startDate.
+   So if we want to protect on the start date, we need to move this
+   date forward by one. */
+if (protectStart) { p->startDate = startDate-1; }
+```
+
+The port skipped it. The cost is exactly one day of protection on a five-year
+contract: a relative price error of about **2e-5** — small enough to look like
+rounding, and two orders of magnitude too large to be rounding.
+
+Worse, the port's own comment on `protect_start` asserted that upstream
+applied this offset to the step-in date *instead of* the leg start. Both
+happen, in both files, and neither substitutes for the other. The comment was
+not merely incomplete; it was an argument for why the missing line was not
+missing.
+
+### The generalisation, which is worth more than the fix
+
+**A differential test that hands the same pre-built intermediate to both sides
+has verified nothing about how that intermediate is produced.**
+
+Every such test in this port was written that way deliberately — constructing
+the intermediate by hand is how you get a controlled sweep over the input
+domain. So the gap is structural, not careless, and it will exist anywhere
+this technique is used. The remedy is explicit: wherever a factory exists,
+compare the factory, not only what consumes its output. That is now done for
+the protection leg and for the premium leg's schedule, date for date.
+
+The broader lesson about layering: **composition is not glue.** It is the first
+place the pieces are required to agree about anything. Four modules can each
+be bit-exact in isolation and still disagree about whose responsibility a
+one-day convention is, and nothing below the composition layer can ask that
+question.
+
+### The milestone, stated plainly
+
+The port now prices a CDS. **1,600 recorded prices** replay in CI without an
+oracle, and the live differential sweep is bit-exact across the contract
+space: five coupons from zero to 500bp, four maturities including an off-cycle
+one, three coupon frequencies, three day counts, both accrual conventions,
+clean and dirty, four bad day conventions against two calendars, recovery from
+0 to 1, step-in both on and off schedule dates, and settlement up to a month
+forward.
+
+One check in that set is not a tautology and is the one worth having. The par
+spread is computed as `protection / annuity`; the price is computed as
+`protection - annuity x coupon`. Feeding the par spread back in as the coupon
+should give zero, and it does — to **1e-14** across every hazard level tested.
+Two different arrangements of the same quantities agreeing to that tolerance
+is evidence about the arithmetic, not about the plumbing.
+
+### Three asymmetries kept, not tidied
+
+Each is observable in a price, so each is transcribed:
+
+- The premium leg accrues from the contract start; protection runs from
+  `max(stepin, start)`. Accrual can predate step-in, protection cannot.
+- The last accrual end is the **unadjusted** maturity date (plus a day when
+  `protect_start`), while the last **pay** date keeps its bad-day adjustment.
+  So a final period can accrue past the day it settles. That is the standard
+  convention, and upstream expresses it by overwriting a value the loop just
+  computed — which reads like a bug and is not one.
+- `end == start` is legal with `protect_start`, and upstream special-cases it
+  with a hand-built two-element date list specifically to bypass the schedule
+  generator's `end > start` requirement. One period, accruing one day.
+
+### A guard that is not a fix, and says so
+
+`JpmcdsCdsParSpreads` ends with `parSpread[i] = contingentLegPV / feeLegPV` and
+no check on the denominator. The port returns `nullopt` instead.
+
+Before writing that up as a defect, it was worth asking whether a zero annuity
+is reachable. Measured: hazard rates up to 1000 leave it positive — survival
+damps to 9.8e-16, not zero. A contract that has already matured is rejected
+earlier. The shortest legal contract still accrues one day. No reachable input
+produced one.
+
+So the guard is **defensive**, and it is recorded as defensive rather than
+counted among the upstream defects. This is the second time in two slices that
+following a guard through to "is this actually reachable?" turned a would-be
+finding into a documented non-finding. Both times the honest answer was less
+impressive and more useful.
+
 ## What went wrong, and how we found out
 
 The honest section. Eight defects in the port against seven in a
