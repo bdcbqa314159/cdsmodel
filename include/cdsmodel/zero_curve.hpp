@@ -232,4 +232,69 @@ private:
   DayCount day_count_;
 };
 
+/// Convert a rate between compounding bases and day counts. Replaces
+/// `JpmcdsConvertCompoundRate`.
+///
+/// Needed by the bootstrap, which solves on a continuously compounded curve
+/// because that is cheaper and then converts the finished curve to annual
+/// compounding "since that is traditional" -- upstream's words.
+///
+/// Only ACT/365F and ACT/360 are supported, which is upstream's restriction
+/// and not an omission: it rejects every other pair explicitly.
+///
+/// The equal-bases short circuit is reproduced rather than folded into the
+/// general path. Upstream notes it is a hotspot, and more importantly the two
+/// paths do not compute the same thing in floating point -- the general path
+/// would route an unchanged rate through `log` and `exp` and return a
+/// different number.
+[[nodiscard]] inline std::optional<double> convert_compound_rate(double in_rate, double in_basis,
+                                                                 DayCount in_day_count,
+                                                                 double out_basis,
+                                                                 DayCount out_day_count) {
+  const auto day_factor = [](DayCount from, DayCount to) -> std::optional<double> {
+    if (from == to) {
+      return 1.0;
+    }
+    if (from == DayCount::Act365Fixed && to == DayCount::Act360) {
+      return 360.0 / 365.0;
+    }
+    if (from == DayCount::Act360 && to == DayCount::Act365Fixed) {
+      return 365.0 / 360.0;
+    }
+    return std::nullopt; // upstream converts between these two and no others
+  };
+
+  // Upstream's IS_EQUAL is an exact `==` in the build configuration shipped,
+  // so these comparisons are exact and not tolerant.
+  if (in_basis == out_basis) {
+    const std::optional<double> factor = day_factor(in_day_count, out_day_count);
+    if (!factor) {
+      return std::nullopt;
+    }
+    return in_day_count == out_day_count ? in_rate : in_rate * *factor;
+  }
+
+  const std::optional<double> factor = day_factor(in_day_count, out_day_count);
+  if (!factor) {
+    return std::nullopt;
+  }
+
+  double cc_rate = 0.0;
+  if (in_basis == kContinuousBasis) {
+    cc_rate = in_rate * *factor;
+  } else if (in_basis >= 1.0 && in_basis <= 365.0) {
+    cc_rate = *factor * in_basis * std::log(1.0 + in_rate / in_basis);
+  } else {
+    return std::nullopt;
+  }
+
+  if (out_basis == kContinuousBasis) {
+    return cc_rate;
+  }
+  if (out_basis >= 1.0 && out_basis <= 365.0) {
+    return out_basis * (std::exp(cc_rate / out_basis) - 1.0);
+  }
+  return std::nullopt;
+}
+
 } // namespace cdsmodel

@@ -1055,6 +1055,112 @@ being expressible.**
 
 ---
 
+## Decision 14 — Write the contract check first
+
+The bootstrap turns quoted par spreads into a clean spread curve by solving
+for one node at a time. It is the last module before the upfront charge, and
+the one where the root finder's lessons had somewhere to land.
+
+So this time the first test in the file was not a comparison against upstream.
+It was the bootstrap's defining property: **a curve bootstrapped from a set of
+quoted benchmarks must reprice those benchmarks to zero.**
+
+That ordering is the entire lesson of the previous slice. Three CI rounds went
+into discovering that the things I had recorded -- the iteration count, the
+convergence verdict -- were not portable, while the property a caller actually
+depends on had never been asserted at all. A recorded rate says "macOS got
+this number". "The curve reprices its own inputs" says the bootstrap works,
+needs no oracle, and holds everywhere.
+
+1,488 benchmark repricings, all within 1e-9 of zero. And then the differential
+comparison, which is still bit-exact: 588 solved rates equal to the last bit
+against the 2009 C.
+
+### The tolerance was derived, not tuned
+
+The recorded rates come out of a solver, so the right tolerance is set by the
+solver's stopping rule rather than by how the arithmetic rounds:
+
+- the solve stops at `|pv(s)| <= 1e-10`;
+- two platforms may return different spreads both satisfying that, bounded by
+  `2 x 1e-10 / |d pv/d s|`;
+- that derivative is the premium leg's risky duration, at least about 1 for
+  the shortest benchmark, giving `|ds| <= 2e-10` continuously compounded;
+- the published rate is `exp(s) - 1`, derivative up to about 1.7 for the
+  distressed ladders, so `|d(published)| <= 3.4e-10`.
+
+**1e-9 absolute**, with a factor of three in hand. Explicitly not the relative
+1e-12 used for accumulating values: a solver's output is determined by where
+it stopped, not by the rounding of the arithmetic that got it there.
+
+### One mutable curve, shared with the solver
+
+Worth recording because it is the only shared mutable state in the model and
+it looks like a bug until you see why it is not.
+
+The objective function handed to the root finder **writes the trial spread
+into the curve** and then prices the benchmark against that same curve. Node
+`i` is being solved; nodes before it hold solved spreads; nodes after it still
+hold their initial values, which are the raw quoted coupons. Those later nodes
+are never read, because a CDS maturing at `end[i]` is priced only from dates
+at or before `end[i]`.
+
+The port keeps the structure. The one change is forced: `ZeroCurve` validates
+on construction and has no setter, so the vector of rate points is the mutable
+state and a curve is rebuilt from it per evaluation. Same arithmetic, same
+order, same results -- with the validation upstream does once now done every
+time.
+
+### The feasible region, which I did not expect
+
+The first run of the contract test failed, and the premise was mine: I had
+asserted that every quote ladder bootstraps. It does not.
+
+Growing a distressed ladder one benchmark at a time at recovery 0.8 -- loss
+given default 0.2 -- the first four nodes solve to hazard rates of 0.287,
+0.326, 0.375 and 0.542. The fifth, a seven-year quoted at 800bp, does not.
+Survival to five years is already about 6.6% by then, and reaching the
+seven-year quote would need a forward hazard the curve cannot deliver while
+staying arbitrage-free.
+
+About a tenth of the realistic quote space is infeasible at high recovery.
+Upstream refuses exactly the same combinations, and that agreement is now
+asserted: **agreeing to reject is as much a part of the contract as agreeing
+on a number.** The recorded vectors include the 32 infeasible cases with
+`n == 0` rather than omitting them.
+
+Unlike the root finder's convergence verdict, this verdict IS portable, and
+the reason is worth separating. There the question was "did this iteration
+converge in 100 steps", a property of the path. Here it is "does a root exist
+in `[0, 1e10]`", a property of the market data. The first travels badly across
+platforms; the second does not travel at all because it never depended on the
+path.
+
+### Two more assumptions I had to measure
+
+Both were wrong in the same direction -- I expected rejection and found
+permissiveness.
+
+`guess = coupon / (1 - recovery)`, unguarded. I wrote it up as rejecting
+degenerate recovery rates and then checked:
+
+- `recovery == 1` with a non-zero coupon gives an infinite guess, outside the
+  bounds. Rejected.
+- `recovery > 1` gives a negative guess. Rejected.
+- `recovery == 1` with a ZERO coupon gives `0.0/0.0`, and **a NaN guess passes
+  the bounds check** -- neither `NaN < 0` nor `NaN > 1e10` is true. The search
+  proceeds on NaN, fails to bracket, retries at the bounds, and fails. No
+  wrong answer, so a non-finding rather than a defect.
+- `recovery < 0` is **accepted**. A recovery of -0.5 is a loss given default
+  of 1.5; the arithmetic is coherent and upstream permits it. Measured at
+  -0.5 and -2.0: both bootstrap, and the implied hazard falls as LGD rises,
+  which is the right direction. I had asserted rejection and the test failed.
+
+That is three slices in a row where following "is this actually reachable?" or
+"is this actually rejected?" turned an expected finding into a documented
+non-finding. The pattern is consistent enough to be worth stating as a habit:
+**an unguarded division is a question, not a defect.**
+
 ## The collaboration record
 
 Started at the schedule slice, which means the earlier rows were reconstructed
@@ -1114,6 +1220,11 @@ From here: one line per slice naming what had to be redone and why.
 - **cds** — one real defect introduced and fixed (PORT-9); one comment corrected
   that had argued the defect was not a defect; two wrong argument orders caught
   by the compiler.
+- **bootstrap** — three test premises wrong and corrected against measurement
+  (every ladder bootstraps: false, about a tenth are infeasible; negative
+  recovery is rejected: false, it is accepted; two case-count floors set above
+  the measured counts). The port itself needed no correction: bit-exact and
+  contract-satisfying on the first run.
 - **root_find** — one mis-designed test objective, corrected after it produced a
   result that would have changed a project-wide standard; one name collision
   with a private member of `testing::Test`; **one conclusion published to a PR

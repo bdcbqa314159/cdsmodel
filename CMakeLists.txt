@@ -140,6 +140,7 @@ if(CDSMODEL_BUILD_TESTS)
                  tests/schedule_test.cpp
                  tests/cds_test.cpp
                  tests/root_find_test.cpp
+                 tests/bootstrap_test.cpp
                  tests/adversarial_test.cpp)
   target_link_libraries(cdsmodel_tests PRIVATE cdsmodel GTest::gtest_main)
   target_include_directories(cdsmodel_tests PRIVATE tests)
@@ -165,7 +166,8 @@ if(CDSMODEL_BUILD_TESTS)
                    tests/fee_leg_differential_test.cpp
                    tests/schedule_differential_test.cpp
                    tests/cds_differential_test.cpp
-                   tests/root_find_differential_test.cpp)
+                   tests/root_find_differential_test.cpp
+                   tests/bootstrap_differential_test.cpp)
     target_link_libraries(cdsmodel_differential_tests
                           PRIVATE cdsmodel cds_reference GTest::gtest_main)
     target_include_directories(cdsmodel_differential_tests PRIVATE tests)
@@ -175,7 +177,7 @@ if(CDSMODEL_BUILD_TESTS)
     # committed vectors are reproducible rather than magic numbers.
     foreach(gen bsearch date day_count day_count_string date_interval calendar bad_day
                  business_days date_list zero_curve timeline contingent_leg
-                 fee_leg schedule cds root_find)
+                 fee_leg schedule cds root_find bootstrap)
       add_executable(gen_${gen}_golden tools/gen_${gen}_golden.cpp)
       target_link_libraries(gen_${gen}_golden PRIVATE cdsmodel cds_reference)
       target_include_directories(gen_${gen}_golden PRIVATE tests)
