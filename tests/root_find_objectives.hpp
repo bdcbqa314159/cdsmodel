@@ -127,4 +127,24 @@ inline const char *name_of(Which w) {
 /// is excluded by construction -- see RootFind.MultipleRootsArePathDependent.
 [[nodiscard]] inline bool has_single_root(Which w) { return w != Which::TwoRoots; }
 
+/// How precisely the root is DETERMINED by the objective, in x.
+///
+/// This is not a solver tolerance. `Quantised` truncates its output to 1e-6,
+/// so near its root -- where the derivative is about 2.83 -- every x within
+/// roughly 1e-6/2.83 = 3.5e-7 produces an identical function value. The
+/// function is flat in steps, and any point on the step satisfies
+/// `|f| <= f_tolerance` equally. Which point a search lands on is a property
+/// of the path, not of the function, so two correct implementations can and
+/// do disagree within a plateau.
+///
+/// Measured in CI: Linux and Windows differ from macOS by up to 6.3e-9 on
+/// this objective -- comfortably inside one plateau, and not a defect in
+/// either. Every smooth objective agrees to relative 1e-12 on all three.
+///
+/// Returning 0 means "determined as precisely as the arithmetic allows", and
+/// the caller should use the ordinary accumulating-float tolerance.
+[[nodiscard]] inline double root_resolution(Which w) {
+  return w == Which::Quantised ? 1.0e-6 : 0.0;
+}
+
 } // namespace cdsmodel::testing

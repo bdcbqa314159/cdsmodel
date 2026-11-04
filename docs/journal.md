@@ -748,7 +748,7 @@ following a guard through to "is this actually reachable?" turned a would-be
 finding into a documented non-finding. Both times the honest answer was less
 impressive and more useful.
 
-## Decision 13 — The iterative tier that turned out not to be needed
+## Decision 13 — A sensitivity probe is not evidence of reproducibility
 
 The root finder was the slice I expected to break the verification standard.
 
@@ -776,16 +776,75 @@ up: the search is identical, the function values differ in the last bit.
 | Linear, Cubic, Quadratic, Exponential, SteepTanh, CdsMonotone | — | 5–25 | **identical root, identical evaluation count** |
 | Quantised (output truncated to 6 digits) | 1.4142132 | 21 | 3.1e-16 relative, ±2 evaluations |
 
-No amplification. The reason is worth stating because it is not luck: the
-convergence tolerance **is** a quantiser. The search stops when `|f| <= 1e-8`
-and the iterates are within `1e-8` of each other, so a perturbation of 1e-17
-cannot change which iterate first satisfies that test unless the iterate sits
-exactly on the boundary. The tolerance that makes the answer approximate is
-the same thing that makes it reproducible.
+No amplification, and the reasoning looked sound: the convergence tolerance
+**is** a quantiser. The search stops when `|f| <= 1e-8` and the iterates are
+within `1e-8`, so a perturbation of 1e-17 cannot change which iterate first
+satisfies that test unless it sits exactly on the boundary.
 
-**The standard stands at three tiers.** And the test is tier 1, not a
-recorded finding, so it re-measures on all three CI platforms rather than
-asserting what one laptop saw.
+I wrote that up, committed it, pushed it, and CI disagreed within the hour.
+
+### What CI found that the probe could not
+
+Linux, Windows and the sanitizer job all failed one test. macOS passed. 156
+failing assertions out of 10,296 recorded cases, and the split matters:
+
+- **146 were evaluation COUNTS** -- a different number of iterations on a
+  different platform. Including for `Quadratic` (97 cases) and `Cubic` (36),
+  which are **pure polynomials with no libm anywhere in them.** Worst
+  observed ratio 1.93x: 108 evaluations against 208.
+- **9 were roots**, all of them the same objective, discussed below.
+
+The cause of the count differences is almost certainly floating-point
+contraction. A compiler may fuse `a*b + c` into a single FMA with one rounding
+instead of two, and `-ffp-contract=fast` is the default for both GCC and
+Clang. That changes values **mid-expression**, and by different amounts at
+different points.
+
+Which is exactly what my probe could not model. Shifting the objective's
+return value by one ULP, uniformly, is a strictly weaker disturbance than
+re-rounding the middle of an expression at every evaluation. The probe passed
+on all three platforms; the property it measures is true. It simply is not the
+property that mattered, and I presented it as though it were.
+
+**A single-platform sensitivity probe is not evidence of cross-platform
+reproducibility. The three-OS matrix is.** That is the actual decision here,
+and it was made for me.
+
+### The nine root differences, which are not a defect
+
+All nine are `Quantised`, whose output is truncated to six digits. The
+disagreements are 1.1e-10 and 6.3e-9 on a root of 1.414.
+
+That function is **flat in steps**. Near its root the derivative is about
+2.83, so with a 1e-6 output quantum every x within roughly 3.5e-7 produces an
+identical value. Every point on a step satisfies `|f| <= f_tolerance` equally
+well. Which point a search lands on is a property of the path, not of the
+function -- and both observed differences sit comfortably inside one step.
+
+So neither platform is wrong, and the fix is not a tolerance fudge. It is to
+say what is true: **the root is determined only to the resolution of the
+objective.** Objectives now declare that resolution, and the replay test
+widens to it where it is non-zero.
+
+### What the standard actually says now
+
+The three tiers survive **for the root**. Every smooth objective agreed to
+relative 1e-12 on all three platforms. No fourth tier.
+
+What does not survive is my idea of recording the iteration path as a
+portable check. The path is in-process evidence -- the tier-2 differential
+suite asserts count equality against the oracle and passes -- and it is NOT a
+cross-platform claim. The recorded count is now checked as a 4x band, which
+catches a port iterating an order of magnitude more than upstream while
+tolerating the 1.93x the platforms actually differ by.
+
+And the replay test gained the check that should have been there first:
+**every returned root is verified to satisfy the solver's own contract**,
+`|f(root)| <= f_tolerance`, with the root inside the bracket. That needs
+neither an oracle nor a recorded number, holds identically everywhere, and is
+the property a caller actually depends on. A recorded root says "macOS got
+this number". This says "the returned point solves the equation to the
+accuracy requested".
 
 ### The case that does amplify, and is not a defect
 
@@ -1012,6 +1071,7 @@ Five times a conclusion was stated and then corrected on measurement:
 | UPSTREAM-9 "crashes under ASan" | it faults in one frame and not three others; the reproducer was deleted for not reproducing |
 | the par-spread zero-annuity guard "fixes an unchecked division" | no reachable input produces a zero annuity; recorded as defensive, not counted as a defect |
 | the root finder's `TwoRoots` case "AMPLIFIED" | a mis-designed objective with two roots, not amplification. Nearly became a fourth tolerance tier |
+| the root finder "does not need an iterative tolerance tier", concluded from a one-ULP probe | the probe was too weak to model FMA contraction. CI found 146 of 10,296 cases taking a different iteration count on Linux and Windows, pure polynomials included. The ROOT claim survived; the claim that the iteration path is portable did not |
 
 Three of those five were overstatements in the direction of a more impressive
 finding. That is the bias worth knowing about, and the reason every severity
@@ -1031,7 +1091,9 @@ From here: one line per slice naming what had to be redone and why.
   by the compiler.
 - **root_find** — one mis-designed test objective, corrected after it produced a
   result that would have changed a project-wide standard; one name collision
-  with a private member of `testing::Test`.
+  with a private member of `testing::Test`; **one conclusion published to a PR
+  and then withdrawn when CI contradicted it**, taking the journal entry,
+  the test name and two assertions with it.
 
 ## Metrics, with the caveat that matters
 

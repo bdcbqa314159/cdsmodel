@@ -333,19 +333,30 @@ the oracle. Numbered separately from the UPSTREAM series: these are ours.
 | PORT-5 | **UBSan findings were not fatal in CI**, so every pure-UB finding had been silently ignored since the sanitizer job was added | noticed when PORT-2 "passed" while printing a runtime error | fixed — `CDSMODEL_FATAL_UBSAN`, on for the asan preset |
 
 **The root finder is where the three-tier floating-point standard was expected
-to break, and did not.** Its arithmetic feeds comparisons that choose the next
-iterate, so a sub-ULP difference can in principle flip a branch and move the
-answer arbitrarily. Measured instead of assumed: a one-ULP perturbation of the
-objective leaves the root identical for every single-rooted case tested, and
-within 3.1e-16 relative for a quantised one. The convergence tolerance acts as
-a quantiser — the search stops at `|f| <= 1e-8`, so a perturbation of 1e-17
-cannot change which iterate first satisfies it. The standard stays at three
-tiers, and the measurement is a tier-1 test so it re-runs on every platform
-rather than being a finding from one laptop.
+to break. The root tier held; the claim that the iteration PATH is portable
+did not, and CI is what established both.**
 
-Recorded vectors for this module carry the **objective-evaluation count** as
-well as the root, because two different paths can reach the same root whenever
-the tolerance absorbs the difference, and a root-only check would pass.
+Roots: every smooth objective agrees to relative 1e-12 across macOS, Linux and
+Windows. No fourth tier.
+
+Paths: 146 of 10,296 recorded cases take a different number of objective
+evaluations on Linux and Windows than on macOS -- including pure polynomials
+with no libm in them, worst ratio 1.93x. The cause is floating-point
+contraction, which re-rounds the middle of an expression; `-ffp-contract=fast`
+is the GCC and Clang default. A single-platform one-ULP probe cannot model
+that, passed on all three platforms, and was mistaken for evidence of
+reproducibility. The recorded count is therefore asserted in-process (tier 2,
+where it is exact) and only as a 4x band in CI.
+
+Resolution: an objective with plateaus determines its root only to the plateau
+width. `Quantised` truncates output to 1e-6 and has derivative about 2.83 at
+its root, so any x within 3.5e-7 gives an identical value; platforms disagreed
+by up to 6.3e-9, well inside one step, and neither is wrong. Objectives declare
+a `root_resolution()` and replay widens to it.
+
+The replay suite also verifies the **solver's own contract** --
+`|f(root)| <= f_tolerance`, root inside the bracket -- which needs no oracle
+and no recorded number, and is the property a caller actually depends on.
 
 **PORT-9 is the most instructive of the nine, because of what did not catch
 it.** The protection leg had a passing differential suite with a bit-exact

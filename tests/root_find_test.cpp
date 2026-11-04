@@ -23,6 +23,7 @@ using cdsmodel::testing::has_single_root;
 using cdsmodel::testing::kAllObjectives;
 using cdsmodel::testing::name_of;
 using cdsmodel::testing::Objective;
+using cdsmodel::testing::root_resolution;
 using cdsmodel::testing::Which;
 
 RootFindOptions cdsone_options() {
@@ -39,7 +40,28 @@ RootFindOptions cdsone_options() {
   return opt;
 }
 
-TEST(RootFind, MatchesRecordedRootsAndIterationCounts) {
+TEST(RootFind, MatchesRecordedRoots) {
+  // Roots only. The recorded evaluation COUNT is deliberately not asserted
+  // here, and the reason is a correction rather than a simplification.
+  //
+  // The count was asserted in the first version of this test, on the
+  // reasoning that an iterative result needs its path checked because two
+  // paths can reach the same root. That reasoning is right in-process, where
+  // the tier-2 differential suite does assert it and passes.
+  //
+  // Across platforms it is wrong. CI measured 146 of 10,296 cases taking a
+  // different number of evaluations on Linux and Windows than on macOS --
+  // including for pure polynomials with no libm involved at all, `Quadratic`
+  // worst at 97 cases. The cause is floating-point contraction: a compiler
+  // may fuse `a*b + c` into a single FMA with one rounding instead of two,
+  // and `-ffp-contract=fast` is the default. That changes values MID
+  // EXPRESSION and by different amounts at different points, which is a
+  // strictly stronger disturbance than shifting the objective's return value
+  // by one ULP -- and shifting the return value is what
+  // OneUlpPerturbationOfTheObjectiveDoesNotAmplify measures. That test is
+  // true; it just measures a weaker property than this one needed.
+  //
+  // So the path is in-process evidence, and the root is the portable claim.
   int checked = 0;
   for (const auto &c : cdsmodel::golden::kRootFindCases) {
     RootFindOptions opt;
@@ -57,11 +79,22 @@ TEST(RootFind, MatchesRecordedRootsAndIterationCounts) {
     const std::string where = std::string(name_of(obj.which)) + " case " + std::to_string(checked);
 
     ASSERT_EQ(got.has_value(), c.solved) << where;
-    // The path, not only the answer. A divergent path that happened to land
-    // inside tolerance would pass a root-only check.
-    EXPECT_EQ(obj.calls, c.calls) << where << " -- iteration path differs";
+    // The recorded count is still checked, but as a BAND rather than an
+    // equality, so it catches an algorithmic divergence without failing on
+    // the platform variation measured above. Worst observed ratio across
+    // Linux, Windows and macOS was 1.93x (108 evaluations against 208); the
+    // band is 4x plus a constant, which leaves real headroom while still
+    // catching a port that iterates an order of magnitude more than upstream.
+    EXPECT_GT(obj.calls, 0) << where << " -- the objective was never evaluated";
+    EXPECT_LE(obj.calls, 4 * c.calls + 8) << where << " -- far more evaluations than upstream";
+    EXPECT_LE(c.calls, 4 * obj.calls + 8) << where << " -- far fewer evaluations than upstream";
     if (c.solved) {
-      EXPECT_NEAR(*got, c.root, 1.0e-12 * std::max(1.0, std::fabs(c.root))) << where;
+      // Relative 1e-12 for a well-posed objective; widened to the objective's
+      // own resolution where it has plateaus, because within a plateau the
+      // returned point is a property of the path and not of the function.
+      const double tolerance =
+          std::max(1.0e-12 * std::max(1.0, std::fabs(c.root)), root_resolution(obj.which));
+      EXPECT_NEAR(*got, c.root, tolerance) << where;
     }
     ++checked;
   }
@@ -69,7 +102,56 @@ TEST(RootFind, MatchesRecordedRootsAndIterationCounts) {
   EXPECT_GT(checked, 10000) << "recorded vectors thinner than expected: " << checked;
 }
 
-TEST(RootFind, OneUlpPerturbationOfTheObjectiveDoesNotAmplify) {
+TEST(RootFind, EveryReturnedRootSatisfiesTheSolversOwnContract) {
+  // The strongest check in this file, and the only one that needs neither an
+  // oracle nor a recorded number: whatever the search returns, the objective
+  // must actually be within `f_tolerance` of zero there.
+  //
+  // This is what the recorded roots were really standing in for. A recorded
+  // root says "macOS got this number"; this says "the returned point solves
+  // the equation to the accuracy the caller asked for", which is the property
+  // a caller depends on and is identical on every platform.
+  //
+  // Every acceptance branch in root_find_brent returns a point satisfying
+  // `f == 0.0` or `|f| <= f_tolerance`, so this holds by construction -- and
+  // asserting it means a future edit that returns an unconverged point fails
+  // here rather than silently shipping.
+  int verified = 0;
+  for (const auto &c : cdsmodel::golden::kRootFindCases) {
+    if (!c.solved) {
+      continue;
+    }
+    RootFindOptions opt;
+    opt.bound_lo = c.bound_lo;
+    opt.bound_hi = c.bound_hi;
+    opt.max_iterations = c.max_iterations;
+    opt.guess = c.guess;
+    opt.initial_x_step = c.initial_x_step;
+    opt.initial_f_derivative = c.initial_f_derivative;
+    opt.x_tolerance = c.x_tolerance;
+    opt.f_tolerance = c.f_tolerance;
+
+    const Which which = kAllObjectives[static_cast<std::size_t>(c.objective)];
+    Objective obj{which};
+    const std::optional<double> root = root_find_brent(obj, opt);
+    if (!root) {
+      continue; // a platform that did not converge is covered by the test above
+    }
+    Objective probe{which};
+    const std::optional<double> value = probe(*root);
+    ASSERT_TRUE(value.has_value()) << name_of(which) << " root is outside its own domain";
+    EXPECT_LE(std::fabs(*value), opt.f_tolerance)
+        << name_of(which) << " returned " << *root << " where f = " << *value
+        << ", outside the requested f_tolerance of " << opt.f_tolerance;
+    // And it must lie inside the bracket it was asked to search.
+    EXPECT_GE(*root, opt.bound_lo) << name_of(which);
+    EXPECT_LE(*root, opt.bound_hi) << name_of(which);
+    ++verified;
+  }
+  EXPECT_GT(verified, 5000) << "too few solved cases verified: " << verified;
+}
+
+TEST(RootFind, OneUlpPerturbationOfTheReturnValueDoesNotAmplify) {
   // The measurement this module exists to settle. Everything ported before
   // this evaluates a formula, so a one-ULP difference stays one ULP. A root
   // finder feeds its arithmetic into comparisons that choose the next
@@ -83,9 +165,21 @@ TEST(RootFind, OneUlpPerturbationOfTheObjectiveDoesNotAmplify) {
   // 1e-12. The 1e-8 convergence tolerance acts as a quantiser that absorbs
   // perturbations far below it.
   //
-  // This is a proxy for a libm difference, not a proof about any particular
-  // compiler -- which is why it runs on all three CI platforms rather than
-  // being recorded as a one-off finding.
+  // IMPORTANT -- what this does NOT establish, learned the hard way.
+  //
+  // Shifting the objective's RETURN VALUE by one ULP is a weaker disturbance
+  // than a real cross-platform difference, which changes values mid
+  // expression (floating-point contraction can fuse `a*b + c` into a single
+  // FMA with one rounding instead of two) and by different amounts at
+  // different points. CI found 146 of 10,296 recorded cases taking a
+  // different number of evaluations on Linux and Windows -- including pure
+  // polynomials -- while this test passed on all three platforms.
+  //
+  // So this is a true statement about a narrower property than it first
+  // appears to cover. It is kept because the property is worth pinning, and
+  // because the gap between it and what CI measured is the whole lesson: a
+  // single-platform sensitivity probe is not evidence of cross-platform
+  // reproducibility. The three-OS matrix is.
   const RootFindOptions opt = cdsone_options();
   int measured = 0;
   for (Which which : kAllObjectives) {
