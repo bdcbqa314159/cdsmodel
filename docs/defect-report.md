@@ -981,3 +981,153 @@ bit-for-bit against what upstream computes from an interval built through its
 own constructor. Normalisation divides numerator and denominator by the same
 factor — `'Q'` with 5 periods becomes 15 months, and 15/12 is exactly 5/4 — so
 the correctly-rounded quotient is unchanged, across 120 recorded cases.
+
+## UPSTREAM-13 — A leaked global that disables validation process-wide
+
+**Location:** `lib/src/lintrp1.inc`, in the body expanded as
+`JpmcdsLinInterpLongPoint1Discontinuous`.
+**Severity:** Medium. One failed call permanently disables an input validation
+for every binary search in the process.
+
+### Mechanism
+
+Upstream cannot say "search without checking order" per call, because that
+choice lives in a mutable global: `bSearchCheckOrder_g` in `bsearch.c`,
+default TRUE, toggled by `JpmcdsBSearchCheckOrder` and consulted by **both**
+`JpmcdsBSearchDouble` and `JpmcdsBSearchLong` before validating that their
+input array is sorted.
+
+The discontinuous interpolator legitimately needs the unchecked search, since
+repeated abscissae *are* the discontinuities. So it clears the global, does its
+own non-decreasing check, searches, and restores it:
+
+```c
+checkOrder = JpmcdsBSearchCheckOrder(FALSE);
+if (checkOrder)
+{
+    for (idx = 0; idx < N-1; idx++)
+        if (XARRAY(idx) > XARRAY(idx+1))
+        {
+            JpmcdsErrMsg(...);
+            return FAILURE;                     /* leaks */
+        }
+}
+if (SEARCH_ROUTINE_NAME(xDesired, x, xskip, N, &lo, &hi) == FAILURE)
+    goto done;                                  /* leaks */
+JpmcdsBSearchCheckOrder(checkOrder);            /* only reached on success */
+```
+
+Both error paths leave before the restore.
+
+### Evidence
+
+```
+bSearchCheckOrder_g: process-wide static, default TRUE, consulted by
+JpmcdsBSearchLong and JpmcdsBSearchDouble before validating order.
+
+  baseline:                      JpmcdsBSearchLong(unordered) -> FAILURE (validated)
+  one failed call ...            -> FAILURE
+  after that single failed call: JpmcdsBSearchLong(unordered) -> SUCCESS  *** VALIDATION IS OFF ***
+  current global state:          FALSE (leaked)
+```
+
+Reproduce with `./build/debug/defect_evidence u13`.
+
+### Scope and severity
+
+After one failed call, every binary search in the process stops checking that
+its domain is sorted — including inside the zero curve and the whole CDS
+pricing path. A binary search over an unsorted array does not fail; it returns
+a bracket that is simply wrong, and the interpolation built on it is silently
+wrong too.
+
+Medium rather than high, for reachability rather than consequence. The function
+has **no caller inside the library** and **no declaration in any public
+header** — but it is an exported symbol, and it is in the XLL's surface, so a
+spreadsheet can reach it. And producing a wrong number afterwards needs a later
+unsorted array, which curves built through `JpmcdsMakeTCurve` are not.
+
+The clearest statement of the problem is operational: the differential suite
+for this module has to restore the global in `TearDown`, or one test corrupts
+every test after it.
+
+### In the port
+
+**Cannot occur.** `bsearch.hpp` offers `bracket` and `bracket_checked` as two
+functions and has no global at all.
+
+That was a taste judgement made in the very first slice of this port, whose
+comment read *"process-wide state that silently changed the behaviour of every
+caller"*. UPSTREAM-13 is that sentence turning out to be literally true — not
+through explicit toggling, but through a leak.
+
+## UPSTREAM-14 — Bond metrics return stack garbage before the epoch
+
+**Location:** `lib/src/yearfrac.c`, the static helpers `bondDaysDiff` and
+`bondEDaysDiff` behind `JpmcdsDayCountToMetricFunc`.
+**Severity:** Medium. A catastrophically wrong interpolation, reported as
+success, from an uninitialised read.
+
+### Mechanism
+
+```c
+static double bondDaysDiff(double startDate, double endDate)
+{
+    long days;                                        /* uninitialised */
+    (void)JpmcdsDaysDiff((TDate)startDate, (TDate)endDate,
+                         JPMCDS_B30_360, &days);
+    return ((double)days);                            /* garbage if it failed */
+}
+```
+
+The status is discarded. `JpmcdsDaysDiff` fails for a TDate before the 1601
+epoch and **does not write its out parameter**, so the metric returns whatever
+was on the stack.
+
+### Evidence
+
+```
+DaysDiff(-50  , 100, 30/360) -> FAILURE  days = -123456789 <- OUT PARAM NEVER WRITTEN
+DaysDiff(-1   , 100, 30/360) -> FAILURE  days = -123456789 <- OUT PARAM NEVER WRITTEN
+DaysDiff(0    , 100, 30/360) -> SUCCESS  days = 100
+DaysDiff(1    , 100, 30/360) -> SUCCESS  days = 99
+
+metric(-50, 100) -> 6101050560          <- uninitialised stack read
+
+interpolate at -50 with the 30/360 metric -> -667794.1351
+```
+
+The curve interpolated is `f = {0.01, 0.02}`. `JpmcdsLinInterpLongPoint1`
+reports SUCCESS.
+
+**The value is not stable, and that is the point.** A second binary built from
+the same sources gave `metric(-50, 100) = 4` and an interpolated
+**-619018.2639**. Whatever occupies that stack slot is what the caller gets,
+so any single figure quoted here is one observation rather than the answer.
+
+Reproduce with `./build/debug/defect_evidence u14`.
+
+### Two things worth noting about how it was found
+
+It is an **uninitialised read**, which AddressSanitizer cannot detect —
+MemorySanitizer would, and this project does not run one. So the sanitizer job
+is green on it.
+
+And it was found by the **golden generator's full cross-product** of abscissae
+against metrics, not by the differential suite, whose sweeps used realistic
+dates for each metric. A generator that sweeps everything found what targeted
+sweeps missed.
+
+### In the port
+
+**Cannot occur**, and the port additionally diverges by being *correct*.
+
+`metric_distance` checks the status it is given, so a failure becomes
+`nullopt`. In practice the branch rarely fires: `std::chrono` has no 1601
+epoch, so a pre-epoch abscissa is simply a date in 1600 and the 30/360
+difference is well defined. The port returns a sensible extrapolation —
+slightly below the first node's value — where upstream returns garbage.
+
+The recorded vectors deliberately **omit** the affected combinations. Recording
+the output of undefined behaviour would enshrine it, which is the same rule
+that kept UPSTREAM-4's buffer overflow out of the vectors.
