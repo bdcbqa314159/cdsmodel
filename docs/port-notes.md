@@ -332,6 +332,21 @@ the oracle. Numbered separately from the UPSTREAM series: these are ours.
 | PORT-9 | `cds_contingent_leg` omitted the one-day shift that `JpmcdsContingentLegMake` applies when `protectStart` is set, costing exactly one day of protection — a relative price error around 2e-5 | the FIRST test to compare a composed price. The protection leg's own differential suite could not see it: that suite fed a pre-built leg to both sides, so leg CONSTRUCTION was never compared | fixed — the shift applied in the factory, plus a construction differential test so the gap is closed at its source rather than only one layer up |
 | PORT-5 | **UBSan findings were not fatal in CI**, so every pure-UB finding had been silently ignored since the sanitizer job was added | noticed when PORT-2 "passed" while printing a runtime error | fixed — `CDSMODEL_FATAL_UBSAN`, on for the asan preset |
 
+**The root finder is where the three-tier floating-point standard was expected
+to break, and did not.** Its arithmetic feeds comparisons that choose the next
+iterate, so a sub-ULP difference can in principle flip a branch and move the
+answer arbitrarily. Measured instead of assumed: a one-ULP perturbation of the
+objective leaves the root identical for every single-rooted case tested, and
+within 3.1e-16 relative for a quantised one. The convergence tolerance acts as
+a quantiser — the search stops at `|f| <= 1e-8`, so a perturbation of 1e-17
+cannot change which iterate first satisfies it. The standard stays at three
+tiers, and the measurement is a tier-1 test so it re-runs on every platform
+rather than being a finding from one laptop.
+
+Recorded vectors for this module carry the **objective-evaluation count** as
+well as the root, because two different paths can reach the same root whenever
+the tolerance absorbs the difference, and a root-only check would pass.
+
 **PORT-9 is the most instructive of the nine, because of what did not catch
 it.** The protection leg had a passing differential suite with a bit-exact
 sweep behind it. That suite built a `TContingentLeg` by hand on the upstream
