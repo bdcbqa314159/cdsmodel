@@ -70,12 +70,12 @@ differentially equal to its ancestor across a swept input domain, and the
 sweep is then recorded into tier 1 so CI inherits the guarantee.
 
 ```
-with upstream present: 219 tests  (tier 1 + tier 2 + end-to-end example)
-without upstream:      146 tests  (tier 1 only, replaying 15,982 recorded cases)
+with upstream present: 230 tests  (tier 1 + tier 2 + end-to-end example)
+without upstream:      153 tests  (tier 1 only, replaying 16,702 recorded cases)
 ```
 
 Both configurations also run clean under AddressSanitizer and
-UndefinedBehaviorSanitizer (`--preset asan`). That combination has found seven
+UndefinedBehaviorSanitizer (`--preset asan`). That combination has found eight
 genuine defects in the original model so far, including a stack buffer
 overflow reachable from string input, an interval type whose meaning changes
 with letter case, and an adjustment that never returns — see "Upstream defects
@@ -100,7 +100,7 @@ plainly whether the oracle was found.
 | component | state |
 |---|---|
 | CMake build, 3-OS CI, differential test harness | working |
-| C++20 port | layers 1-4 complete; vertical slice in progress — zero curve and integration timeline done |
+| C++20 port | layers 1-4 complete; **the protection leg prices bit-identically to the original** |
 | Python bindings (nanobind) | not started |
 | Cross-platform spreadsheet interface | not started |
 

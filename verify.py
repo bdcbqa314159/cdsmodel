@@ -26,7 +26,7 @@ ROOT = pathlib.Path(__file__).parent.resolve()
 # Calibrated to the CI case -- tier 1 only, no oracle present -- because that
 # is the binding one. A local run with the oracle executes strictly more.
 # Bump it when a module lands; never lower it to make a red run green.
-TEST_FLOOR_WITHOUT_ORACLE = 146
+TEST_FLOOR_WITHOUT_ORACLE = 153
 
 
 def fail(msg: str) -> None:
@@ -242,6 +242,7 @@ def gate_tests(preset: str) -> None:
         print(proc.stdout)
         print(proc.stderr, file=sys.stderr)
         fail("ctest reported failures")
+
     print(proc.stdout[-4000:])
     # CMake 4 omits the ", N tests failed" clause when nothing failed.
     m = re.search(r"(\d+)% tests passed(?:, (\d+) tests failed)? out of (\d+)", proc.stdout)
