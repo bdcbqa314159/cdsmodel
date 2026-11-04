@@ -14,6 +14,7 @@
 // appears it is for an identity about the port, never for agreement with
 // upstream, and it says so.
 
+#include <cdsmodel/cds.hpp>
 #include <cdsmodel/contingent_leg.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/zero_curve.hpp>
@@ -31,6 +32,7 @@ extern "C" {
 #include "contingentleg.h"
 #include "cx.h"
 #include "ldate.h"
+#include "macros.h"
 #include "tcurve.h"
 }
 
@@ -265,6 +267,45 @@ TEST_F(ContingentLegDifferential, Upstream8TheGuardDecisionAgreesWithUpstreamEve
     }
     JpmcdsFreeTCurve(disc);
     JpmcdsFreeTCurve(spread);
+  }
+}
+
+// Added after cds_differential_test found a defect this suite could not see.
+//
+// Every other test here builds a TContingentLeg by hand on both sides and
+// compares the PV. That verifies the integral and leaves leg CONSTRUCTION
+// completely unverified -- and construction is where upstream applies a
+// one-day shift, in cx.c, a different file from the PV routine in
+// contingentleg.c. The port omitted it, every test here passed, and the error
+// only surfaced one layer up as a 2e-5 relative price difference.
+//
+// The lesson generalises: a differential test that supplies the same
+// pre-built intermediate to both sides has verified nothing about how that
+// intermediate is produced. Compare the constructor too.
+TEST_F(ContingentLegDifferential, LegConstructionMatchesIncludingTheProtectStartShift) {
+  for (bool protect_start : {true, false}) {
+    for (double notional : {1.0, 1.0e7, -5.0}) {
+      const cdsmodel::Date start = *cdsmodel::make_date(2024, 3, 20);
+      const cdsmodel::Date end = *cdsmodel::make_date(2029, 6, 20);
+
+      TContingentLeg *ref =
+          JpmcdsContingentLegMake(cdsmodel::to_tdate(start), cdsmodel::to_tdate(end), notional,
+                                  PROT_PAY_DEF, protect_start ? TRUE : FALSE);
+      ASSERT_NE(ref, nullptr);
+
+      const cdsmodel::ContingentLeg got =
+          cdsmodel::cds_contingent_leg(start, end, notional, protect_start);
+
+      EXPECT_EQ(cdsmodel::to_tdate(got.start), ref->startDate) << "protect_start=" << protect_start;
+      EXPECT_EQ(cdsmodel::to_tdate(got.end), ref->endDate);
+      EXPECT_EQ(got.notional, ref->notional);
+      EXPECT_EQ(got.protect_start, ref->protectStart != FALSE);
+      EXPECT_EQ(got.pay == cdsmodel::ProtectionPayment::AtDefault, ref->payType == PROT_PAY_DEF);
+
+      // The shift itself, stated as a value rather than left implicit.
+      EXPECT_EQ(cdsmodel::to_tdate(got.start), cdsmodel::to_tdate(start) - (protect_start ? 1 : 0));
+      FREE(ref);
+    }
   }
 }
 

@@ -329,7 +329,31 @@ the oracle. Numbered separately from the UPSTREAM series: these are ours.
 | PORT-6 | the first test for PORT-4 asserted macOS's domain as a literal, and failed on both other platforms for two *different* reasons | the 3-OS CI matrix | fixed — the test asserts properties of the bounds, never numbers |
 | PORT-7 | `add_business_days` negated `LONG_MIN` to get a magnitude, which is undefined and silently returned the input unchanged | the test written to check absurd counts | fixed — rejected explicitly before any negation |
 | PORT-8 | the same function computed its "room available" as `to_tdate(from) - kMinTDate` in a signed type, which overflows where `kMinTDate` sits near the minimum of `days::rep`. Ordinary **backward** offsets were rejected | the Linux leg of CI — macOS and Windows both passed | fixed — computed unsigned, which is exact because `kMinTDate <= t <= kMaxTDate`, plus a stated offset limit |
+| PORT-9 | `cds_contingent_leg` omitted the one-day shift that `JpmcdsContingentLegMake` applies when `protectStart` is set, costing exactly one day of protection — a relative price error around 2e-5 | the FIRST test to compare a composed price. The protection leg's own differential suite could not see it: that suite fed a pre-built leg to both sides, so leg CONSTRUCTION was never compared | fixed — the shift applied in the factory, plus a construction differential test so the gap is closed at its source rather than only one layer up |
 | PORT-5 | **UBSan findings were not fatal in CI**, so every pure-UB finding had been silently ignored since the sanitizer job was added | noticed when PORT-2 "passed" while printing a runtime error | fixed — `CDSMODEL_FATAL_UBSAN`, on for the asan preset |
+
+**PORT-9 is the most instructive of the nine, because of what did not catch
+it.** The protection leg had a passing differential suite with a bit-exact
+sweep behind it. That suite built a `TContingentLeg` by hand on the upstream
+side and a `ContingentLeg` by hand on the port side, then compared the PV. It
+verified the integral thoroughly and verified the **constructor** not at all —
+and upstream's constructor lives in `cx.c`, a different file from the PV
+routine in `contingentleg.c`, and applies a one-day shift that the port had
+skipped.
+
+The generalisation is worth more than the fix: **a differential test that
+hands the same pre-built intermediate to both sides has verified nothing about
+how that intermediate is produced.** Every such test in this port was written
+that way for a reason — building the intermediate by hand is how you get a
+controlled sweep — so the gap is structural, not careless. The remedy is to
+add an explicit construction comparison wherever a factory exists, which is
+now done for the protection leg and the premium leg schedule.
+
+It also says something about the composition layer. `cds.c` contains almost no
+arithmetic; it builds two legs and subtracts. That made it look like the
+lowest-risk slice in the project, and it immediately found a defect that four
+earlier slices had not. **Composition is not glue — it is the first place the
+pieces are required to agree about anything.**
 
 **PORT-5 is the one that mattered most.** UndefinedBehaviorSanitizer prints
 and continues by default, exiting 0. The sanitizer job only ever failed on
