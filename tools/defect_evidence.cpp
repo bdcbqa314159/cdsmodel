@@ -13,10 +13,13 @@
 //   cmake --build --preset asan --target defect_evidence
 //   ./build/asan/defect_evidence --unsafe
 
+#include <cdsmodel/calendar.hpp>
+#include <cdsmodel/cds.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_interval.hpp>
 #include <cdsmodel/day_count.hpp>
 #include <cdsmodel/day_count_string.hpp>
+#include <cdsmodel/defaulted.hpp>
 #include <cdsmodel/stub.hpp>
 #include <cdsmodel/version.hpp>
 
@@ -25,6 +28,7 @@
 #include <initializer_list>
 #include <string>
 #include <utility>
+#include <vector>
 
 extern "C" {
 #include "cdate.h"
@@ -36,6 +40,7 @@ extern "C" {
 #include "cxdatelist.h"
 #include "cxzerocurve.h"
 #include "dateconv.h"
+#include "defaulted.h"
 #include "dtlist.h"
 #include "ldate.h"
 #include "macros.h"
@@ -431,6 +436,108 @@ void u10(bool unsafe) {
               "rather than fixed, which is the only kind of fix that cannot regress.\n");
 }
 
+void u11() {
+  heading("UPSTREAM-11", "a negative accrual, returned as SUCCESS");
+  std::printf("defaulted.c locates the coupon period by the TRADE date and then\n"
+              "accrues to the EVENT date:\n\n");
+  std::printf("    if (fl->accStartDates[i] <= tradeDate && tradeDate < fl->accEndDates[i])\n"
+              "    {\n"
+              "        *accrualDays = edd + 1.0 - fl->accStartDates[i];\n\n");
+  std::printf("It guards `edd >= startDate` but never `edd >= accStartDates[i]`.\n"
+              "So once the trade date crosses a coupon boundary the event date\n"
+              "did not, the subtraction goes negative -- and it is returned with\n"
+              "SUCCESS, so a caller has no signal at all.\n\n");
+
+  TDateInterval iv{3, 'M', 0};
+  TStubMethod stub;
+  stub.stubAtEnd = FALSE;
+  stub.longStub = FALSE;
+  const TDate start = JpmcdsDate(2024, 3, 20);
+  const TDate end = JpmcdsDate(2029, 3, 20);
+  const TDate edd = JpmcdsDate(2024, 8, 1);
+
+  std::printf("Quarterly from 20 Mar 2024, credit event 1 Aug 2024, notional 1e7,\n"
+              "coupon 100bp, ACT/360. The event sits in the 20 Jun - 20 Sep period,\n"
+              "so 43 days are owed. Varying only WHEN the question is asked:\n\n");
+  std::printf("  %-16s %-10s %-14s %-16s %s\n", "trade date", "upstream", "accrual days", "amount",
+              "port");
+  for (int lag : {0, 14, 45, 50, 90, 365}) {
+    double days = 0.0;
+    double amount = 0.0;
+    const int rc =
+        JpmcdsDefaultAccrual(edd + lag, edd, start, end, &iv, &stub, 1.0e7, 0.01, JPMCDS_ACT_360,
+                             'N', const_cast<char *>("NONE"), &days, &amount);
+    cdsmodel::Cds cds;
+    cds.start = cdsmodel::from_tdate(start);
+    cds.end = cdsmodel::from_tdate(end);
+    cds.coupon_rate = 0.01;
+    cds.coupon_interval = cdsmodel::DateInterval{3, cdsmodel::PeriodUnit::Months};
+    cds.day_count = cdsmodel::DayCount::Act360;
+    const std::vector<cdsmodel::Calendar> cals{
+        *cdsmodel::Calendar::create({}, cdsmodel::Weekend::Standard)};
+    const auto port = cdsmodel::default_accrual(cds, cdsmodel::from_tdate(edd + lag),
+                                                cdsmodel::from_tdate(edd), 1.0e7, cals);
+    char port_text[32];
+    std::snprintf(port_text, sizeof port_text, "%ld days", port ? port->days : 0L);
+    char lag_text[24];
+    std::snprintf(lag_text, sizeof lag_text, "event+%d", lag);
+    std::printf("  %-16s %-10s %-14.6g %-16.6g %s\n", lag_text,
+                rc == SUCCESS ? "SUCCESS" : "FAILURE", days, amount, port_text);
+  }
+
+  std::printf("\nThe flip lands exactly where the trade date passes 20 September.\n\n");
+
+  // Scope, measured rather than asserted.
+  int total = 0;
+  int differ = 0;
+  int negative = 0;
+  for (int month = 4; month <= 12; ++month) {
+    for (int day = 1; day <= 28; day += 3) {
+      const TDate e = JpmcdsDate(2024, month, day);
+      if (e < start) {
+        continue;
+      }
+      for (int lag = 0; lag <= 120; lag += 5) {
+        double d0 = 0.0;
+        double a0 = 0.0;
+        double dp = 0.0;
+        double ap = 0.0;
+        if (JpmcdsDefaultAccrual(e + lag, e, start, end, &iv, &stub, 1.0e7, 0.01, JPMCDS_ACT_360,
+                                 'N', const_cast<char *>("NONE"), &d0, &a0) != SUCCESS) {
+          continue;
+        }
+        if (JpmcdsDefaultAccrual(e, e, start, end, &iv, &stub, 1.0e7, 0.01, JPMCDS_ACT_360, 'N',
+                                 const_cast<char *>("NONE"), &dp, &ap) != SUCCESS) {
+          continue;
+        }
+        ++total;
+        if (d0 != dp) {
+          ++differ;
+        }
+        if (d0 < 0.0) {
+          ++negative;
+        }
+      }
+    }
+  }
+  std::printf("Scope, event dates across Apr-Dec 2024 with settlement lags 0-120 days:\n");
+  std::printf("  %d cases, %d (%.0f%%) differ from asking on the event date,\n"
+              "  %d (%.0f%%) return a NEGATIVE accrual.\n\n",
+              total, differ, 100.0 * differ / total, negative, 100.0 * negative / total);
+
+  std::printf("Severity is HIGH, and the argument is not the sign. It is the\n"
+              "dependence: the coupon accrued at a credit event cannot depend on\n"
+              "when someone asks, and upstream's answer does. Settlement after a\n"
+              "CDS auction routinely lands weeks after the determination date,\n"
+              "which crosses a quarterly coupon boundary often. This is a wrong\n"
+              "cash amount on a settlement calculation, reported as success --\n"
+              "not undefined behaviour, not a crash, not an error path.\n\n"
+              "The port corrects it by locating the period containing the EVENT\n"
+              "date. Then the period start precedes the event by construction,\n"
+              "the result is always positive, and it no longer varies with the\n"
+              "trade date. One date changed; the arithmetic is untouched.\n");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -482,6 +589,9 @@ int main(int argc, char **argv) {
   }
   if (want("u10")) {
     u10(unsafe);
+  }
+  if (want("u11")) {
+    u11();
   }
   return 0;
 }

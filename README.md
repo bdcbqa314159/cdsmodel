@@ -10,9 +10,10 @@ codebase that only ever shipped a Windows-only Excel XLL.
 ISDA and Markit are not affiliated with this project and do not endorse it.
 See [NOTICE.md](NOTICE.md) for the full attribution and licence position.
 
-📋 **[Defect report](https://bdcbqa314159.github.io/cdsmodel/)** — ten defects
-found in the original library while porting it, with sanitizer traces,
-reproducers and the fix status of each.
+📋 **[Defect report](https://bdcbqa314159.github.io/cdsmodel/)** — eleven
+defects found in the original library while porting it, with sanitizer traces,
+reproducers and the fix status of each. One of them returns a **negative cash
+amount** on a defaulted-CDS settlement and reports success.
 
 ## Why
 
@@ -102,7 +103,7 @@ plainly whether the oracle was found.
 | CMake build, 3-OS CI, differential test harness | working |
 | **CDS pricing chain** | **complete** — prices a CDS and computes an upfront charge bit-identically to the original |
 | ISDA's published example | **reproduced**, on three platforms, with no upstream copy present |
-| API completeness (`defaulted.c`, fee-leg cash flows, IR curve bootstrap) | not started |
+| API completeness (fee-leg cash flows, IR curve bootstrap) | `defaulted.c` done; two entry points left |
 | Python bindings (nanobind) | not started |
 | Cross-platform spreadsheet interface | not started |
 

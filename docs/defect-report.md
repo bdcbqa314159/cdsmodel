@@ -816,3 +816,96 @@ log to format into: a failure is an empty `std::optional`, and a
 caller-supplied string is never copied anywhere. The defect is absent
 structurally rather than patched — the fifth time in this port that a defect
 died from the shape of the code rather than from a correction.
+
+## UPSTREAM-11 — A negative accrual, returned as SUCCESS
+
+**Location:** `lib/src/defaulted.c:68-80`, inside `JpmcdsDefaultAccrual`.
+**Severity:** High. A wrong cash amount on a settlement calculation, reported
+as success, on realistic inputs. Not undefined behaviour, not a crash, not an
+error path — the only defect in this register that silently returns the wrong
+money.
+
+### Mechanism
+
+The function locates the coupon period by the **trade** date and then accrues
+to the **event** date:
+
+```c
+while (i < fl->nbDates)
+{
+    if (fl->accStartDates[i] <= tradeDate && tradeDate < fl->accEndDates[i])
+    {
+        *accrualDays = edd + 1.0 - fl->accStartDates[i];
+        if (JpmcdsDayCountFraction(fl->accStartDates[i], edd + 1, paymentDcc,
+                                   defaultAccrual) != SUCCESS)
+            goto done;
+        *defaultAccrual *= couponRate * notional;
+```
+
+It guards `edd >= startDate`, but never `edd >= accStartDates[i]`. So as soon
+as the trade date crosses a coupon boundary that the event date did not,
+`edd + 1.0 - accStartDates[i]` goes negative — and `status = SUCCESS` is set
+on the next line.
+
+### Evidence
+
+Quarterly from 20 March 2024, credit event 1 August 2024, notional 1e7, coupon
+100bp, ACT/360. The event sits in the 20 June – 20 September period, so 43
+days are owed. Varying only **when the question is asked**:
+
+```
+  trade date       upstream   accrual days   amount           port
+  event+0          SUCCESS    43             11944.4          43 days
+  event+14         SUCCESS    43             11944.4          43 days
+  event+45         SUCCESS    43             11944.4          43 days
+  event+50         SUCCESS    -49            -13611.1         43 days
+  event+90         SUCCESS    -49            -13611.1         43 days
+  event+365        SUCCESS    -322           -89444.4         43 days
+```
+
+The flip lands exactly where the trade date passes 20 September.
+
+Reproduce with `./build/debug/defect_evidence u11`.
+
+### Scope
+
+Event dates across April to December 2024, settlement lags 0 to 120 days:
+
+```
+  2250 cases, 1399 (62%) differ from asking on the event date,
+  1345 (60%) return a NEGATIVE accrual.
+```
+
+### Why High, and why the sign is not the argument
+
+A negative accrual is obviously wrong, but a caller might catch it. The real
+problem is the dependence: **the coupon accrued at a credit event cannot
+depend on when someone asks.** Upstream's answer does, and in the window
+before the sign flips it is wrong without being obviously wrong.
+
+Settlement after a CDS auction routinely lands weeks after the event
+determination date. A quarterly coupon boundary sits every 13 weeks. The
+affected regime is not an edge case; it is the ordinary one.
+
+### In the port
+
+**Corrected.** One date changed: `default_accrual` locates the period
+containing the **event** date rather than the trade date. Then the period
+start precedes the event by construction, the result is always positive, and
+it no longer varies with the trade date. The arithmetic, the conventions and
+the `trade_date < event` gate are all upstream's, untouched.
+
+A second behavioural change follows from the same root cause and is recorded
+rather than absorbed: upstream **fails** when the trade date lies past the
+final accrual end, because no period contains it, even though the event sits
+comfortably inside the schedule and the debt is well defined. Locating by the
+event date means a late settlement still returns what is owed. That is
+intended — a debt does not lapse because the question was asked late — but it
+is a divergence, not just a sign fix.
+
+Because this module corrects rather than reproduces, its recorded vectors are
+the **documented intent** with a flag recording whether upstream agreed at
+generation time: 859 of 1,302 agreed, 443 did not. If a regeneration turns
+those all true, upstream fixed it and the correction should be revisited. The
+differential suite asserts the disagreement still exists, so that cannot pass
+unnoticed.

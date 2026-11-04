@@ -216,6 +216,7 @@ dressed up as a fix.
 | UPSTREAM-8 | `!price > THRESHOLD` precedence bug disables a validation guard, four sites on the pricing path | low — a guard that does not guard; no mispricing demonstrated | **resolved** — the port guards a non-finite result instead of a proxy threshold | `1e-100` stood in for "the logarithm will misbehave"; with the integrals built that is directly testable. The honest guard and upstream's broken one fire on identical inputs across hazard 0.001 to 200. Applied at all four sites: two in the protection leg, two in the premium leg. |
 | UPSTREAM-9 | an error message with two `%s` conversions formatted with one argument, so `vsprintf` dereferences an unpushed varargs slot | medium — UB on a reject path, reachable from any caller passing a malformed stub LENGTH field | **cannot occur** | `parse_stub_method` returns `nullopt` and formats nothing. Manifestation is caller-dependent: it faults in a minimal frame and not in the test binary, so the evidence is the source, not a crash |
 | UPSTREAM-10 | `JpmcdsWriteToLog` formats with unbounded `vsprintf` into `char buffer[4096]`; 67 of 452 message sites interpolate a caller-supplied string | medium — deterministic caller-controlled stack overflow above ~3.9KB, but only once a host has called `JpmcdsErrMsgOn` | **cannot occur** | there is no global error log to format into; a failure is an empty `std::optional` and a caller string is never copied. Absent structurally, not patched |
+| UPSTREAM-11 | `JpmcdsDefaultAccrual` locates the coupon period by the TRADE date and then accrues to the EVENT date, guarding `edd >= startDate` but never `edd >= accStartDates[i]` | **high** — a negative cash amount returned as SUCCESS; 62% of a settlement-lag grid differs from asking on the event date, 60% negative | **fixed, deliberate divergence** | locate the period containing the EVENT date. The accrued coupon at a credit event cannot depend on when someone asks, and upstream's does. One date changed; the arithmetic is untouched |
 
 ### Not yet reported to ISDA
 
@@ -330,6 +331,7 @@ the oracle. Numbered separately from the UPSTREAM series: these are ours.
 | PORT-7 | `add_business_days` negated `LONG_MIN` to get a magnitude, which is undefined and silently returned the input unchanged | the test written to check absurd counts | fixed — rejected explicitly before any negation |
 | PORT-8 | the same function computed its "room available" as `to_tdate(from) - kMinTDate` in a signed type, which overflows where `kMinTDate` sits near the minimum of `days::rep`. Ordinary **backward** offsets were rejected | the Linux leg of CI — macOS and Windows both passed | fixed — computed unsigned, which is exact because `kMinTDate <= t <= kMaxTDate`, plus a stated offset limit |
 | PORT-9 | `cds_contingent_leg` omitted the one-day shift that `JpmcdsContingentLegMake` applies when `protectStart` is set, costing exactly one day of protection — a relative price error around 2e-5 | the FIRST test to compare a composed price. The protection leg's own differential suite could not see it: that suite fed a pre-built leg to both sides, so leg CONSTRUCTION was never compared | fixed — the shift applied in the factory, plus a construction differential test so the gap is closed at its source rather than only one layer up |
+| PORT-10 | the defaulted-accrual amount was written `fraction * coupon_rate * notional`, where upstream computes `fraction * (coupon_rate * notional)` -- one ULP apart, 3333.333333333333 against 3333.3333333333335 | the differential suite, immediately, on the one day count where the difference was representable | fixed -- association matched to upstream, with the measured values in a comment at the site |
 | PORT-5 | **UBSan findings were not fatal in CI**, so every pure-UB finding had been silently ignored since the sanitizer job was added | noticed when PORT-2 "passed" while printing a runtime error | fixed — `CDSMODEL_FATAL_UBSAN`, on for the asan preset |
 
 **The upfront charge completes the pricing chain, and reproduces ISDA's own
@@ -416,7 +418,7 @@ The replay suite also verifies the **solver's own contract** --
 `|f(root)| <= f_tolerance`, root inside the bracket -- which needs no oracle
 and no recorded number, and is the property a caller actually depends on.
 
-**PORT-9 is the most instructive of the nine, because of what did not catch
+**PORT-9 is the most instructive of the ten, because of what did not catch
 it.** The protection leg had a passing differential suite with a bit-exact
 sweep behind it. That suite built a `TContingentLeg` by hand on the upstream
 side and a `ContingentLeg` by hand on the port side, then compared the PV. It
