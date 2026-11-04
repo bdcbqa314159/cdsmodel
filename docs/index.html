@@ -483,6 +483,12 @@
           <td><span class="chip immune">Fixed deliberately</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u11">UPSTREAM-11</a></td>
+          <td>Accrual on a defaulted CDS goes <strong>negative</strong> once settlement crosses a coupon date — returned as success</td>
+          <td><span class="chip high">High · wrong money</span></td>
+          <td><span class="chip immune">Fixed · documented intent</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u10">UPSTREAM-10</a></td>
           <td>Unbounded <code>vsprintf</code> into a 4096-byte stack buffer — the single function every error message passes through</td>
           <td><span class="chip mid">Medium · memory safety</span></td>
@@ -948,6 +954,104 @@ JpmcdsErrMsg(invalidFormatMsg, routine);          <span class="hit">/* one short
       anywhere. The defect is absent structurally rather than patched, which
       is the fifth time in this port that a defect died from the shape of the
       code rather than from a correction.
+    </p>
+  </section>
+
+  <!-- ============ U11 ============ -->
+  <section class="record sev-high" id="u11">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-11</span>
+      <h2>A negative accrual, returned as SUCCESS</h2>
+    </div>
+    <div class="chips">
+      <span class="chip high">High · a wrong cash amount, reported as success</span>
+      <span class="chip immune">Fixed · documented intent</span>
+    </div>
+    <p class="locus">defaulted.c:68–80, inside JpmcdsDefaultAccrual</p>
+
+    <p>
+      The only defect in this register that silently returns the wrong
+      <em>money</em>. Not undefined behaviour, not a crash, not an error path —
+      a settlement amount.
+    </p>
+
+    <h3>Mechanism</h3>
+    <p>
+      The function locates the coupon period by the <strong>trade</strong> date
+      and then accrues to the <strong>event</strong> date:
+    </p>
+<pre><code>while (i &lt; fl-&gt;nbDates)
+{
+    if (fl-&gt;accStartDates[i] &lt;= <span class="hit">tradeDate</span> &amp;&amp; <span class="hit">tradeDate</span> &lt; fl-&gt;accEndDates[i])
+    {
+        *accrualDays = <span class="hit">edd</span> + 1.0 - fl-&gt;accStartDates[i];</code></pre>
+    <p>
+      It guards <code>edd &gt;= startDate</code>, but never
+      <code>edd &gt;= accStartDates[i]</code>. So as soon as the trade date
+      crosses a coupon boundary the event date did not, that subtraction goes
+      negative — and <code>status = SUCCESS</code> is set on the next line.
+    </p>
+
+    <h3>Evidence</h3>
+    <p>
+      Quarterly from 20 March 2024, credit event 1 August 2024, notional 1e7,
+      coupon 100bp, ACT/360. The event sits in the 20 June – 20 September
+      period, so 43 days are owed. Varying only <em>when the question is
+      asked</em>:
+    </p>
+<pre><code>  trade date       upstream   accrual days   amount           port
+  event+0          SUCCESS    43             11944.4          43 days
+  event+14         SUCCESS    43             11944.4          43 days
+  event+45         SUCCESS    43             11944.4          43 days
+  event+50         SUCCESS    <span class="hit">-49</span>            <span class="hit">-13611.1</span>         43 days
+  event+90         SUCCESS    <span class="hit">-49</span>            <span class="hit">-13611.1</span>         43 days
+  event+365        SUCCESS    <span class="hit">-322</span>           <span class="hit">-89444.4</span>         43 days</code></pre>
+    <p>The flip lands exactly where the trade date passes 20 September.</p>
+
+    <h3>Scope</h3>
+<pre><code>event dates across Apr-Dec 2024, settlement lags 0-120 days:
+  2250 cases, 1399 (62%) differ from asking on the event date,
+  1345 (60%) return a NEGATIVE accrual.</code></pre>
+
+    <h3>Why High — and why the sign is not the argument</h3>
+    <p>
+      A negative accrual is obviously wrong, and a careful caller might catch
+      it. The real problem is the dependence: <strong>the coupon accrued at a
+      credit event cannot depend on when someone asks.</strong> Upstream's
+      answer does, and in the window before the sign flips it is wrong without
+      being obviously wrong.
+    </p>
+    <p>
+      Settlement after a CDS auction routinely lands weeks after the event
+      determination date. A quarterly coupon boundary sits every 13 weeks. The
+      affected regime is not an edge case; it is the ordinary one.
+    </p>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Fixed.</strong> One date changed: the period containing the
+      <em>event</em> date is located rather than the one containing the trade
+      date. The period start then precedes the event by construction, the
+      result is always positive, and it no longer varies with the trade date.
+      The arithmetic, the conventions and the
+      <code>trade&nbsp;&lt;&nbsp;event</code> gate are all upstream's,
+      untouched.
+    </p>
+    <p>
+      A second change follows from the same root cause and is recorded rather
+      than absorbed: upstream <em>fails</em> when the trade date lies past the
+      final accrual end, because no period contains it — even though the event
+      sits inside the schedule and the debt is well defined. Locating by the
+      event date means a late settlement still returns what is owed. Intended,
+      but a divergence rather than a sign fix.
+    </p>
+    <p>
+      Because this module corrects rather than reproduces, its recorded
+      vectors are the <strong>documented intent</strong>, each flagged with
+      whether upstream agreed when they were generated: 859 of 1,302 agreed,
+      443 did not. The differential suite asserts the disagreement still
+      exists, so an upstream fix becomes visible rather than leaving a
+      correction nobody revisits.
     </p>
   </section>
 

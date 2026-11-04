@@ -1268,6 +1268,106 @@ report cash flows rather than price them; and the 5,126-line interest-rate
 stack sits behind one function signature for callers who want upstream to
 build their discount curve too. All three are API completeness, not pricing.
 
+## Decision 16 — The last module held the worst defect
+
+`defaulted.c` is 95 lines, one function, and it was the smallest thing left on
+the list. It computes the coupon accrued up to a credit event -- the cash owed
+when a defaulted CDS settles.
+
+It contains the only defect in this project that silently returns the wrong
+**money**.
+
+### What it does
+
+```c
+while (i < fl->nbDates)
+{
+    if (fl->accStartDates[i] <= tradeDate && tradeDate < fl->accEndDates[i])
+    {
+        *accrualDays = edd + 1.0 - fl->accStartDates[i];
+```
+
+It locates the coupon period by the **trade** date and then accrues to the
+**event** date. It guards `edd >= startDate` but never
+`edd >= accStartDates[i]`. So once the trade date crosses a coupon boundary
+the event date did not, the subtraction goes negative -- and `SUCCESS` is set
+on the next line.
+
+Quarterly from 20 March 2024, credit event 1 August, notional 1e7, coupon
+100bp. Varying only **when the question is asked**:
+
+| trade date | upstream | accrual days | amount | port |
+|---|---|---|---|---|
+| event+0 | SUCCESS | 43 | 11,944.44 | 43 |
+| event+45 | SUCCESS | 43 | 11,944.44 | 43 |
+| event+50 | SUCCESS | **-49** | **-13,611.11** | 43 |
+| event+365 | SUCCESS | **-322** | **-89,444.44** | 43 |
+
+The flip lands exactly where the trade date passes 20 September.
+
+### The argument is the dependence, not the sign
+
+A negative accrual is obviously wrong and a careful caller might notice. The
+part that makes this High is simpler and worse: **the coupon accrued at a
+credit event cannot depend on when someone asks.** Upstream's answer does.
+
+In the window before the sign flips, it is wrong without being obviously
+wrong. And the affected regime is the ordinary one -- settlement after a CDS
+auction routinely lands weeks after the determination date, and a quarterly
+coupon boundary sits every 13 weeks. Measured over event dates across April
+to December with lags of 0 to 120 days: **62% of 2,250 cases differ from
+asking on the event date, 60% go negative.**
+
+### Finding it required asking the right question
+
+Not reading the code. I read those 95 lines and the `tradeDate`/`edd` mix did
+not announce itself -- the guard on `edd >= startDate` looks like someone who
+thought about date ordering.
+
+What found it was a probe written for a different reason. The plan was to map
+the function's edge cases before porting, the way the last three slices had
+established as a habit: list the degenerate inputs, measure what upstream
+actually does. A row of that table was "edd one period earlier than trade",
+and it came back `-49`.
+
+Then the second probe made it undeniable: fix the event date, walk the trade
+date forward, watch the answer change. **Invariance is the cheapest test there
+is and it needs no oracle** -- just a reason the answer should not move.
+
+### The correction is one date
+
+Locate the period containing the event date. The period start then precedes
+the event by construction, the result is always positive, and it stops varying
+with the trade date. The arithmetic, the conventions and the
+`trade < event` gate are all upstream's, untouched.
+
+A second behavioural change falls out of the same root cause and is recorded
+rather than absorbed: upstream **fails** when the trade date lies past the
+final accrual end, because no period contains it -- even though the event sits
+inside the schedule and the debt is well defined. Locating by the event date
+means a late settlement still returns what is owed. Intended, but a divergence
+rather than a sign fix, and it gets its own test.
+
+This is the second module to correct upstream rather than reproduce it, after
+the date list. Both follow the same pattern: record the **documented intent**
+rather than upstream's answers, with a flag for whether upstream agreed when
+the vectors were generated -- 859 of 1,302 here -- and assert in the
+differential suite that the disagreement **still exists**, so an upstream fix
+surfaces instead of leaving a correction nobody revisits.
+
+### PORT-10, caught in the same run
+
+My first implementation wrote the amount as `fraction * coupon_rate * notional`.
+Upstream computes the year fraction into its output and then does
+`*defaultAccrual *= couponRate * notional`, which is
+`fraction * (coupon_rate * notional)`. Different association, one ULP apart:
+3333.333333333333 against 3333.3333333333335 on a 30/360 stub.
+
+The differential suite caught it immediately, on the only day count where the
+difference was representable. Ten slices of "preserve the expression order"
+and I still wrote it left to right -- which is the argument for the harness
+rather than for being careful.
+
 ## The collaboration record
 
 Started at the schedule slice, which means the earlier rows were reconstructed
@@ -1281,12 +1381,13 @@ Nine defects introduced by the port itself, by what found each one:
 | caught by | count | which |
 |---|---|---|
 | a sanitizer, run deliberately | 3 | PORT-1, PORT-2, PORT-3 |
+| the differential suite against the oracle | 1 | PORT-10 |
 | the 3-OS CI matrix | 2 | PORT-6, PORT-8 |
 | a test written to probe extremes | 2 | PORT-4, PORT-7 |
 | noticing a *passing* test print a warning | 1 | PORT-5 |
 | the next layer up composing the module | 1 | PORT-9 |
 
-**Nothing was caught by re-reading the code.** Every one of the nine was found
+**Nothing was caught by re-reading the code.** Every one of the ten was found
 by running something — which is the argument for building the harness before
 writing the port, and an argument against trusting a careful review of
 generated code.
@@ -1327,6 +1428,11 @@ From here: one line per slice naming what had to be redone and why.
 - **cds** — one real defect introduced and fixed (PORT-9); one comment corrected
   that had argued the defect was not a defect; two wrong argument orders caught
   by the compiler.
+- **defaulted** — one defect introduced and caught by the differential suite
+  within seconds (PORT-10: wrote `fraction * coupon * notional` where upstream
+  computes `fraction * (coupon * notional)`, one ULP apart on 30/360). Found
+  UPSTREAM-11, the worst defect in the project, from an edge-case probe written
+  before porting rather than from reading the code.
 - **cdsone** — one contract asserted wrongly (the spread round trip, which is
   ill-posed above ~5000bps where the charge saturates and the derivative turns
   negative); replaced with the charge round trip the solver actually
