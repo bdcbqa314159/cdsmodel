@@ -1,6 +1,6 @@
 #pragma once
 
-// Port of upstream cxzerocurve.c -- the zero curve, and the first floating
+// Port of upstream cxzerocurve.c + tcurve.c -- the zero curve, and the first floating
 // point in this project.
 //
 // Everything ported so far has been integer and calendar logic, where
@@ -50,6 +50,32 @@ struct RatePoint {
 /// Preconditions that upstream checks on every call, or not at all, are
 /// checked once at construction instead. That is what lets `zero_rate` and
 /// `zero_price` return a plain `double`: upstream returns `NaN` on failure,
+/// Whether a stored rate can produce a positive discount factor at this
+/// basis. Replaces the part of `JpmcdsRateValidYearFrac` that applies to the
+/// bases a `ZeroCurve` admits.
+///
+/// Upstream's rule, by basis sentinel:
+///
+///   * continuous (5000) -- any rate is valid, since the discount factor is
+///     `exp(-rate * t)` and that is positive for every real rate;
+///   * a compounding frequency n in 1..365 -- `rate > -n`, because the factor
+///     goes through `log(1 + rate/n)` and the argument must be positive.
+///
+/// The other sentinels upstream carries in the same field -- 0 for simple
+/// interest, -2 for "the rate IS a discount factor", 512 for a discount rate
+/// -- have their own rules and their own validity tests, and a `ZeroCurve`
+/// cannot hold them: `create` rejects any basis outside continuous or
+/// 1 to 365. That restriction is `cxzerocurve.c`'s, not `tcurve.c`'s, and it
+/// is the right one here because it is exactly the domain
+/// `convert_compound_rate` supports.
+[[nodiscard]] constexpr bool rate_is_valid(double rate, double basis) noexcept {
+  if (basis == kContinuousBasis) {
+    return true;
+  }
+  // Upstream's `default:` branch: `if (rate <= -basis) reject`.
+  return rate > -basis;
+}
+
 /// a sentinel inside the result space of exactly the kind UPSTREAM-2 is about.
 class ZeroCurve {
 public:
@@ -57,6 +83,38 @@ public:
   ///
   /// Requires: at least one point; strictly increasing dates (upstream's
   /// binary search assumes ascending order and does not verify it); and a
+  /// ## UPSTREAM-15 -- a validating constructor that admits unpriceable curves
+  ///
+  /// `tcurve.c`'s `JpmcdsMakeTCurve` runs `checkTCurve`, whose stated purpose
+  /// is "to guarantee we can generate positive discount factors". It checks
+  /// the day count with `JpmcdsDayCountValid` -- which correctly accepts
+  /// 30/360, a perfectly standard convention -- and it accepts an empty curve
+  /// (`fNumItems >= 0`).
+  ///
+  /// Neither can be priced. `JpmcdsZeroPrice` routes through
+  /// `JpmcdsConvertCompoundRate`, which supports ACT/365F and ACT/360 and
+  /// explicitly rejects everything else. And `JpmcdsZeroPrice` returns a bare
+  /// `double`, so it has nowhere to report that:
+  ///
+  /// ```
+  /// ACT/365F   construct=accepted  JpmcdsZeroPrice=0.7833167239
+  /// 30/360     construct=accepted  JpmcdsZeroPrice=nan
+  /// 30E/360    construct=accepted  JpmcdsZeroPrice=nan
+  /// empty      construct=accepted  JpmcdsZeroPrice=nan
+  /// ```
+  ///
+  /// So a caller picks a standard day count, a constructor named "Make" with
+  /// a validation pass accepts it, and every discount factor afterwards is
+  /// NaN. The same sentinel-in-the-value-space problem as UPSTREAM-2, in a
+  /// different disguise: there is no error channel, so the error becomes a
+  /// number.
+  ///
+  /// The port closes it by rejecting at construction instead. That is why
+  /// `create` is stricter than `checkTCurve` on two counts -- a non-empty
+  /// curve, and a day count the conversion actually supports -- and it is why
+  /// `zero_price` can return a plain `double` with no NaN sentinel: every
+  /// curve that exists can be priced.
+  ///
   /// basis and day count that the rate conversion actually supports --
   /// continuous or 1 to 365 periods per year, with ACT/365F or ACT/360.
   /// Upstream reports those last two per call, deep inside a hot loop.
@@ -75,6 +133,21 @@ public:
     }
     if (basis != kContinuousBasis && !(basis >= 1.0 && basis <= 365.0)) {
       return std::nullopt;
+    }
+    // PORT-11. Upstream's checkTCurve calls JpmcdsRateValid on every point,
+    // "to guarantee we can generate positive discount factors". The port had
+    // no such check, so a rate at or below -basis was accepted and
+    // `zero_price` then returned inf or NaN -- silently, because the only
+    // guard was the one that never ran.
+    //
+    // Found by comparing CONSTRUCTION against upstream, which no earlier test
+    // did: every curve differential test built a valid curve on both sides,
+    // so the constructor's rejection behaviour was never in the comparison.
+    // The third time that shape has hidden a defect, after PORT-9.
+    for (const RatePoint &point : points) {
+      if (!rate_is_valid(point.rate, basis)) {
+        return std::nullopt;
+      }
     }
     return ZeroCurve{base_date, std::vector<RatePoint>{points.begin(), points.end()}, basis,
                      day_count};

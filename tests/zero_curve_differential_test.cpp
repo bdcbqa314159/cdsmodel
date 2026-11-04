@@ -221,4 +221,105 @@ TEST_F(ZeroCurveDifferential, TheBaseDateItselfUsesTheFollowingDay) {
   JpmcdsFreeTCurve(ref2);
 }
 
+// =====================================================================
+// Added with the tcurve.c slice. Every test above builds a VALID curve on
+// both sides and compares prices, so the constructor's rejection behaviour
+// was never in the comparison -- the same blind spot that hid PORT-9 in the
+// protection leg and PORT-11 here.
+// =====================================================================
+
+TEST_F(ZeroCurveDifferential, ConstructionAcceptsAndRejectsTheSameRates) {
+  // PORT-11: the port had no rate check, so a rate at or below -basis was
+  // accepted and every discount factor afterwards was inf or NaN. Upstream's
+  // checkTCurve calls JpmcdsRateValid on every point.
+  const cdsmodel::Date base = *cdsmodel::make_date(2024, 1, 1);
+  const cdsmodel::Date mat = *cdsmodel::make_date(2029, 1, 1);
+  int compared = 0;
+  for (double basis : {1.0, 2.0, 4.0, 12.0, 365.0, cdsmodel::kContinuousBasis}) {
+    for (double rate : {0.05, 0.0, -0.5, -0.999, -1.0, -1.5, -2.0, -2.5, -3.0, -13.0, -400.0}) {
+      TDate dates[1] = {cdsmodel::to_tdate(mat)};
+      double rates[1] = {rate};
+      TCurve *ref =
+          JpmcdsMakeTCurve(cdsmodel::to_tdate(base), dates, rates, 1, basis, JPMCDS_ACT_365F);
+      const std::vector<cdsmodel::RatePoint> pts{{mat, rate}};
+      const std::optional<cdsmodel::ZeroCurve> got =
+          cdsmodel::ZeroCurve::create(base, pts, basis, cdsmodel::DayCount::Act365Fixed);
+      EXPECT_EQ(got.has_value(), ref != nullptr) << "basis " << basis << " rate " << rate;
+      if (ref != nullptr) {
+        JpmcdsFreeTCurve(ref);
+      }
+      ++compared;
+    }
+  }
+  EXPECT_GT(compared, 60) << compared;
+}
+
+TEST_F(ZeroCurveDifferential, Upstream15_AValidatingConstructorAdmitsUnpriceableCurves) {
+  // checkTCurve's stated purpose is "to guarantee we can generate positive
+  // discount factors". It accepts 30/360 -- a standard convention -- and
+  // empty curves. Neither can be priced, and JpmcdsZeroPrice returns a bare
+  // double, so the failure surfaces as NaN.
+  const cdsmodel::Date base = *cdsmodel::make_date(2024, 1, 1);
+  const cdsmodel::Date mat = *cdsmodel::make_date(2029, 1, 1);
+  TDate dates[1] = {cdsmodel::to_tdate(mat)};
+  double rates[1] = {0.05};
+
+  for (long dcc : {JPMCDS_B30_360, JPMCDS_B30E_360}) {
+    TCurve *ref = JpmcdsMakeTCurve(cdsmodel::to_tdate(base), dates, rates, 1, 1.0, dcc);
+    ASSERT_NE(ref, nullptr) << "upstream now rejects day count " << dcc
+                            << " at construction -- UPSTREAM-15 may be fixed";
+    EXPECT_TRUE(std::isnan(JpmcdsZeroPrice(ref, cdsmodel::to_tdate(mat))))
+        << "day count " << dcc << " no longer prices to NaN -- revisit UPSTREAM-15";
+    JpmcdsFreeTCurve(ref);
+
+    // The port refuses the curve instead, so there is nothing to misprice.
+    const std::optional<cdsmodel::DayCount> ported = cdsmodel::from_upstream_code(dcc);
+    ASSERT_TRUE(ported.has_value());
+    const std::vector<cdsmodel::RatePoint> pts{{mat, 0.05}};
+    EXPECT_FALSE(cdsmodel::ZeroCurve::create(base, pts, 1.0, *ported).has_value())
+        << "day count " << dcc;
+  }
+
+  // An empty curve: accepted upstream, prices to NaN, refused by the port.
+  TCurve *empty =
+      JpmcdsMakeTCurve(cdsmodel::to_tdate(base), nullptr, nullptr, 0, 1.0, JPMCDS_ACT_365F);
+  ASSERT_NE(empty, nullptr) << "upstream now rejects an empty curve";
+  EXPECT_EQ(empty->fNumItems, 0);
+  EXPECT_TRUE(std::isnan(JpmcdsZeroPrice(empty, cdsmodel::to_tdate(mat))));
+  JpmcdsFreeTCurve(empty);
+  EXPECT_FALSE(
+      cdsmodel::ZeroCurve::create(base, {}, 1.0, cdsmodel::DayCount::Act365Fixed).has_value());
+}
+
+TEST_F(ZeroCurveDifferential, TheZeroDateTerminatorIsNotReproduced) {
+  // JpmcdsMakeTCurveNoRateCheck treats a TDate of 0 as an array terminator:
+  // "This allows spreadsheet users to select a big range of dates, but use
+  // less than the whole range by terminating with a 1 or 0."
+  //
+  // Measured: five dates with a zero at index 2 give a curve of TWO points.
+  // The port takes a span, so the length is explicit and a terminator has
+  // nothing to mean -- and date 0 is a legitimate date (1601-01-01) that a
+  // span-based caller could reasonably include.
+  const cdsmodel::Date base = *cdsmodel::make_date(2024, 1, 1);
+  TDate dates[5] = {cdsmodel::to_tdate(*cdsmodel::make_date(2025, 1, 1)),
+                    cdsmodel::to_tdate(*cdsmodel::make_date(2026, 1, 1)), 0,
+                    cdsmodel::to_tdate(*cdsmodel::make_date(2027, 1, 1)),
+                    cdsmodel::to_tdate(*cdsmodel::make_date(2028, 1, 1))};
+  double rates[5] = {0.01, 0.02, 0.03, 0.04, 0.05};
+  TCurve *ref = JpmcdsMakeTCurve(cdsmodel::to_tdate(base), dates, rates, 5, 1.0, JPMCDS_ACT_365F);
+  ASSERT_NE(ref, nullptr);
+  EXPECT_EQ(ref->fNumItems, 2) << "the zero-date terminator no longer truncates";
+  JpmcdsFreeTCurve(ref);
+
+  // The port: the same five points are not increasing, so the curve is
+  // refused outright rather than silently truncated.
+  std::vector<cdsmodel::RatePoint> pts;
+  for (int i = 0; i < 5; ++i) {
+    pts.push_back({cdsmodel::from_tdate(dates[i]), rates[static_cast<std::size_t>(i)]});
+  }
+  EXPECT_FALSE(
+      cdsmodel::ZeroCurve::create(base, pts, 1.0, cdsmodel::DayCount::Act365Fixed).has_value())
+      << "a span containing an out-of-order date should be rejected, not truncated";
+}
+
 } // namespace
