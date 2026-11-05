@@ -3084,3 +3084,145 @@ the `ZeroCurve::create` decision, where refusing at construction was right
 because upstream's accepted-but-unpriceable curves had no defined answer. The
 distinction is whether upstream's behaviour on the bad input is *defined* or
 merely *reached*.
+
+## Decision 29 — Four parallel arrays, and a parameter that had to get worse
+
+`zcswdate.c` is the first step on the path to `zcswap.c`, and the first module
+whose upstream type carries **four** parallel arrays:
+
+```c
+typedef struct _swapDates
+{
+    TDate    *adjusted;    TDate    *original;
+    TDate    *previous;    TBoolean *onCycle;
+    int       numDates;    /* Length of all 4 arrays. */
+} TSwapDates;
+```
+
+The comment is the invariant, and it is maintained by hand across three
+functions. One vector of one struct, as with `ZCurve`'s three and
+`TCashFlowList`'s two.
+
+### A parameter that had to become less convenient
+
+The interesting decision in this slice is a signature, and it came from a
+measurement I nearly skipped.
+
+`JpmcdsZCAdjustDate` takes a substitution table *and* a bad day convention
+*and* a holiday file, and branches like this:
+
+```c
+if (badDayList != NULL)
+{
+    *adjDate = JpmcdsBad2GoodBadDayList(badDayList, date);
+    return SUCCESS;
+}
+```
+
+The obvious port takes `std::span<const BadDayPair>` and treats an empty span
+as "no table" — that is what every other span-taking function in this port
+does, and it reads better than an optional.
+
+It is wrong. The branch is on the **pointer**, not on `count`:
+
+```
+no list (NULL),   conv=F -> 154504
+EMPTY list,       conv=F -> 154502   <- unchanged, still a Saturday
+```
+
+So "no table" and "a table with nothing in it" are different inputs with
+different results, and a plain span cannot tell them apart. The port takes
+`std::optional<std::span<const BadDayPair>>`.
+
+That is the first time in this project a parameter has had to be made *less*
+convenient to stay faithful. Everywhere else the span replaced a
+pointer-plus-length and lost nothing — the pointer's nullness was never
+load-bearing. Here it is, and the habit of "span replaces pointer+length"
+would have silently changed what an empty table means.
+
+Worth naming the general shape: **a span is the right replacement for a
+pointer and a length only when the pointer's nullness carries no
+information.** Three slices ago `std::optional<Date>` replaced a TDate-0
+sentinel for the same underlying reason, and I did not connect the two at the
+time.
+
+### UPSTREAM-26, where the code is right and the documentation is wrong
+
+The same branch is the defect. With a table supplied, the convention and
+holiday file are never consulted, and the table returns its input unchanged for
+any date it does not mention. So a Saturday absent from the table comes back a
+Saturday — from a function documented as *"Adjusts date to fall on a business
+day, if necesssary"*.
+
+I filed it low and reproduced the behaviour, because the two modes are
+evidently alternatives: a caller supplies either a complete substitution table
+or a convention. An incomplete table is the caller's business. What is wrong is
+the sentence, not the code.
+
+Which makes the port's answer the signature rather than a behaviour change —
+`bad_days` being an `optional` says "either this or the convention" where
+upstream's three unrelated parameters say "all of them". That is the cheapest
+kind of fix: the compiler now tells the caller what the comment failed to.
+
+### UPSTREAM-27, and a guess that is stated in a comment
+
+```c
+if ((valueMDY.day <= 28) && (origMDY.day <= 28))
+{
+    /*
+     * We assume we can only be on cycle if date is not on or after
+     * the 29th of the month.
+     */
+```
+
+The assumption is false, and `JpmcdsCountDates` — called three lines later —
+contradicts it: it reports an exact whole number of intervals for month-end
+dates perfectly well.
+
+Two consequences, and the second needed a sweep to find. The flag is wrong for
+600 of 7,296 swept month-end combinations, which is bad enough on its own since
+the flag is returned to the caller. But the flag also *chooses how `previous`
+is computed* — forward from the value date when on cycle, backward from the
+maturity when not — so 14 of those 600 get a previous coupon date one day out.
+
+Every one has a 29 February value date. That is the third finding in this
+project to land on the leap day, after UPSTREAM-24 and the two tier-1
+properties I had to weaken in Decision 25. Month arithmetic is not invertible,
+and 29 February is where that stops being an abstraction.
+
+The precision worth keeping: in the annual case the forward route is
+`valueDate + 0 intervals`, the value date itself, which is on the schedule by
+definition. The backward route gives the day before it — a date the schedule
+does not contain. So on those fourteen the heuristic does not merely lose
+precision; it picks the route whose answer is not a coupon date.
+
+Reproduced anyway. Moving a swap's previous coupon date is a convention
+decision, not a porting one, and that is now the third time that rule has
+decided a case (UPSTREAM-24, UPSTREAM-26, this).
+
+### A test that passed for the wrong reason, caught by its own assertion
+
+The UPSTREAM-27 differential test swept value-date day and maturity day
+*together* — `make_date(2024, month, day)` against
+`make_date(2024 + years, month, day)` — and reported **zero** differing cases
+against the probe's fourteen.
+
+The cause is in the dates. The differing cases are 29 February against a 28
+February maturity: two *different* days of month. Holding them equal means
+2024-02-29 is only ever paired with 2029-02-29, which is not a date, so every
+candidate was skipped.
+
+The test caught this itself, because it asserts `differing > 0` rather than
+just comparing whatever it happens to find. Without that line it would have
+passed, verified nothing about the finding it was written for, and looked
+exactly like the other six green tests beside it. **An assertion that the
+sweep found something is not a formality; it is the only thing standing between
+a narrowed sweep and a test that silently stops testing.**
+
+### One header that had to come out of lib/src
+
+`TSwapDates` is declared in `zcswdate.h`, which lives in `lib/src` rather than
+`lib/include/isda` — the first private upstream header a differential test has
+needed. `cds_reference` now exposes both directories, with a comment saying
+why. Reaching into a private header is exactly what a differential test is for;
+the alternative is testing the type through its users, which tests them instead.

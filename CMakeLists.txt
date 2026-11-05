@@ -59,7 +59,12 @@ if(CDSMODEL_HAVE_UPSTREAM)
   endif()
 
   add_library(cds_reference STATIC ${REF_SOURCES})
-  target_include_directories(cds_reference PUBLIC "${CDSMODEL_UPSTREAM_DIR}/lib/include/isda")
+  # lib/include/isda is upstream's public surface. lib/src carries a few
+  # private headers that differential tests need -- zcswdate.h declares
+  # TSwapDates, which no public header exposes.
+  target_include_directories(cds_reference PUBLIC
+                             "${CDSMODEL_UPSTREAM_DIR}/lib/include/isda"
+                             "${CDSMODEL_UPSTREAM_DIR}/lib/src")
   target_compile_definitions(cds_reference PUBLIC VERSION="1.8.3")
   # LINUX is upstream linux.mk's own flag; it gates only the stricmp alias.
   if(NOT WIN32)
@@ -152,6 +157,7 @@ if(CDSMODEL_BUILD_TESTS)
                  tests/date_schedule_test.cpp
                  tests/cash_flow_schedule_test.cpp
                  tests/bad_day_map_test.cpp
+                 tests/swap_dates_test.cpp
                  tests/adversarial_test.cpp)
   target_link_libraries(cdsmodel_tests PRIVATE cdsmodel GTest::gtest_main)
   target_include_directories(cdsmodel_tests PRIVATE tests)
@@ -190,7 +196,8 @@ if(CDSMODEL_BUILD_TESTS)
                    tests/date_schedule_differential_test.cpp
                    tests/stub_differential_test.cpp
                    tests/cash_flow_schedule_differential_test.cpp
-                   tests/bad_day_map_differential_test.cpp)
+                   tests/bad_day_map_differential_test.cpp
+                   tests/swap_dates_differential_test.cpp)
     target_link_libraries(cdsmodel_differential_tests
                           PRIVATE cdsmodel cds_reference GTest::gtest_main)
     target_include_directories(cdsmodel_differential_tests PRIVATE tests)
@@ -204,7 +211,7 @@ if(CDSMODEL_BUILD_TESTS)
                  date_sup interpolation rate_conversion
                  zero_curve_builder cash_flow_list
                  cash_flow_bootstrap date_schedule stub
-                 cash_flow_schedule bad_day_map)
+                 cash_flow_schedule bad_day_map swap_dates)
       add_executable(gen_${gen}_golden tools/gen_${gen}_golden.cpp)
       target_link_libraries(gen_${gen}_golden PRIVATE cdsmodel cds_reference)
       target_include_directories(gen_${gen}_golden PRIVATE tests)

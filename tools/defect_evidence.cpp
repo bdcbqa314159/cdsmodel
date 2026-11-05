@@ -27,6 +27,7 @@
 #include <cdsmodel/defaulted.hpp>
 #include <cdsmodel/interpolation.hpp>
 #include <cdsmodel/stub.hpp>
+#include <cdsmodel/swap_dates.hpp>
 #include <cdsmodel/version.hpp>
 #include <cdsmodel/zero_curve_builder.hpp>
 
@@ -64,6 +65,7 @@ extern "C" {
 #include "tcurve.h"
 #include "yearfrac.h"
 #include "zcprvt.h"
+#include "zcswdate.h"
 
 // Exported from the library but declared in no public header.
 int JpmcdsLinInterpLongPoint1Discontinuous(long *x, int xskip, int N, double *f, int fskip,
@@ -1589,6 +1591,180 @@ void u25(bool unsafe) {
               "caught the overflow above.\n");
 }
 
+void u26() {
+  heading("UPSTREAM-26", "a substitution table silently disables the convention");
+  std::printf("zcswdate.c's JpmcdsZCAdjustDate branches on the PRESENCE of a bad\n"
+              "day list, not on its contents:\n\n"
+              "    if (badDayList != NULL)\n"
+              "    {\n"
+              "        *adjDate = JpmcdsBad2GoodBadDayList(badDayList, date);\n"
+              "        return SUCCESS;\n"
+              "    }\n"
+              "    else\n"
+              "    {\n"
+              "        if (JpmcdsBusinessDay(date, badDayConv, holidayFile, adjDate) == FAILURE)\n"
+              "            goto done;\n"
+              "    }\n\n"
+              "So with a list supplied, badDayConv and holidayFile are never consulted\n"
+              "-- and Bad2Good returns its input unchanged for any date the list does\n"
+              "not mention. The function is documented as \"Adjusts date to fall on a\n"
+              "business day, if necesssary\". On that path it does not.\n\n");
+
+  const TDate listed = JpmcdsDate(2024, 1, 6); // a Saturday
+  const TDate other = JpmcdsDate(2024, 1, 13); // also a Saturday
+  const TDate monday = JpmcdsDate(2024, 1, 8);
+  TDate bad_days[1] = {listed};
+  TDate good_days[1] = {monday};
+  TBadDayList table{1, 1, bad_days, good_days};
+
+  std::printf("  %-42s %s\n", "input", "adjusted to");
+  TDate out = 0;
+  JpmcdsZCAdjustDate(listed, nullptr, 'F', const_cast<char *>("NONE"), &out);
+  std::printf("  %-42s %ld\n", "Saturday, no list, conv=F", (long)out);
+  JpmcdsZCAdjustDate(listed, &table, 'F', const_cast<char *>("NONE"), &out);
+  std::printf("  %-42s %ld   (from the list)\n", "Saturday, in the list, conv=F", (long)out);
+  JpmcdsZCAdjustDate(other, nullptr, 'F', const_cast<char *>("NONE"), &out);
+  std::printf("  %-42s %ld\n", "another Saturday, no list, conv=F", (long)out);
+  JpmcdsZCAdjustDate(other, &table, 'F', const_cast<char *>("NONE"), &out);
+  std::printf("  %-42s %ld   <- STILL A SATURDAY\n", "another Saturday, list given, conv=F",
+              (long)out);
+
+  std::printf("\nAn EMPTY list does it to every date, because the test is on the\n"
+              "pointer rather than on `count`:\n\n");
+  TBadDayList empty{0, 0, nullptr, nullptr};
+  JpmcdsZCAdjustDate(listed, nullptr, 'F', const_cast<char *>("NONE"), &out);
+  std::printf("  no list (NULL),   conv=F -> %ld\n", (long)out);
+  JpmcdsZCAdjustDate(listed, &empty, 'F', const_cast<char *>("NONE"), &out);
+  std::printf("  EMPTY list,       conv=F -> %ld   <- unchanged\n", (long)out);
+
+  std::printf("\nThe port reproduces the behaviour and fixes the SIGNATURE: the table\n"
+              "is a std::optional<std::span<const BadDayPair>>, which says \"either\n"
+              "this or the convention\" where upstream's two unrelated parameters say\n"
+              "\"both\". The optional is required rather than stylistic -- no-table and\n"
+              "empty-table are different inputs with different results, and a plain\n"
+              "span would have merged them.\n\n");
+
+  const std::vector<cdsmodel::Calendar> calendars{cdsmodel::Calendar::none()};
+  const std::vector<cdsmodel::BadDayPair> port_table{
+      {cdsmodel::from_tdate(listed), cdsmodel::from_tdate(monday)}};
+  const auto show = [](const char *tag, std::optional<cdsmodel::Date> date) {
+    std::printf("  %-42s %s\n", tag,
+                date ? std::to_string(cdsmodel::to_tdate(*date)).c_str() : "refused");
+  };
+  show("nullopt (use the convention)",
+       cdsmodel::zc_adjust_date(cdsmodel::from_tdate(other), std::nullopt,
+                                cdsmodel::BadDayConv::Follow, calendars));
+  show("a table that omits it",
+       cdsmodel::zc_adjust_date(cdsmodel::from_tdate(other),
+                                std::span<const cdsmodel::BadDayPair>{port_table},
+                                cdsmodel::BadDayConv::Follow, calendars));
+  show("an EMPTY table", cdsmodel::zc_adjust_date(cdsmodel::from_tdate(other),
+                                                  std::span<const cdsmodel::BadDayPair>{},
+                                                  cdsmodel::BadDayConv::Follow, calendars));
+}
+
+void u27() {
+  heading("UPSTREAM-27", "a day-of-month heuristic that suppresses real cycles");
+  std::printf("zcswdate.c's SetPrevDateAndOnCycle decides on-cycle in two steps, and\n"
+              "the first is a guess:\n\n"
+              "    if ((valueMDY.day <= 28) && (origMDY.day <= 28))\n"
+              "    {\n"
+              "        /* We assume we can only be on cycle if date is not on or\n"
+              "         * after the 29th of the month. */\n"
+              "        JpmcdsCountDates(valueDate, origDate, &interval, &n, &extraDays);\n"
+              "        *onCycle = (extraDays == 0);\n"
+              "    }\n"
+              "    else\n"
+              "    {\n"
+              "        *onCycle = FALSE;\n"
+              "    }\n\n"
+              "JpmcdsCountDates disagrees -- it reports an exact interval count for\n"
+              "month-end dates perfectly well:\n\n");
+
+  TDateInterval quarterly;
+  JpmcdsMakeDateInterval(3, 'M', &quarterly);
+  for (const int day : {29, 30, 31}) {
+    const TDate value_date = JpmcdsDate(2024, 1, day);
+    const TDate maturity = JpmcdsDate(2027, 1, day);
+    if (value_date <= 0 || maturity <= 0) {
+      continue;
+    }
+    int intervals = 0;
+    int extra = 0;
+    JpmcdsCountDates(value_date, maturity, &quarterly, &intervals, &extra);
+    std::printf("  day %d: CountDates extraDays=%-3d so genuinely %s; heuristic says OFF\n", day,
+                extra, extra == 0 ? "ON cycle" : "off cycle");
+  }
+
+  std::printf("\nSwept over every month, the days 26-31 and four frequencies:\n\n");
+  int swept = 0;
+  int suppressed = 0;
+  int differing = 0;
+  int shown = 0;
+  for (const long freq : {1L, 2L, 4L, 12L}) {
+    TDateInterval interval;
+    if (JpmcdsFreq2TDateInterval(static_cast<int>(freq), &interval) != SUCCESS) {
+      continue;
+    }
+    for (int month = 1; month <= 12; ++month) {
+      for (int value_day = 26; value_day <= 31; ++value_day) {
+        const TDate value_date = JpmcdsDate(2024, month, value_day);
+        if (value_date <= 0) {
+          continue;
+        }
+        for (int years = 1; years <= 5; ++years) {
+          for (int maturity_day = 26; maturity_day <= 31; ++maturity_day) {
+            const TDate maturity = JpmcdsDate(2024 + years, month, maturity_day);
+            if (maturity <= 0 || maturity <= value_date) {
+              continue;
+            }
+            int intervals = 0;
+            int extra = 0;
+            if (JpmcdsCountDates(value_date, maturity, &interval, &intervals, &extra) != SUCCESS) {
+              continue;
+            }
+            ++swept;
+            if (extra != 0 || (value_day <= 28 && maturity_day <= 28)) {
+              continue;
+            }
+            ++suppressed;
+            TDate forward = 0;
+            TDate backward = 0;
+            if (JpmcdsDateFromDateAndOffset(value_date, &interval, intervals - 1, &forward) !=
+                    SUCCESS ||
+                JpmcdsDateFromDateAndOffset(maturity, &interval, -1, &backward) != SUCCESS) {
+              continue;
+            }
+            if (forward != backward) {
+              ++differing;
+              if (shown < 4) {
+                std::printf("  freq=%-3ld 2024-%02d-%02d -> %d-%02d-%02d : on-cycle %ld, "
+                            "off-cycle %ld  DIFFER by %ld\n",
+                            freq, month, value_day, 2024 + years, month, maturity_day,
+                            (long)forward, (long)backward, (long)(forward - backward));
+                ++shown;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  std::printf("\n  swept %d, the heuristic suppressed %d genuinely on-cycle dates,\n", swept,
+              suppressed);
+  std::printf("  of which %d give a DIFFERENT previous coupon date (%.1f%%)\n", differing,
+              suppressed > 0 ? 100.0 * differing / suppressed : 0.0);
+
+  std::printf("\nEvery differing case has a 29 February value date -- the same clamping\n"
+              "asymmetry as UPSTREAM-24, forward from the 29th and backward from the\n"
+              "28th not meeting. And in the annual case the forward route is\n"
+              "valueDate + 0 intervals, the value date ITSELF, which is on the\n"
+              "schedule by definition; the backward route gives the day before it, a\n"
+              "date the schedule does not contain.\n\n"
+              "Reproduced deliberately: moving a swap's previous coupon date is a\n"
+              "convention decision, not a porting one.\n");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1685,6 +1861,12 @@ int main(int argc, char **argv) {
   }
   if (want("u25")) {
     u25(unsafe);
+  }
+  if (want("u26")) {
+    u26();
+  }
+  if (want("u27")) {
+    u27();
   }
   return 0;
 }
