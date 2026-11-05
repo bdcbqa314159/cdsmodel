@@ -153,6 +153,7 @@ a comment at the site and listed below.
 
 | site | upstream | port | why |
 |---|---|---|---|
+| `split_bad_day_and_stub_pos` | validates the stub position via `JpmcdsStubPosMake` and assigns the bad day convention from `value & 0xFF` **unchecked**, though `JpmcdsBadDayConvValid` is in the same library | refuses a convention it cannot represent, at the split | `BadDayConv` is a four-valued enum, so an arbitrary byte is not a value it can hold. Both reject the same inputs overall -- `JpmcdsBusinessDay` validates the convention before looking at the date, measured on a business day and a weekend alike -- but the port rejects earlier, so a caller that splits and never adjusts a date sees SUCCESS from upstream and failure from the port. |
 | `bsearch` run-of-equals loop | unbounded `while (x[lo] == x[hi]) hi++`, safe only by argument | bounded by `n` | upstream's safety is a comment; this makes it structural. Identical on all valid input. |
 | `bsearch` index type | `int`, allows `hi = mid - 1` to go negative | `std::ptrdiff_t` | `std::size_t` would underflow here and read out of bounds. Signedness is load-bearing. |
 | `bsearch` `skip` stride | byte stride plus a power-of-two shift optimisation | contiguous `std::span` | the 2009 multiply-to-shift trick is strictly worse than what the compiler now emits. A projection overload arrives when layer 1 reaches `interpc`. |

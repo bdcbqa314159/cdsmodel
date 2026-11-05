@@ -2709,3 +2709,134 @@ it catching a real instance is a good return, and it is worth noting that the
 instance was mine both times: the hazard is not that someone else is careless,
 it is that two modules in one namespace will eventually pick the same obvious
 name.
+
+## Decision 26 — A slice with no defect in it, which is also a result
+
+`stub.c` had four functions left: `JpmcdsStubPayment`, `JpmcdsIsEndStub`,
+`JpmcdsStubPosMake` and `JpmcdsBadDayAndStubPosSplit`. They are what
+`cashflow.c`'s two schedule constructors and four sites in `zcswap.c` were
+waiting on, so finishing the file unblocks both.
+
+**No new defect came out of it.** Two things looked like findings and
+measurement said otherwise, and since the register is now at twenty-four
+entries it is worth being explicit about what did *not* get added and why.
+
+### The dead locals that compute the right answer twice
+
+`JpmcdsStubPayment`, after its four validation checks:
+
+```c
+JpmcdsDayCountFraction(prevCouponDate, nextCouponDate, dcc, &couponYearFrac);
+coupon = rate * couponYearFrac;              /* never read */
+
+JpmcdsDayCountFraction(stubStart, stubEnd, dcc, &stubYears);
+stubFrac = stubYears / couponYearFrac;       /* never read */
+
+*stubPayment = rate * stubYears;
+```
+
+Two dead locals, and the obvious reading is that the intended answer was
+`coupon * stubFrac` — the coupon scaled by the stub's share of its period —
+which is precisely what the two dead lines compute between them. That looks
+like a bug where the final assignment lost its intent.
+
+It is not, because the two are the same number:
+
+```
+coupon * stubFrac = (rate * couponYearFrac) * (stubYears / couponYearFrac)
+                  = rate * stubYears
+```
+
+So this is a simplification that was applied and whose scaffolding was left
+standing. And the surviving form is the *better* one: one multiplication rather
+than a multiply, a divide and a multiply, so one rounding instead of three.
+
+The reflex here would have been to file "two dead locals suggest a lost
+computation" and move on. Doing the algebra took a minute and turned a defect
+report into a note.
+
+One thing did survive from it, though, and it is small but real. The port still
+calls `year_fraction(prev_coupon, next_coupon, ...)` and discards the result,
+because that call can **fail** — a day count the fraction cannot compute makes
+upstream return FAILURE before it ever reaches the stub arithmetic. The value is
+dead; the failure is not. Deleting the call would have been a behavioural
+change disguised as a cleanup.
+
+### Validation that outlives its purpose
+
+The same function has four checks, all about the surrounding coupon period, and
+the answer does not use that period at all. Measured, by moving `nextCoupon`
+and watching nothing happen:
+
+```
+stub 154511..154602, coupon period ends 154693 -> 0.012465753424657534
+stub 154511..154602, coupon period ends 154877 -> 0.012465753424657534
+```
+
+But the period still decides **acceptance**, and the fourth check is the sharp
+one: a stub must touch at least one boundary, so a window strictly inside the
+period is refused even though `rate * stubYears` is computable for it.
+
+All four are reproduced. They are the function's contract whatever motivated
+them, and a caller relying on the rejection is relying on observable behaviour
+— the same reasoning that kept `expected_points` in `ZeroCurveBuilder::create`
+after it stopped controlling an allocation.
+
+### The asymmetric validation, and a hypothesis that died in one measurement
+
+`JpmcdsBadDayAndStubPosSplit` unpacks two values from one `long` and validates
+exactly one of them:
+
+```
+input    rc        badDayConv  valid?
+0x0346   FAILURE   -           -        <- stub position rejected
+0x0041   SUCCESS   65 ('A')    NO       <- convention is not
+0x0000   SUCCESS   0           NO
+0x00FF   SUCCESS   255         NO
+```
+
+My first reading was that this lets a meaningless convention travel until some
+date happens to need adjusting — making detection depend on the *data* rather
+than on the input, which would have been a good finding of the UPSTREAM-18
+family.
+
+One probe killed it. `JpmcdsBusinessDay` validates the convention **before**
+asking whether the date is a business day, so the same bogus value fails on a
+Monday and a Saturday alike. Every caller does get an error; it is just reported
+from the adjustment site rather than from the split that produced the value.
+A worse diagnostic, not a wrong answer.
+
+I had already written the "detection depends on the data" sentence into the
+probe's own output before testing it. That is the second time this project has
+caught me stating a conclusion in the same breath as the code meant to test it,
+and the probe printing a claim it had just disproved is a useful embarrassment:
+the text was there, the measurement contradicted it, and the only reason the
+claim did not ship is that I read the output.
+
+### A deliberate difference that follows from a type
+
+The port cannot reproduce the pass-through even if it wanted to. `BadDayConv` is
+a four-valued enum and an arbitrary byte is not one of its values, so
+`split_bad_day_and_stub_pos` must reject what upstream passes along.
+
+That is observable, so it is a row in the Deliberate differences table rather
+than a silent improvement: upstream returns SUCCESS and fails later, the port
+fails now. A caller that splits a packed value and never adjusts a date would
+see success from one and failure from the other. The recorded vectors pin both
+halves — eleven of the forty cases are ones upstream accepts and the port
+refuses, and that count is asserted, so if upstream ever starts validating, the
+test says so.
+
+### Two enums where upstream has one integer
+
+`TStubPos` is three-valued: auto, front, back. The port already had
+`StubPosition`, which is two-valued: front, back.
+
+They are not the same type and the port does not pretend otherwise.
+`StubPosition` answers "which end is the stub at?", and two values is right
+because a stub is at one end or the other. `StubPosDefault` answers "what
+should I do if nobody said?", and `Auto` is not a position — it is an
+instruction to look at the schedule. Upstream encodes both as plain integers
+and relies on the parameter name to tell them apart, which is exactly the
+mistake the two-enum split of `TStubMethod` was made to prevent in the first
+half of this file.
