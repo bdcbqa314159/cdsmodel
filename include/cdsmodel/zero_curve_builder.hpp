@@ -464,6 +464,38 @@ public:
     return true;
   }
 
+  /// Replace the rate at an existing point, recomputing its cached discount.
+  ///
+  /// Upstream's bootstrap does this by hand, at the end of its root find:
+  ///
+  /// ```c
+  /// zc->rate[ objData.zcIndex ] = rate;
+  /// ```
+  ///
+  /// with no corresponding write to `zc->discount[zcIndex]`. The pair survives
+  /// only because the objective function updates both on every evaluation, so
+  /// the cache ends up describing whichever rate the solver last *tried* --
+  /// which is the returned root only if the solver's last act was to evaluate
+  /// there. Measured over the bootstrap's own instruments, it is: every stored
+  /// point still satisfies the invariant afterwards. It holds by coincidence of
+  /// the solver's internals, not by construction.
+  ///
+  /// So the port does not expose the unpaired write at all. Setting a rate
+  /// recomputes the discount or fails; there is no sequence of public calls
+  /// that leaves the two disagreeing.
+  [[nodiscard]] bool set_rate(std::size_t index, double rate) {
+    if (index >= points_.size()) {
+      return false;
+    }
+    const std::optional<double> discount = compute_discount(points_[index].date, rate);
+    if (!discount) {
+      return false;
+    }
+    points_[index].rate = rate;
+    points_[index].discount = *discount;
+    return true;
+  }
+
   /// The interpolated zero rate at a date. Replaces `JpmcdsZCInterpolate`.
   ///
   /// Four behaviours before any interpolation happens, all upstream's:

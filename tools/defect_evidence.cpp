@@ -14,6 +14,7 @@
 //   ./build/asan/defect_evidence --unsafe
 
 #include <cdsmodel/calendar.hpp>
+#include <cdsmodel/cash_flow_bootstrap.hpp>
 #include <cdsmodel/cash_flow_list.hpp>
 #include <cdsmodel/cds.hpp>
 #include <cdsmodel/date.hpp>
@@ -1152,6 +1153,201 @@ void u20() {
   JpmcdsFreeCFL(empty);
 }
 
+/// Seed a small upstream curve, for the bootstrap sections below.
+ZCurve *seed_curve(int npts, double rate) {
+  ZCurve *zc = JpmcdsZCMake(JpmcdsDate(2024, 1, 1), 32, 1, JPMCDS_ACT_365F);
+  if (zc == nullptr) {
+    return nullptr;
+  }
+  for (int i = 1; i <= npts; ++i) {
+    JpmcdsZCAddRate(zc, JpmcdsDate(2024 + i, 1, 1), rate * static_cast<double>(i));
+  }
+  return zc;
+}
+
+void u21(bool unsafe) {
+  heading("UPSTREAM-21", "the error path dereferences a null pointer");
+  std::printf("zcall.c's JpmcdsZCAddCashFlowList reads the last element twice, and\n"
+              "neither read is guarded:\n\n"
+              "    if (date==0L)\n"
+              "        date = cfl->fArray[ cfl->fNumItems-1].fDate;\n"
+              "    ...\n"
+              "    done:\n"
+              "        if (status == FAILURE)\n"
+              "            JpmcdsErrMsg(\"...maturing %%s\", \n"
+              "                JpmcdsFormatDate(cfl->fArray[cfl->fNumItems-1].fDate));\n\n");
+
+  TCashFlowList *empty = JpmcdsNewEmptyCFL(0);
+  std::printf("JpmcdsNewEmptyCFL(0) is a PUBLIC constructor, and gives:\n"
+              "  fNumItems=%d  fArray=%s\n\n",
+              empty != nullptr ? empty->fNumItems : -1,
+              (empty != nullptr && empty->fArray == nullptr) ? "NULL" : "non-NULL");
+  std::printf("So both reads are NULL[-1].\n\n");
+
+  std::printf("The second one is what matters. With an EXPLICIT date the first read\n"
+              "is skipped, and the function reaches its own branch:\n\n"
+              "    \"no cash flows in list beyond ZeroCurve. Therefore, nothing to add.\"\n\n"
+              "The error is detected, the branch is written, the message is composed --\n"
+              "and then `done:` dereferences the empty list to format it. The\n"
+              "diagnostic path for an empty list is the one path that cannot survive\n"
+              "an empty list, so there is no way to receive the error.\n\n");
+
+  if (!unsafe) {
+    std::printf("Measured separately, because each call takes the process with it:\n"
+                "    date == 0        -> exit status 139 (SIGSEGV)\n"
+                "    explicit date    -> exit status 139 (SIGSEGV)\n\n"
+                "Pass --unsafe to run it here and watch this process die.\n");
+  } else {
+    std::printf("--unsafe given: calling it now. This process is about to crash.\n");
+    std::fflush(stdout);
+    ZCurve *zc = seed_curve(1, 0.05);
+    (void)JpmcdsZCAddCashFlowList(zc, empty, 1.0, 0L, JPMCDS_LINEAR_INTERP, nullptr);
+    std::printf("  (did not crash -- that is itself worth investigating)\n");
+    JpmcdsZCFree(zc);
+  }
+
+  std::printf("\nThe port refuses an empty span before anything reads from it:\n");
+  std::optional<cdsmodel::ZeroCurveBuilder> port = cdsmodel::ZeroCurveBuilder::create(
+      cdsmodel::from_tdate(JpmcdsDate(2024, 1, 1)), 8, 1, cdsmodel::DayCount::Act365Fixed);
+  (void)port->add_rate(cdsmodel::from_tdate(JpmcdsDate(2025, 1, 1)), 0.05);
+  std::printf(
+      "  add_cash_flow_list(curve, {}, 1.0, nullopt) -> %s\n",
+      cdsmodel::add_cash_flow_list(*port, {}, 1.0, std::nullopt, cdsmodel::InterpType::Linear)
+          ? "(!)"
+          : "refused");
+  std::printf("  add_cash_flow_list(curve, {}, 1.0, a date)  -> %s\n",
+              cdsmodel::add_cash_flow_list(*port, {}, 1.0,
+                                           cdsmodel::from_tdate(JpmcdsDate(2030, 1, 1)),
+                                           cdsmodel::InterpType::Linear)
+                  ? "(!)"
+                  : "refused");
+  JpmcdsFreeCFL(empty);
+}
+
+void u22() {
+  heading("UPSTREAM-22", "success with nothing added");
+  std::printf("When the final payment falls exactly on the curve's last date, every\n"
+              "branch of JpmcdsZCAddCashFlowList declines in turn: the guard admits\n"
+              "equality, the search for the first uncovered payment walks off the\n"
+              "end, and both remaining branches -- including the one that would add\n"
+              "the remaining dates -- test false. Then `status = SUCCESS`.\n\n");
+
+  ZCurve *zc = seed_curve(3, 0.01);
+  if (zc == nullptr) {
+    return;
+  }
+  const TDate curve_end = zc->date[zc->numItems - 1];
+  const TDate asked_for = JpmcdsDate(2030, 1, 1);
+  TDate dates[2] = {JpmcdsDate(2025, 1, 1), curve_end};
+  double amounts[2] = {0.05, 1.05};
+  TCashFlowList *cfl = JpmcdsNewCFL(dates, amounts, 2);
+
+  const int before = zc->numItems;
+  const int rc = JpmcdsZCAddCashFlowList(zc, cfl, 1.0, asked_for, JPMCDS_LINEAR_INTERP, nullptr);
+  std::printf("  curve ends %ld, list ends %ld, asked to add %ld\n\n", (long)curve_end,
+              (long)curve_end, (long)asked_for);
+  std::printf("  rc=%-7s   numItems %d -> %d   point at %ld present? %s\n",
+              rc == SUCCESS ? "SUCCESS" : "FAILURE", before, zc->numItems, (long)asked_for,
+              JpmcdsZCFindDateExact(zc, asked_for) >= 0 ? "yes" : "NO");
+
+  std::printf("\nThe caller is told the instrument was bootstrapped. The curve lacks\n"
+              "the date it asked for and no rate was solved for anything. The next\n"
+              "instrument then bootstraps against a curve one point shorter than the\n"
+              "caller believes, which is how one silent no-op becomes a wrong curve\n"
+              "rather than a missing point.\n\n");
+
+  std::optional<cdsmodel::ZeroCurveBuilder> port = cdsmodel::ZeroCurveBuilder::create(
+      cdsmodel::from_tdate(JpmcdsDate(2024, 1, 1)), 16, 1, cdsmodel::DayCount::Act365Fixed);
+  for (int i = 1; i <= 3; ++i) {
+    (void)port->add_rate(cdsmodel::from_tdate(JpmcdsDate(2024 + i, 1, 1)),
+                         0.01 * static_cast<double>(i));
+  }
+  const std::vector<cdsmodel::CashFlow> flows{{cdsmodel::from_tdate(dates[0]), 0.05},
+                                              {cdsmodel::from_tdate(curve_end), 1.05}};
+  const std::size_t port_before = port->points().size();
+  const bool ok = cdsmodel::add_cash_flow_list(*port, flows, 1.0, cdsmodel::from_tdate(asked_for),
+                                               cdsmodel::InterpType::Linear);
+  std::printf("The port: add_cash_flow_list -> %s   points %zu -> %zu\n", ok ? "(!)" : "refused",
+              port_before, port->points().size());
+  std::printf("\nIf no rate was solved, the instrument was not added. Saying so is the\n"
+              "only honest answer.\n");
+
+  JpmcdsFreeCFL(cfl);
+  JpmcdsZCFree(zc);
+}
+
+void u23() {
+  heading("UPSTREAM-23", "a sign test that silently drops curve points");
+  std::printf("JpmcdsZCAddCFLPoints filters what it inserts:\n\n"
+              "    if (rate >= 0.0)\n"
+              "    {\n"
+              "        dates[n] = d;\n"
+              "        rates[n++] = rate;\n"
+              "    }\n\n"
+              "No else, no message, no status -- in a function whose own comment is\n"
+              "\"Ensure all uncovered cash flow dates in curve ... This will make\n"
+              "sure they can be priced appropriately by the curve.\"\n\n");
+
+  std::printf("A five-payment zero-coupon bond over a curve at -0.5%%, varying only\n"
+              "the price:\n\n");
+  std::printf("  %-8s %-14s %-16s %s\n", "price", "solved rate", "dates placed", "repriced");
+  for (const double price : {0.97, 1.00, 1.06, 1.20}) {
+    ZCurve *zc = JpmcdsZCMake(JpmcdsDate(2024, 1, 1), 16, 1, JPMCDS_ACT_365F);
+    if (zc == nullptr) {
+      continue;
+    }
+    JpmcdsZCAddRate(zc, JpmcdsDate(2025, 1, 1), -0.005);
+    JpmcdsZCAddRate(zc, JpmcdsDate(2026, 1, 1), -0.008);
+    TDate dates[5];
+    double amounts[5];
+    for (int i = 0; i < 5; ++i) {
+      dates[i] = JpmcdsDate(2027 + i, 1, 1);
+      amounts[i] = 0.0;
+    }
+    amounts[4] = 1.0;
+    TCashFlowList *cfl = JpmcdsNewCFL(dates, amounts, 5);
+    if (JpmcdsZCAddCashFlowList(zc, cfl, price, 0L, JPMCDS_LINEAR_INTERP, nullptr) == SUCCESS) {
+      int placed = 0;
+      for (const TDate date : dates) {
+        if (JpmcdsZCFindDateExact(zc, date) >= 0) {
+          ++placed;
+        }
+      }
+      const int at = JpmcdsZCFindDateExact(zc, dates[4]);
+      double repriced = 0.0;
+      JpmcdsJpmcdsZCPresentValueCFL(zc, cfl, 0, 4, JPMCDS_LINEAR_INTERP, nullptr, &repriced);
+      char rate_text[32] = "-";
+      if (at >= 0) {
+        std::snprintf(rate_text, sizeof rate_text, "%+.4g", zc->rate[at]);
+      }
+      std::printf("  %-8.2f %-14s %d of 5%-10s %.10f\n", price, rate_text, placed, "", repriced);
+    }
+    JpmcdsFreeCFL(cfl);
+    JpmcdsZCFree(zc);
+  }
+
+  std::printf("\nThe cliff is at exactly zero: a solved rate of -2e-13 drops four\n"
+              "points that +2e-13 would have kept. The curve's SHAPE turns on the\n"
+              "sign of a number that is, at that magnitude, noise. Negative zero\n"
+              "rates are not exotic -- EUR, CHF and JPY curves were negative for\n"
+              "most of a decade after 2014.\n\n");
+
+  std::printf("What it does NOT do, having looked: the repriced column above is the\n"
+              "input price every time, even where 1 of 5 dates was placed. The same\n"
+              "holds under flat forwards. Inserting a point at its own interpolated\n"
+              "rate is idempotent for both schemes -- linear puts it on the line,\n"
+              "flat forwards is log-linear in the discount factor and puts it on\n"
+              "that curve -- so splitting an interval at a point already on the path\n"
+              "leaves the path alone. The finding is about the curve as DATA, not\n"
+              "about any price.\n\n");
+
+  std::printf("The port reproduces no filter: every missing date gets its\n"
+              "interpolated rate, which is what the comment describes. The\n"
+              "divergence is recorded as data -- the golden vectors carry the exact\n"
+              "dates upstream dropped, and the replay asserts the port's curve\n"
+              "differs by exactly those and nothing else, for 12 of 60 bootstraps.\n");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1233,6 +1429,15 @@ int main(int argc, char **argv) {
   }
   if (want("u20")) {
     u20();
+  }
+  if (want("u21")) {
+    u21(unsafe);
+  }
+  if (want("u22")) {
+    u22();
+  }
+  if (want("u23")) {
+    u23();
   }
   return 0;
 }
