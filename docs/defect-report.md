@@ -1938,3 +1938,161 @@ Worth noting for the harness rather than for upstream: **neither
 AddressSanitizer nor UndefinedBehaviorSanitizer reports it.** The project
 already records that ASan cannot see uninitialised reads; this is a second
 class it cannot see, in the same function where it caught the overflow above.
+
+## UPSTREAM-26 — A substitution table silently disables the convention
+
+**Location:** `lib/src/zcswdate.c`, `JpmcdsZCAdjustDate`.
+**Severity:** Low. The function's documented purpose is not achieved on one of
+its two paths, for dates the table does not mention.
+
+### Mechanism
+
+The function branches on the *presence* of a bad day list, not on its contents:
+
+```c
+if (badDayList != NULL)
+{
+    *adjDate = JpmcdsBad2GoodBadDayList(badDayList, date);
+    return SUCCESS;
+}
+else
+{
+    if (JpmcdsBusinessDay(date, badDayConv, holidayFile, adjDate) == FAILURE)
+        goto done;
+}
+```
+
+So when a list is supplied, `badDayConv` and `holidayFile` are never consulted.
+And `JpmcdsBad2GoodBadDayList` returns its input unchanged for any date the
+list does not contain — see UPSTREAM-25's neighbour, `badday.c`, where that is
+the documented behaviour.
+
+The function is documented as *"Adjusts date to fall on a business day, if
+necesssary"*. On the list path it does not.
+
+### Evidence
+
+With a table containing one Saturday:
+
+```
+input                                    adjusted to
+Saturday, no list, conv=F                154504   (moved to Monday)
+Saturday, in the list, conv=F            154504   (from the list)
+another Saturday, no list, conv=F        154511   (moved)
+another Saturday, list given, conv=F     154509   <- STILL A SATURDAY
+```
+
+Reproduce with `./build/debug/defect_evidence u26`.
+
+The second Saturday is absent from the table, so it comes back untouched even
+though a convention was supplied that would have moved it.
+
+An **empty** table does this to every date, because the test is on the pointer
+rather than on `count`:
+
+```
+no list (NULL),   conv=F -> 154504
+EMPTY list,       conv=F -> 154502   <- unchanged, still a Saturday
+```
+
+### Why it is low, and what the port does instead
+
+The two modes are evidently intended as alternatives — a caller supplies either
+a complete substitution table or a convention — and a table that omits a bad
+day is incomplete, which is the caller's business. What is wrong is the
+documented purpose, not the code.
+
+So the port reproduces the behaviour and fixes the *signature* instead.
+`zc_adjust_date` takes `std::optional<std::span<const BadDayPair>>`, which says
+"either a table or the convention" where upstream's two unrelated parameters
+say "both".
+
+That measurement is also why the parameter is an `optional` rather than a plain
+span. "No table" and "a table with nothing in it" are genuinely different
+inputs with different results, and a span alone would have merged them —
+silently changing what an empty table means. This is the one case so far where
+a parameter had to be *less* convenient to stay faithful.
+
+## UPSTREAM-27 — A day-of-month heuristic that suppresses real cycles
+
+**Location:** `lib/src/zcswdate.c`, the file-local `SetPrevDateAndOnCycle`.
+**Severity:** Low. A wrong flag in 8% of month-end cases, and a previous coupon
+date off by one day in a narrow subset of those.
+
+### Mechanism
+
+The on-cycle decision is made in two steps, and the first is a guess:
+
+```c
+if ((valueMDY.day <= 28) && (origMDY.day <= 28))
+{
+    /*
+     * We assume we can only be on cycle if date is not on or after
+     * the 29th of the month.
+     */
+    JpmcdsCountDates(valueDate, origDate, &interval, &numIntervals, &extraDays);
+    *onCycle = (extraDays == 0);
+}
+else
+{
+    *onCycle = FALSE;
+}
+```
+
+The assumption is false. `JpmcdsCountDates` reports an exact whole number of
+intervals for month-end dates perfectly well:
+
+```
+day 29: CountDates says extraDays=0   so genuinely ON cycle; heuristic says OFF
+day 30: CountDates says extraDays=0   so genuinely ON cycle; heuristic says OFF
+day 31: CountDates says extraDays=0   so genuinely ON cycle; heuristic says OFF
+```
+
+### Evidence, and the two consequences
+
+The reported `onCycle` flag is wrong for those dates. Swept over every month,
+the days 26 to 31, and four frequencies: the heuristic suppresses **600 of
+7,296** genuinely on-cycle combinations.
+
+And because the flag chooses how `previous` is computed — forward from the
+value date when on cycle, backward from the maturity when not — the suppression
+can change the date:
+
+```
+freq=1   2024-02-29 -> 2025-02-28 : on-cycle 154556, off-cycle 154555  DIFFER by 1
+freq=2   2024-02-29 -> 2027-02-28 : on-cycle 155468, off-cycle 155467  DIFFER by 1
+...
+14 of the 600 give a different previous coupon date (2.3%)
+```
+
+Reproduce with `./build/debug/defect_evidence u27`.
+
+Every one has a **29 February value date** — the same clamping asymmetry as
+UPSTREAM-24, where forward from the 29th and backward from the 28th do not meet
+because month arithmetic is not invertible.
+
+Worth being precise about which answer is which. In the annual case the forward
+route is `valueDate + 0 intervals`, the value date itself, which is by
+definition on the schedule. The backward route gives the day before it — a date
+the schedule does not contain. So on these fourteen the heuristic does not
+merely lose precision; it picks the route that returns a date that is not a
+coupon date.
+
+### In the port — reproduced, deliberately
+
+Deciding that a swap's previous coupon date should move by a day is a
+convention question, not a porting one. Same reasoning as UPSTREAM-24, same
+conclusion: the behaviour is reproduced and the disagreement is recorded.
+
+The heuristic is pinned from both sides. One test asserts that an `on_cycle`
+flag of true really does mean a whole number of intervals — checked against
+`count_dates`, not against upstream — and another asserts that a false flag
+does **not** imply the converse, which is this defect stated as a property.
+
+### One thing the port did not need to reproduce
+
+`numIntervals` is declared uninitialised and read only in the on-cycle branch.
+That is safe, because `*onCycle` can only be true where `JpmcdsCountDates` has
+just set it — but the safety is an argument about control flow rather than a
+property of the code, which is exactly the shape UPSTREAM-14 is. Here the
+argument happens to hold, and the port keeps the variable initialised anyway.

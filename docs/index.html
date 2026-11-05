@@ -495,6 +495,18 @@
           <td><span class="chip immune">Cannot occur</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u26">UPSTREAM-26</a></td>
+          <td>Supplying a substitution table silently disables the bad day convention, so an unlisted Saturday <strong>stays a Saturday</strong></td>
+          <td><span class="chip low">Low · documented purpose only</span></td>
+          <td><span class="chip">Reproduced; signature fixed</span></td>
+        </tr>
+        <tr>
+          <td class="id"><a href="#u27">UPSTREAM-27</a></td>
+          <td>A <code>day &lt;= 28</code> guess declares month-end schedules off cycle when they are not — and the previous coupon date moves with it</td>
+          <td><span class="chip low">Low · 14 of 600, all leap days</span></td>
+          <td><span class="chip">Reproduced deliberately</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u25">UPSTREAM-25</a></td>
           <td>A one-date schedule with a stub reads and writes <strong>past a one-element allocation</strong> — and reads before it in the other direction</td>
           <td><span class="chip mid">Medium · heap overflow</span></td>
@@ -2305,6 +2317,169 @@ if (backStub)
 
     <div class="tests">
       <span>Reproduce:</span> ./build/debug/defect_evidence u25 --unsafe
+    </div>
+  </section>
+
+  <!-- ============ U26 ============ -->
+  <section class="record sev-low" id="u26">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-26</span>
+      <h2>A substitution table silently disables the convention</h2>
+    </div>
+    <div class="chips">
+      <span class="chip low">Low · the documented purpose, not the code</span>
+      <span class="chip">Reproduced; the signature is what the port fixes</span>
+    </div>
+    <p class="locus">zcswdate.c — JpmcdsZCAdjustDate</p>
+
+    <h3>Mechanism</h3>
+    <p>The function branches on the <em>presence</em> of a list, not its contents:</p>
+<pre><code>if (<span class="hit">badDayList != NULL</span>)
+{
+    *adjDate = JpmcdsBad2GoodBadDayList(badDayList, date);
+    return SUCCESS;
+}
+else
+{
+    if (JpmcdsBusinessDay(date, badDayConv, holidayFile, adjDate) == FAILURE)
+        goto done;
+}</code></pre>
+    <p>
+      So when a list is supplied, <code>badDayConv</code> and
+      <code>holidayFile</code> are never consulted — and
+      <code>JpmcdsBad2GoodBadDayList</code> returns its input unchanged for any
+      date the list does not contain. The function is documented as
+      <em>"Adjusts date to fall on a business day, if necesssary"</em>. On that
+      path it does not.
+    </p>
+
+    <h3>Evidence</h3>
+<pre><code>input                                    adjusted to
+Saturday, no list, conv=F                154504   (moved to Monday)
+Saturday, in the list, conv=F            154504   (from the list)
+another Saturday, no list, conv=F        154511   (moved)
+another Saturday, list given, conv=F     <span class="hit">154509</span>   &lt;- STILL A SATURDAY</code></pre>
+    <p>
+      An <strong>empty</strong> list does it to every date, because the test is
+      on the pointer rather than on <code>count</code>:
+    </p>
+<pre><code>no list (NULL),   conv=F -&gt; 154504
+EMPTY list,       conv=F -&gt; <span class="hit">154502</span>   &lt;- unchanged, still a Saturday</code></pre>
+
+    <h3>Status in the port — reproduced, with the signature fixed</h3>
+    <p>
+      The two modes are evidently intended as alternatives: a caller supplies
+      either a complete substitution table or a convention, and a table that
+      omits a bad day is incomplete, which is the caller's business. What is
+      wrong is the documented purpose, not the code.
+    </p>
+    <p>
+      So the port reproduces the behaviour and fixes the signature instead.
+      <code>zc_adjust_date</code> takes
+      <code>std::optional&lt;std::span&lt;const BadDayPair&gt;&gt;</code>, which
+      says "either a table or the convention" where upstream's two unrelated
+      parameters say "both".
+    </p>
+    <p>
+      That measurement is also why the parameter is an <code>optional</code>
+      rather than a plain span. "No table" and "a table with nothing in it" are
+      genuinely different inputs with different results, and a span alone would
+      have merged them — silently changing what an empty table means. This is
+      the one case so far where a parameter had to be <em>less</em> convenient
+      to stay faithful.
+    </p>
+
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u26
+    </div>
+  </section>
+
+  <!-- ============ U27 ============ -->
+  <section class="record sev-low" id="u27">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-27</span>
+      <h2>A day-of-month heuristic that suppresses real cycles</h2>
+    </div>
+    <div class="chips">
+      <span class="chip low">Low · a wrong flag in 8% of month-end cases, a date off by one in 2% of those</span>
+      <span class="chip">Reproduced deliberately</span>
+    </div>
+    <p class="locus">zcswdate.c — SetPrevDateAndOnCycle</p>
+
+    <h3>Mechanism</h3>
+<pre><code>if ((valueMDY.day &lt;= 28) &amp;&amp; (origMDY.day &lt;= 28))
+{
+    /*
+     * <span class="hit">We assume we can only be on cycle if date is not on or after
+     * the 29th of the month.</span>
+     */
+    JpmcdsCountDates(valueDate, origDate, &amp;interval, &amp;numIntervals, &amp;extraDays);
+    *onCycle = (extraDays == 0);
+}
+else
+{
+    *onCycle = FALSE;
+}</code></pre>
+    <p>The assumption is false:</p>
+<pre><code>day 29: CountDates says extraDays=0   so genuinely ON cycle; heuristic says OFF
+day 30: CountDates says extraDays=0   so genuinely ON cycle; heuristic says OFF
+day 31: CountDates says extraDays=0   so genuinely ON cycle; heuristic says OFF</code></pre>
+
+    <h3>Two consequences</h3>
+    <p>
+      The reported flag is wrong for those dates — swept over every month, the
+      days 26 to 31 and four frequencies, the heuristic suppresses <strong>600
+      of 7,296</strong> genuinely on-cycle combinations.
+    </p>
+    <p>
+      And because the flag chooses how <code>previous</code> is computed —
+      forward from the value date when on cycle, backward from the maturity when
+      not — the suppression can change the date:
+    </p>
+<pre><code>freq=1   2024-02-29 -&gt; 2025-02-28 : on-cycle 154556, off-cycle 154555  DIFFER by 1
+freq=2   2024-02-29 -&gt; 2027-02-28 : on-cycle 155468, off-cycle 155467  DIFFER by 1
+...
+<span class="hit">14 of the 600 give a different previous coupon date (2.3%)</span></code></pre>
+    <p>
+      Every one has a <strong>29 February value date</strong> — the same
+      clamping asymmetry as <a href="#u24">UPSTREAM-24</a>, where forward from
+      the 29th and backward from the 28th do not meet because month arithmetic
+      is not invertible.
+    </p>
+    <p>
+      Worth being precise about which answer is which. In the annual case the
+      forward route is <code>valueDate + 0 intervals</code>, the value date
+      itself, which is by definition on the schedule. The backward route gives
+      the day before it — a date the schedule does not contain. So on these
+      fourteen the heuristic does not merely lose precision; it picks the route
+      that returns a date that is not a coupon date.
+    </p>
+
+    <h3>Status in the port — reproduced, deliberately</h3>
+    <p>
+      Deciding that a swap's previous coupon date should move by a day is a
+      convention question, not a porting one. Same reasoning as UPSTREAM-24,
+      same conclusion.
+    </p>
+    <p>
+      The heuristic is pinned from both sides: one test asserts that an
+      <code>on_cycle</code> flag of true really does mean a whole number of
+      intervals — checked against <code>count_dates</code>, not against
+      upstream — and another asserts that a false flag does <strong>not</strong>
+      imply the converse, which is this defect stated as a property.
+    </p>
+    <p>
+      One thing the port did not need to reproduce:
+      <code>numIntervals</code> is declared uninitialised and read only in the
+      on-cycle branch. That is safe, because the flag can only be true where
+      <code>JpmcdsCountDates</code> has just set it — but the safety is an
+      argument about control flow rather than a property of the code, which is
+      exactly the shape <a href="#u14">UPSTREAM-14</a> is. Here the argument
+      happens to hold.
+    </p>
+
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u27
     </div>
   </section>
 
