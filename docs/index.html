@@ -495,6 +495,12 @@
           <td><span class="chip immune">Cannot occur</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u24">UPSTREAM-24</a></td>
+          <td>A roll date is consulted when there is <strong>no stub</strong> and ignored when there is one — the opposite of what its header documents</td>
+          <td><span class="chip low">Low · one day, leap years</span></td>
+          <td><span class="chip">Reproduced deliberately</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u23">UPSTREAM-23</a></td>
           <td>A bare <code>if (rate &gt;= 0.0)</code> drops curve points on a negative-rate curve, in the function whose job is to add them</td>
           <td><span class="chip low">Low · no pricing effect found</span></td>
@@ -2051,6 +2057,118 @@ NEGATIVE curve, deep premium  dates placed 1/5   input 1.080000 -&gt; 1.08000000
 
     <div class="tests">
       <span>Reproduce:</span> ./build/debug/defect_evidence u23
+    </div>
+  </section>
+
+  <!-- ============ U24 ============ -->
+  <section class="record sev-low" id="u24">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-24</span>
+      <h2>The roll date is consulted in the opposite case to the one documented</h2>
+    </div>
+    <div class="chips">
+      <span class="chip low">Low · a schedule generated from the wrong end, in a one-day window</span>
+      <span class="chip">Reproduced deliberately</span>
+    </div>
+    <p class="locus">datelist.c — JpmcdsNewDateListExtendedRoll</p>
+
+    <h3>Mechanism</h3>
+    <p>The header states the rule:</p>
+    <blockquote>
+      If rollDate is non-zero and stubAtEnd is False, then the rollDate is used
+      to generate cash flow dates. First starting from roll-date we see if we
+      can count forward an integral number of intervals to the maturity date.
+      If this is so then we can generate our datelist by counting forward from
+      the rolldate.
+    </blockquote>
+    <p>The code tests something else:</p>
+<pre><code>if (JpmcdsCountDates(<span class="hit">startDate</span>, maturityDate, interval, &amp;numIntervals, &amp;extraDays) != SUCCESS)
+    goto done;
+
+if (extraDays == 0)
+{
+    /* We can use the roll date - so we count forward from this day */</code></pre>
+    <p>
+      <code>startDate</code> to maturity, not <code>rollDate</code> to
+      maturity. The difference inverts the feature:
+    </p>
+    <ul>
+      <li><code>extraDays == 0</code> means start-to-maturity is a whole number
+        of intervals — <strong>there is no stub</strong>, the case where a roll
+        date has nothing to contribute. The roll date is consulted here.</li>
+      <li><code>extraDays != 0</code> means there <strong>is</strong> a stub,
+        the only case where a roll date could supply a grid that lands on
+        maturity. The roll date is ignored here.</li>
+    </ul>
+
+    <h3>Evidence</h3>
+    <p>
+      Quarterly, roll 2024-01-15, maturity 2027-01-15 (exactly twelve quarters
+      from the roll), start 2024-02-20 — the case the documentation describes:
+    </p>
+<pre><code>roll  -&gt; mat   intervals=12  extraDays=0     INTEGRAL
+start -&gt; mat   intervals=11  extraDays=56    has a stub
+
+with the roll date   n=13: 154511 154602 ... 155607
+with rollDate = 0    n=13: 154511 154602 ... 155607
+=&gt; the roll date <span class="hit">CHANGED NOTHING</span></code></pre>
+
+    <h3>Reachability, and a claim withdrawn</h3>
+    <p>
+      The library's only call site is <code>cashflow.c:230</code>, which passes
+      <strong>startDate as the roll date</strong>. The obvious reading is that
+      this makes the mechanism inert: <code>count_dates(roll, start)</code> is
+      trivially integral when the two are equal. Three hand-picked probes
+      agreed, and the first draft of this record said so.
+    </p>
+    <p>
+      The exhaustive sweep found the counterexample. The roll branch ends in
+      <code>NewDateListExtended(first, maturity, interval, TRUE)</code> —
+      generating <strong>forward</strong> from the start — where
+      <code>rollDate = 0</code> generates <strong>backward</strong> from
+      maturity. Those agree only where month arithmetic does not clamp, and
+      clamping is not invertible: 29 February plus twelve months is 28
+      February, but 28 February minus twelve months is 28 February, not the
+      29th.
+    </p>
+<pre><code>2024-02-29  2027-02-28  iv=1   DIFFER: first 154556 vs 154555, n=37 vs 37
+2024-02-29  2027-02-28  iv=3   DIFFER: first 154556 vs 154555, n=13 vs 13
+...
+<span class="hit">7 of 378 integral-span cases differ (1.9%)</span></code></pre>
+    <p>
+      Every one starts on 29 February. So this <em>is</em> reachable from inside
+      upstream — a leap-day start whose maturity falls on the clamped day gets a
+      forward-generated schedule where a back-stub request asked for a backward
+      one. Still low severity, because the window is that narrow and the
+      schedules differ by a day at one end rather than in length. But "inert"
+      was wrong, and only the sweep found it.
+    </p>
+
+    <h3>Status in the port — reproduced, deliberately</h3>
+    <p>
+      Unlike the date-list set operations, which correct upstream, this module
+      does not. The policy permits a correction where there is no single
+      upstream behaviour to preserve — <a href="#u7">UPSTREAM-7</a>, where two
+      implementations contradicted each other and the header. That is not the
+      situation here: the code is self-consistent and deterministic, and only
+      the documentation disagrees with it.
+    </p>
+    <p>
+      A roll date decides coupon dates, coupon dates decide accrual, and
+      accrual decides money. Reinterpreting a roll-date convention on the
+      strength of a comment is not a porting decision. PORT-9 is the standing
+      reminder of what happens when a porter picks a winner between two
+      disagreeing sources; this is the same hazard with the sources swapped.
+    </p>
+    <p>
+      The behaviour is reproduced and the disagreement is pinned by a test that
+      asserts the roll date is inert in the documented case, effective in the
+      undocumented one, and that every <code>roll == start</code> difference
+      involves a 29 February start.
+    </p>
+
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u24
     </div>
   </section>
 

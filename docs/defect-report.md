@@ -1717,3 +1717,113 @@ and the replay asserts that the port's curve differs from upstream's by exactly
 those dates and nothing else. Twelve of the sixty recorded bootstraps diverge
 this way, and that count is asserted too, so a change in upstream's behaviour
 surfaces as a failure rather than as fewer checks.
+
+## UPSTREAM-24 — The roll date is consulted in the opposite case to the one documented
+
+**Location:** `lib/src/datelist.c`, `JpmcdsNewDateListExtendedRoll`.
+**Severity:** Low. A schedule generated from the wrong end, in a window one
+day wide.
+
+### Mechanism
+
+The header states the rule:
+
+> If rollDate is non-zero and stubAtEnd is False, then the rollDate is used to
+> generate cash flow dates. First starting from roll-date we see if we can
+> count forward an integral number of intervals to the maturity date. If this
+> is so then we can generate our datelist by counting forward from the
+> rolldate.
+
+The code tests something else:
+
+```c
+if (JpmcdsCountDates(startDate, maturityDate, interval, &numIntervals, &extraDays) != SUCCESS)
+    goto done;
+
+if (extraDays == 0)
+{
+    /* We can use the roll date - so we count forward from this day */
+```
+
+`startDate` to maturity, not `rollDate` to maturity. The difference inverts
+the feature:
+
+ * `extraDays == 0` means start-to-maturity is a whole number of intervals —
+   **there is no stub**, which is the case where a roll date has nothing to
+   contribute. The roll date is consulted here.
+ * `extraDays != 0` means there **is** a stub, the only case where a roll date
+   could supply a grid that lands on maturity. The roll date is ignored here,
+   and the function falls back to plain `JpmcdsNewDateListExtended`.
+
+### Evidence
+
+Quarterly, roll 2024-01-15, maturity 2027-01-15 (exactly twelve quarters from
+the roll), start 2024-02-20 (mid-period) — the case the documentation
+describes:
+
+```
+roll  -> mat   intervals=12  extraDays=0     INTEGRAL
+start -> mat   intervals=11  extraDays=56    has a stub
+
+with the roll date   n=13: 154511 154602 ... 155607
+with rollDate = 0    n=13: 154511 154602 ... 155607
+=> the roll date CHANGED NOTHING
+```
+
+Reproduce with `./build/debug/defect_evidence u24`.
+
+Conversely, when start-to-maturity *is* integral the roll date does take
+effect — and introduces a stub, producing a list that begins before the start
+date and ends past the maturity.
+
+### Reachability, and a claim withdrawn
+
+The library's only call site is `cashflow.c:230`, which passes **startDate as
+the roll date**. The obvious reading is that this makes the mechanism inert:
+`count_dates(roll, start)` is trivially integral when the two are equal, so
+`firstDate` becomes `startDate`. Three hand-picked probes agreed, and the first
+draft of this record said so.
+
+The exhaustive sweep found the counterexample. The roll branch ends in
+`NewDateListExtended(first, maturity, interval, TRUE)` — generating **forward**
+from the start — where `rollDate = 0` generates **backward** from maturity.
+Those agree only where month arithmetic does not clamp, and clamping is not
+invertible: 29 February plus twelve months is 28 February, but 28 February
+minus twelve months is 28 February, not the 29th.
+
+Measured over every integral-span combination of start and maturity
+day-of-month, monthly through annual:
+
+```
+2024-02-29  2027-02-28  iv=1   DIFFER: first 154556 vs 154555, n=37 vs 37
+2024-02-29  2027-02-28  iv=3   DIFFER: first 154556 vs 154555, n=13 vs 13
+...
+7 of 378 integral-span cases differ (1.9%)
+```
+
+Every one starts on 29 February. So this **is** reachable from inside upstream
+— a leap-day start whose maturity falls on the clamped day gets a
+forward-generated schedule where a back-stub request asked for a backward one.
+Still low severity, because the window is that narrow and the schedules differ
+by a day at one end rather than in length. But "inert" was wrong, and only the
+sweep found it.
+
+### In the port — reproduced, deliberately
+
+Unlike `date_list.hpp`, which corrects upstream, this module does not. The
+policy in `docs/port-notes.md` permits a correction where there is no single
+upstream behaviour to preserve — UPSTREAM-7, where two implementations
+contradicted each other and the header. That is not the situation here: the
+code is self-consistent and deterministic, and only the documentation disagrees
+with it.
+
+A roll date decides coupon dates, coupon dates decide accrual, and accrual
+decides money. Reinterpreting a roll-date convention on the strength of a
+comment is not a porting decision. PORT-9 is the standing reminder of what
+happens when a porter picks a winner between two disagreeing sources; this is
+the same hazard with the sources swapped.
+
+The behaviour is reproduced and the disagreement is pinned by a test that
+asserts the roll date is inert in the documented case, effective in the
+undocumented one, and that every `roll == start` difference involves a 29
+February start.

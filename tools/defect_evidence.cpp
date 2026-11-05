@@ -19,6 +19,7 @@
 #include <cdsmodel/cds.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_interval.hpp>
+#include <cdsmodel/date_schedule.hpp>
 #include <cdsmodel/date_sup.hpp>
 #include <cdsmodel/day_count.hpp>
 #include <cdsmodel/day_count_string.hpp>
@@ -50,6 +51,7 @@ extern "C" {
 #include "cxzerocurve.h"
 #include "date_sup.h"
 #include "dateconv.h"
+#include "datelist.h"
 #include "defaulted.h"
 #include "dtlist.h"
 #include "interp.h"
@@ -1348,6 +1350,143 @@ void u23() {
               "differs by exactly those and nothing else, for 12 of 60 bootstraps.\n");
 }
 
+void u24() {
+  heading("UPSTREAM-24", "the roll date is consulted in the opposite case to the one documented");
+  std::printf(
+      "datelist.h documents JpmcdsNewDateListExtendedRoll like this:\n\n"
+      "    \"If rollDate is non-zero and stubAtEnd is False, then the rollDate\n"
+      "     is used ... starting from roll-date we see if we can count forward\n"
+      "     an integral number of intervals to the MATURITY date. If this is so\n"
+      "     then we can generate our datelist by counting forward from the\n"
+      "     rolldate.\"\n\n"
+      "The code tests startDate to maturity instead:\n\n"
+      "    if (JpmcdsCountDates(startDate, maturityDate, interval, &n, &extra) != SUCCESS)\n"
+      "        goto done;\n"
+      "    if (extra == 0)   /* We can use the roll date */\n\n"
+      "extra == 0 means there is NO stub -- the case a roll date cannot help\n"
+      "with. extra != 0 means there IS one, which is the only case it could.\n\n");
+
+  TDateInterval quarterly;
+  JpmcdsMakeDateInterval(3, 'M', &quarterly);
+  const TDate roll = JpmcdsDate(2024, 1, 15);
+  const TDate maturity = JpmcdsDate(2027, 1, 15); // twelve quarters from the roll
+  const TDate start = JpmcdsDate(2024, 2, 20);    // mid-period
+
+  int n = 0;
+  int extra = 0;
+  JpmcdsCountDates(roll, maturity, &quarterly, &n, &extra);
+  std::printf("  roll  -> mat   intervals=%-3d extraDays=%-4d %s\n", n, extra,
+              extra == 0 ? "INTEGRAL  <- the documented case" : "has a stub");
+  JpmcdsCountDates(start, maturity, &quarterly, &n, &extra);
+  std::printf("  start -> mat   intervals=%-3d extraDays=%-4d %s\n\n", n, extra,
+              extra == 0 ? "INTEGRAL" : "has a stub  <- what the code keys on");
+
+  TDateList *with_roll = JpmcdsNewDateListExtendedRoll(start, maturity, roll, &quarterly, FALSE);
+  TDateList *without = JpmcdsNewDateListExtendedRoll(start, maturity, 0L, &quarterly, FALSE);
+  const auto show = [](const char *tag, const TDateList *dl) {
+    std::printf("  %-22s", tag);
+    if (dl == nullptr) {
+      std::printf(" NULL\n");
+      return;
+    }
+    std::printf(" n=%d:", dl->fNumItems);
+    for (int i = 0; i < dl->fNumItems && i < 6; ++i) {
+      std::printf(" %ld", static_cast<long>(dl->fArray[i]));
+    }
+    std::printf("%s\n", dl->fNumItems > 6 ? " ..." : "");
+  };
+  show("with the roll date", with_roll);
+  show("with rollDate = 0", without);
+  bool identical =
+      with_roll != nullptr && without != nullptr && with_roll->fNumItems == without->fNumItems;
+  if (identical) {
+    for (int i = 0; i < with_roll->fNumItems; ++i) {
+      if (with_roll->fArray[i] != without->fArray[i]) {
+        identical = false;
+      }
+    }
+  }
+  std::printf("  => the roll date %s\n\n",
+              identical ? "CHANGED NOTHING, in the case it exists for" : "mattered");
+  JpmcdsFreeDateList(with_roll);
+  JpmcdsFreeDateList(without);
+
+  std::printf("Reachability, and a claim I had to withdraw. The library's only call\n"
+              "site is cashflow.c:230, which passes startDate AS the roll date. That\n"
+              "looks inert -- count_dates(roll, start) is trivially integral when they\n"
+              "are equal. Three hand-picked probes agreed. The sweep did not:\n\n");
+
+  int integral_spans = 0;
+  int differing = 0;
+  int shown = 0;
+  for (int month = 1; month <= 12; ++month) {
+    for (int start_day = 27; start_day <= 31; ++start_day) {
+      const TDate swept_start = JpmcdsDate(2024, month, start_day);
+      if (swept_start <= 0) {
+        continue;
+      }
+      for (int maturity_day = 27; maturity_day <= 31; ++maturity_day) {
+        const TDate swept_maturity = JpmcdsDate(2027, month, maturity_day);
+        if (swept_maturity <= 0) {
+          continue;
+        }
+        for (int periods = 1; periods <= 12; ++periods) {
+          TDateInterval iv;
+          JpmcdsMakeDateInterval(periods, 'M', &iv);
+          int count = 0;
+          int remainder = 0;
+          if (JpmcdsCountDates(swept_start, swept_maturity, &iv, &count, &remainder) != SUCCESS ||
+              remainder != 0) {
+            continue;
+          }
+          ++integral_spans;
+          TDateList *as_called =
+              JpmcdsNewDateListExtendedRoll(swept_start, swept_maturity, swept_start, &iv, FALSE);
+          TDateList *no_roll =
+              JpmcdsNewDateListExtendedRoll(swept_start, swept_maturity, 0L, &iv, FALSE);
+          bool same = as_called != nullptr && no_roll != nullptr &&
+                      as_called->fNumItems == no_roll->fNumItems;
+          if (same) {
+            for (int i = 0; i < as_called->fNumItems; ++i) {
+              if (as_called->fArray[i] != no_roll->fArray[i]) {
+                same = false;
+              }
+            }
+          }
+          if (!same) {
+            ++differing;
+            if (shown < 4) {
+              std::printf("  2024-%02d-%02d  2027-%02d-%02d  iv=%-3d DIFFER: first %ld vs %ld\n",
+                          month, start_day, month, maturity_day, periods,
+                          static_cast<long>(as_called->fArray[0]),
+                          static_cast<long>(no_roll->fArray[0]));
+              ++shown;
+            }
+          }
+          JpmcdsFreeDateList(as_called);
+          JpmcdsFreeDateList(no_roll);
+        }
+      }
+    }
+  }
+  std::printf("\n  %d of %d integral-span cases differ (%.1f%%), every one a 29 February\n"
+              "  start.\n\n",
+              differing, integral_spans,
+              integral_spans > 0 ? 100.0 * differing / integral_spans : 0.0);
+
+  std::printf("The mechanism: the roll branch ends in NewDateListExtended(first, mat,\n"
+              "iv, TRUE) -- generating FORWARD from the start -- where rollDate = 0\n"
+              "generates BACKWARD from maturity. Those agree only where month\n"
+              "arithmetic does not clamp, and clamping is not invertible: 29 Feb + 12M\n"
+              "is 28 Feb, but 28 Feb - 12M is 28 Feb, not the 29th.\n\n");
+
+  std::printf("The port REPRODUCES all of this, deliberately. The code is\n"
+              "self-consistent and only the documentation disagrees, so the policy's\n"
+              "correction clause (UPSTREAM-7) does not apply. A roll date decides\n"
+              "accrual; reinterpreting it on the strength of a comment is not a\n"
+              "porting decision.\n");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1438,6 +1577,9 @@ int main(int argc, char **argv) {
   }
   if (want("u23")) {
     u23();
+  }
+  if (want("u24")) {
+    u24();
   }
   return 0;
 }
