@@ -1942,3 +1942,117 @@ The short version, in the order it matters:
 8. **Run the full OS matrix from the first commit.** Platform-dependent
    integer widths are not an exotic problem.
 9. **Count capability, not lines.**
+
+## Decision 21 — Two curves disagree about one number, and the fast one wins
+
+The builder half of `zcall.c` is 13 functions that exist to assemble a zero
+curve one point at a time. The interesting thing about it is not what it
+computes; it is that it stores a cached discount factor beside every rate, and
+so holds the same information twice. Both defects in this slice come from that.
+
+### UPSTREAM-17, and the shape of the mistake
+
+`JpmcdsZCComputeDiscount` has a fast path, flagged by a comment as *"a special
+optimization"*:
+
+```c
+if (zc->basis == 1 && rate >= -1.0 && date >= zc->valueDate && ...)
+{
+    *discount = pow(1+rate, (zc->valueDate - date) / 365.0);
+    return SUCCESS;
+}
+```
+
+At `rate == -1.0` the base is zero and the exponent negative, so `pow` returns
+an infinity. The general path it stands in for **rejects** that input:
+`JpmcdsRateToDiscountYearFrac` refuses a base at or below zero. One guard
+wants `>`, the other has `>=`, and nobody noticed because the fast path is
+tested first and the two were never compared.
+
+This is a recognisable shape, and I want to name it rather than just fix it:
+**two implementations of one quantity, where one is a performance shortcut for
+the other, and their domains of validity were never checked against each
+other.** The optimisation is almost right. It is right everywhere the author
+had in mind. The disagreement lives exactly at the edge the author did not
+have in mind, which is where the general path's own refusal would have been the
+correct answer.
+
+The infinity then gets *stored*, and `JpmcdsZCDiscountFactor` serves it. That
+is the part that makes it worth a defect record rather than a footnote: a
+number that the function responsible for computing it would have refused now
+lives in a data structure, with no trace of where it came from.
+
+### Not every infinity is a defect
+
+I nearly filed this as "upstream returns infinity" and that would have been
+wrong, because I filed the opposite judgment eight decisions ago. UPSTREAM-15
+also involves an infinity — `exp(1200)` from a continuous-basis rate of −400 —
+and there I concluded explicitly that the infinity is *not* part of the
+finding, because the answer really is enormous and the port returns the same
+thing.
+
+What separates them is not the value. It is whether anything in the system is
+on record calling that input an error. For `exp(1200)`, nothing is: every path
+accepts the rate and overflows honestly. For `pow(0, negative)`, the general
+path refuses the same input in the same source file. The disagreement is the
+defect; the infinity is just how it shows up.
+
+That distinction is only available because UPSTREAM-15 had already forced me to
+write down *why* an infinity was acceptable. A judgment recorded with its
+reasoning can be reused; a judgment recorded as a verdict cannot.
+
+### UPSTREAM-16, and the cost of a missing `return`
+
+`JpmcdsZCAddGenRate` short-circuits when the rate already matches the curve's
+terms, and then falls through into the general route, so the matching case adds
+the point twice. The duplicate check swallows it — same date, rates within a
+hardcoded `1e-7`, return success having done nothing — so for years this has
+been pure wasted work.
+
+Except at `date == valueDate`, where the second route fails, because
+`JpmcdsDiscountToRate` will not invert a zero-length period. So the function
+returns FAILURE with the point already committed.
+
+The fix is the missing `return`. The interesting part is the second-order
+effect: with the `return` in place, a rate at the value date now *succeeds* in
+the port, because a rate over no time discounts by nothing and that is a
+perfectly good point. Upstream's failure was never about the input being bad.
+It was the redundant route failing on an input the first route handled fine.
+**A missing `return` did not merely waste work; it narrowed the function's
+accepted domain, by letting a path that should never have run do the rejecting.**
+
+### What the port asserts instead of what it fixes
+
+Both fixes are one line each, and one-line fixes are the ones that silently
+come undone. So neither is pinned as "the line is there". They are pinned as
+properties:
+
+- **Nothing partially committed.** Every route into the builder commits only
+  after all of its conversions have succeeded, so no failure *anywhere* can
+  leave a point behind. That covers UPSTREAM-16 and also the three other
+  failure modes I did not find.
+- **The two discount paths agree.** For every rate inside the boundary, the
+  fast path and the general one return bit-identical factors; at the boundary
+  both refuse. That covers UPSTREAM-17 in a form that would fail if someone
+  "optimised" the fast path again.
+- **The cache never drifts.** For every stored point, the cached discount
+  equals `compute_discount(date, rate)` recomputed. This is the invariant the
+  type exists to maintain, and the only thing it adds over a finished curve.
+
+The third one is the only property in this slice that upstream cannot be used
+to check, because upstream's cache *can* hold a value its own computation would
+refuse — that is UPSTREAM-17. A differential test against a buggy oracle
+confirms the bug. The invariant is what distinguishes "matches upstream" from
+"is correct", and the two came apart here for the first time in the port.
+
+### The one that is not reproduced, deliberately
+
+The golden generator skips any sequence that reaches UPSTREAM-16's failure,
+and this is worth stating plainly because it is a hole in tier 1. Upstream
+leaves the curve mutated and reports failure; there is no result to record,
+because "what the curve contains after a failed call" is not an answer, it is
+damage. So the recorded vectors cover the agreeing cases and the differential
+suite covers the divergence. CI therefore verifies that the port builds curves
+correctly; it does **not** verify that the port diverges from upstream where it
+should. Only the local differential run does that, which is the standing
+asymmetry of this project and not new here.
