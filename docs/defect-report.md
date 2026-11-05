@@ -1449,3 +1449,96 @@ factor is not a rate no matter who asks. The tier-1 property is the general
 form: across every basis, day count and rate in the sweep, **no evaluation
 returns NaN**. Infinity is still permitted, since UPSTREAM-15 settled that it
 is a value.
+
+## UPSTREAM-20 — The precondition the documentation does not mention
+
+**Location:** `lib/src/cashflow.c`, `JpmcdsMergeCFL`.
+**Severity:** Low. Unreachable from inside upstream; reachable through the
+public header.
+
+### Mechanism
+
+The header states the contract in one sentence:
+
+> Merges two cash flow lists. The input cash flow lists cannot be NULL.
+
+That precondition is real, and it is checked — on both arguments.
+
+The other one is not stated and not checked. The algorithm is a single forward
+pass that advances whichever side carries the earlier date, so it is a merge
+only if both inputs are already ordered by date. Nothing verifies that, and
+nothing in the documentation asks the caller to.
+
+### Evidence
+
+With `a = [40000, 20000, 30000]` and `b = [25000, 15000]`:
+
+```
+MergeCFL -> fNumItems=5
+    [0] date=25000  amount=10
+    [1] date=15000  amount=20
+    [2] date=40000  amount=1
+    [3] date=20000  amount=2
+    [4] date=30000  amount=3
+```
+
+Reproduce with `./build/debug/defect_evidence u20`.
+
+Every element is present, so nothing is lost — but the output is not sorted,
+and it is not a stable interleaving of the inputs either. It is an artefact of
+where the comparison happened to stop. A caller who reads the header, satisfies
+the one documented precondition, and passes lists in whatever order they
+arrived has no way to learn the result is meaningless.
+
+### Why the severity is low
+
+Exactly one call site exists in the library: `zcswap.c:804`, merging a fixed
+and a floating schedule, both generated in date order. So this is unreachable
+from inside upstream and reachable only by an external caller of the public
+header — the same tier as UPSTREAM-12.
+
+### In the port
+
+**Cannot occur.** `merge_cash_flows` returns nullopt unless both inputs are
+ordered. Checking a precondition the documentation forgot is the move
+`ZeroCurve::create` makes over `checkTCurve` (UPSTREAM-15): refuse at the
+boundary what cannot produce a meaningful answer, so the result type never has
+to carry a "this is nonsense" value.
+
+Non-decreasing, not strictly increasing — a list may legitimately carry two
+payments on one date, and upstream's merge passes such a pair through
+uncoalesced. Both forms represent the same cash flow, so neither is wrong.
+
+### What this function is NOT
+
+The first hypothesis here was different, and it was wrong. `JpmcdsNewEmptyCFL`
+sets `fNumItems` to the count it was asked for and allocates through
+`NEW_ARRAY`, hence `JpmcdsMallocSafe`, whose allocation line reads:
+
+```c
+ptr = malloc(theSize);              /* Don't use calloc due to RS6000. */
+```
+
+On that line alone, a public function named "NewEmpty" returns *n* cash flows
+of heap garbage. Four separate probes said otherwise — a size-matched recycled
+block, `MallocPreScribble=1`, and an ASan build all came back zeroed — and the
+reason is the next branch of the same function:
+
+```c
+/* Clear out the memory for safety. */
+(void)memset((char *)ptr, (size_t)0, theSize);
+```
+
+The comment about calloc means "we reproduce calloc by hand", not "we skip the
+zeroing". **No defect**, and the negative result is worth more than the finding
+would have been: every `NEW` and `NEW_ARRAY` in the library returns zeroed
+memory, so upstream cannot have an uninitialised-*heap* read anywhere. The one
+uninitialised read in this register, UPSTREAM-14, is a stack local — where no
+allocator intervenes.
+
+One detail does deserve recording. `fDate = 0` is not a null in upstream's
+encoding; TDate 0 is **1601-01-01**, a date like any other. A list from
+`JpmcdsNewEmptyCFL(n)` that a caller under-fills does not look uninitialised —
+it looks like *n* deliberate payments of zero in 1601. Garbage might be caught
+downstream; that will not be. The port has no equivalent, because its `Date`
+has no zero and length is the number of payments present.
