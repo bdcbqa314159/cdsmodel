@@ -2410,3 +2410,163 @@ output is ordered, the total is conserved *exactly* (these are sums of
 quarter-integers, so a tolerance would hide a lost element), and no date is
 lost or invented. What properties cannot pin is the element order upstream
 chooses when dates tie, so that is what the recorded vectors are for.
+
+## Decision 24 — The first module whose correctness is not a formula
+
+The cash-flow third of `zcall.c` turns a curve into a bootstrap: an instrument
+price goes in and a zero rate that reproduces it comes out, found by a root
+search. Every module before this one could be pinned to a formula. This one has
+to be pinned to a **fixed point** — price the instrument off the curve you built
+from it, and the price must come back.
+
+That property is the reason this slice is verifiable at all. It needs no
+upstream and no recorded vector, it would survive the solver being replaced,
+and it is the only check here that does not reduce to "the port agrees with the
+thing it was copied from".
+
+### Four hypotheses, two of them wrong
+
+I went in with four suspicions from reading the source. Measuring them first
+was the whole value of the slice, because half were wrong.
+
+**The cache would go stale.** Upstream ends its root find with
+
+```c
+zc->rate[ objData.zcIndex ] = rate;
+```
+
+and no matching write to `zc->discount[zcIndex]`. The objective function
+updates both on every evaluation, so the cached discount describes whichever
+rate the solver last *tried* — which is the returned root only if the solver's
+last act was to evaluate there. I expected the two to diverge.
+
+They do not. Measured over the bootstrap's own instruments, every stored point
+still satisfies the invariant afterwards. The write is unpaired and happens to
+be safe because of where Brent stops.
+
+So there was no defect to file, but there was still something to do: the port
+does not expose the unpaired write at all. `set_rate` recomputes the discount or
+fails, and no sequence of public calls can leave the two disagreeing. Upstream
+is correct by coincidence of the solver's internals; the port is correct by
+construction. That is worth the four lines even when the measurement comes back
+clean — **"it holds today" and "it cannot break" are different properties, and
+only the second one survives someone changing the solver.**
+
+**The dropped points would break the bootstrap.** `JpmcdsZCAddCFLPoints` filters
+its insertions through a bare `if (rate >= 0.0)` with no else, in a function
+whose comment says it exists to ensure every cash flow date is in the curve. On
+a negative curve it places 1 of 5 dates instead of 2, and the cliff is at
+exactly zero — a solved rate of −2e-13 drops four points that +2e-13 would have
+kept.
+
+I expected the instrument to stop repricing to its own input. It does not.
+Under linear interpolation *and* under flat forwards, with 1 of 5 dates placed,
+the fixed point holds to the solver's tolerance.
+
+The reason is worth stating because it is not obvious: inserting a point at its
+own interpolated rate is idempotent under both schemes. Linear interpolation
+puts the new point exactly on the line. Flat forwards is log-linear in the
+discount factor, so it puts the point exactly on that curve. Splitting an
+interval at a point that already lies on the path leaves the path alone.
+
+That is also why upstream's own comment — *"non-linear interpolation might
+actually change when points are added"* — is about the *order* of insertion
+rather than about the result. It is a correct warning about a different thing.
+
+So UPSTREAM-23 is low severity and the record says so, along with the fact that
+I looked for a pricing consequence and failed to find one. A defect report that
+only lists what went wrong with the search is worth less than one that says
+where the search stopped.
+
+### UPSTREAM-21, and an error handler that cannot report its error
+
+This one is as bad as it looks.
+
+```c
+if (date==0L)
+    date = cfl->fArray[ cfl->fNumItems-1].fDate;
+...
+done:
+    if (status == FAILURE)
+        JpmcdsErrMsg("...maturing %s", JpmcdsFormatDate(cfl->fArray[cfl->fNumItems-1].fDate));
+```
+
+`JpmcdsNewEmptyCFL(0)` is a public constructor returning `fNumItems = 0` with
+`fArray = NULL`, so both reads are `NULL[-1]`. Measured: SIGSEGV, exit 139.
+
+The second read is the interesting one. Pass an explicit `date` and the first
+read never happens; the function then reaches its own branch —
+
+> no cash flows in list beyond ZeroCurve. Therefore, nothing to add.
+
+— detects the error correctly, composes the message, and crashes formatting it.
+**The diagnostic path for an empty list is the one path that cannot survive an
+empty list.** The error exists, is reachable, is written, and cannot be
+received.
+
+That is a different failure from UPSTREAM-18 (a status that lies) and from
+UPSTREAM-2 (no error channel at all). Here the channel exists and works, and
+the act of using it is what kills the process. Three distinct ways for an error
+to fail to arrive, all in the same file.
+
+### UPSTREAM-22, and four branches that all decline
+
+When the final payment falls exactly on the curve's last date, every branch
+declines in turn and `status = SUCCESS` with nothing changed: the guard admits
+equality, the backward search walks off the end leaving
+`firstUncovered == fNumItems`, and both remaining branches test false —
+including the one that would have added the remaining dates.
+
+```
+rc=SUCCESS   numItems 3 -> 3   point at 2030 present? NO
+```
+
+No single line is wrong. Each guard is defensible on its own; the gap is
+between them, and nothing in the function's structure makes "I did nothing" and
+"I succeeded" mutually exclusive. That is the argument for returning a value
+that has to be *constructed* rather than a status that defaults to success
+halfway down.
+
+The consequence compounds, which is why it is medium and not low: the next
+instrument bootstraps against a curve one point shorter than the caller
+believes. One silent no-op becomes a wrong curve rather than a missing point.
+
+### An ODR violation I introduced, and what it cost
+
+The tier-1 replay crashed with `std::length_error` from inside `find_closest`
+— a function that had been passing for two slices. Thirty minutes later: my new
+golden header declared `cdsmodel::golden::BootstrapCase`, and
+`tests/golden/bootstrap_cases.hpp` from an earlier module already declared a
+*different* struct with that exact name. Both are linked into the same test
+binary.
+
+That is a textbook ODR violation. It compiles, it links, nothing warns, and the
+program reads one struct's bytes through the other's layout — so `c.basis`
+came back as a date, `expected_points` as garbage, and `std::vector::reserve`
+threw from a call site with no apparent connection to the mistake.
+
+The fix was a rename. The *useful* outcome is a new gate in `verify.py`: every
+golden header declares into one namespace and they are all linked together, so
+two headers declaring the same name is now a build-time failure that names
+itself. I planted a clash to confirm the gate fires, and it does.
+
+Worth noting what the gate's first version got wrong, too. The regex
+`^inline constexpr \S+ (\w+)` captured `std::array<Case, 360>`'s **size** as
+the declared name, so it reported every pair of headers that happened to record
+360 cases as a clash. A gate that cries wolf is worse than no gate — it trains
+you to pass `--force`. Matching the last identifier before the initialiser
+fixed it.
+
+### One guard I respected instead of lowering
+
+With the gate fixed, an older check fired: the golden file held 32 cases and the
+threshold for "suspiciously few cases — truncated regeneration?" is 50. The
+tempting fix is to lower the threshold for this one file. The right one is more
+instruments, so I added seven — deep discounts, a flat zero curve, an
+instrument starting well past the curve's end, a deeper negative curve — taking
+the recorded set to 60 bootstraps, of which 12 diverge from upstream via
+UPSTREAM-23.
+
+Both counts are asserted in the replay. If upstream's filter ever changes, the
+divergence count moves and the test fails, rather than quietly verifying less.
+A gate that is inconvenient is usually a gate that is working.

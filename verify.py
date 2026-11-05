@@ -26,7 +26,7 @@ ROOT = pathlib.Path(__file__).parent.resolve()
 # Calibrated to the CI case -- tier 1 only, no oracle present -- because that
 # is the binding one. A local run with the oracle executes strictly more.
 # Bump it when a module lands; never lower it to make a red run green.
-TEST_FLOOR_WITHOUT_ORACLE = 291
+TEST_FLOOR_WITHOUT_ORACLE = 300
 
 
 def fail(msg: str) -> None:
@@ -121,6 +121,32 @@ def gate_golden_generated() -> None:
         fail(
             "generators whose output was never committed (so CI verifies nothing): "
             + ", ".join(orphan_generators)
+        )
+
+    # Every golden header declares its types in the one namespace
+    # cdsmodel::golden, and they are all linked into the same test binary. Two
+    # headers declaring the same type name is therefore an ODR violation: it
+    # compiles, it links, and the program reads one struct's bytes through the
+    # other's layout. That cost half an hour to diagnose once, from a
+    # std::length_error inside an unrelated function, so it is a gate now --
+    # the failure names itself instead of arriving as garbage fields.
+    declarations: dict[str, list[str]] = {}
+    for g in goldens.values():
+        text = g.read_text(encoding="utf-8")
+        for name in re.findall(r"^struct (\w+)", text, re.M):
+            declarations.setdefault(name, []).append(g.name)
+        # The declared name is the last identifier before the initialiser, so
+        # match that rather than the type -- an earlier version of this regex
+        # captured `std::array<Case, 360>`'s SIZE as the name and reported
+        # every pair of headers that happened to record 360 cases.
+        for name in re.findall(r"^inline constexpr .*?(\w+)\s*(?:=|\{\{)", text, re.M):
+            declarations.setdefault(name, []).append(g.name)
+    clashes = {n: sorted(set(f)) for n, f in declarations.items() if len(set(f)) > 1}
+    if clashes:
+        fail(
+            "the same name is declared in more than one golden header, which is an "
+            "ODR violation across the test binary:\n  "
+            + "\n  ".join(f"{n}: {', '.join(files)}" for n, files in sorted(clashes.items()))
         )
 
     for stem, g in goldens.items():

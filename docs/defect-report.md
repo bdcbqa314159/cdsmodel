@@ -1542,3 +1542,178 @@ encoding; TDate 0 is **1601-01-01**, a date like any other. A list from
 it looks like *n* deliberate payments of zero in 1601. Garbage might be caught
 downstream; that will not be. The port has no equivalent, because its `Date`
 has no zero and length is the number of payments present.
+
+## UPSTREAM-21 — The error path dereferences a null pointer
+
+**Location:** `lib/src/zcall.c`, `JpmcdsZCAddCashFlowList`.
+**Severity:** Medium. Deterministic SIGSEGV on an empty cash flow list, and the
+crash is in the handler that exists to report the error.
+
+### Mechanism
+
+Two reads of the last element, neither guarded:
+
+```c
+if (date==0L)                       /* add at last c.f. if not set up */
+{
+    date = cfl->fArray[ cfl->fNumItems-1].fDate;
+}
+...
+done:
+    if (status == FAILURE)
+        JpmcdsErrMsg("%s: Failed for CFL maturing %s.\n", routine,
+                     JpmcdsFormatDate(cfl->fArray[cfl->fNumItems-1].fDate));
+```
+
+`JpmcdsNewEmptyCFL(0)` — a public constructor — returns `fNumItems = 0` with
+`fArray = NULL`, so both reads are `NULL[-1]`.
+
+### Evidence
+
+```
+empty CFL: fNumItems=0 fArray=0x0
+calling with date=0 ...
+exit status: 139          (SIGSEGV)
+```
+
+And with an explicit `date`, which skips the first read entirely:
+
+```
+explicit date, empty CFL -> exit status: 139
+```
+
+Reproduce with `./build/debug/defect_evidence u21 --unsafe`.
+
+The second measurement is the one that matters. Given an explicit date, the
+function reaches its own `"no cash flows in list beyond ZeroCurve. Therefore,
+nothing to add."` branch — the error is detected, the branch is written, the
+message is composed — and then `done:` dereferences the empty list while
+formatting it. **The diagnostic path for an empty list is the one path that
+cannot survive an empty list**, so there is no way for a caller to receive the
+error the function was written to report.
+
+### In the port
+
+**Cannot occur.** An empty span is refused before anything reads from it, and
+nothing formats a payment that is not there. The differential test for this one
+is `DISABLED_` — it takes the process with it — which is the same arrangement
+UPSTREAM-4 and UPSTREAM-9 use.
+
+## UPSTREAM-22 — Success with nothing added
+
+**Location:** `lib/src/zcall.c`, `JpmcdsZCAddCashFlowList`.
+**Severity:** Medium. The function reports that an instrument was bootstrapped
+when it did nothing at all.
+
+### Mechanism
+
+When the final payment falls exactly on the curve's last date, every branch
+declines in turn:
+
+ * the guard rejects a final payment *earlier* than the curve's last date
+   (`fArray[firstUncovered].fDate < lastZCDate`), so equality passes it;
+ * the backward search for the first uncovered payment then finds none, and
+   `firstUncovered` is left at `fNumItems`;
+ * `firstUncovered == cfl->fNumItems-1` is false, so the single-payment branch
+   is skipped;
+ * `firstUncovered < cfl->fNumItems` is false, so the root-finding branch is
+   skipped — and so is the `JpmcdsZCAddCFLPoints` call guarded by the same
+   test;
+ * `status = SUCCESS`.
+
+### Evidence
+
+A 3-point curve ending 2027-01-01, a list ending on that same date, asked to
+add a point at 2030-01-01:
+
+```
+rc=SUCCESS   numItems 3 -> 3   point at 2030 present? NO
+```
+
+Reproduce with `./build/debug/defect_evidence u22`.
+
+The caller is told the instrument was bootstrapped. The curve does not contain
+the date it asked for, and no rate was solved for anything. The next instrument
+then bootstraps against a curve one point shorter than the caller believes,
+which is how a silent no-op becomes a wrong curve rather than a missing point.
+
+### In the port
+
+**Cannot occur.** `add_cash_flow_list` returns false when there is nothing
+uncovered to solve for. If no rate was found, the instrument was not added, and
+saying so is the only honest answer.
+
+## UPSTREAM-23 — A sign test that silently drops curve points
+
+**Location:** `lib/src/zcall.c`, `JpmcdsZCAddCFLPoints`.
+**Severity:** Low — but only because the consequence turned out to be smaller
+than it looks. See "what it does not do" below.
+
+### Mechanism
+
+```c
+if (rate >= 0.0)
+{
+    dates[n] = d;
+    rates[n++] = rate;
+}
+```
+
+No `else`, no message, no status. A cash flow date whose interpolated rate is
+negative is not added — in a function whose own comment is *"Ensure all
+uncovered cash flow dates in curve. ... This will make sure they can be priced
+appropriately by the curve."*
+
+### Evidence
+
+A five-payment zero-coupon bond over a curve at −0.5%, varying only the price:
+
+```
+price=0.97  solved rate +0.0044     dates placed 2 of 5
+price=1.00  solved rate −2.2e-13    dates placed 1 of 5
+price=1.06  solved rate −0.0083     dates placed 1 of 5
+price=1.20  solved rate −0.0257     dates placed 1 of 5
+```
+
+Reproduce with `./build/debug/defect_evidence u23`.
+
+The cliff is at exactly zero. A solved rate of −2e-13 drops four points that a
+rate of +2e-13 would have kept, so the curve's *shape* turns on the sign of a
+number that is, at that magnitude, noise.
+
+Negative zero rates are not exotic — EUR, CHF and JPY curves were negative for
+most of a decade after 2014 — so this is reachable from ordinary market data
+rather than from a pathological input.
+
+### What it does not do, having tried to show that it does
+
+The expected consequence was a broken bootstrap: points missing means the
+instrument no longer reprices to its own input. **It does not.** Measured under
+linear interpolation and under flat forwards, with 1 of 5 dates placed, the
+instrument still reprices to within the solver's f-tolerance:
+
+```
+NEGATIVE curve, price>par     dates placed 1/5   input 1.040000 -> 1.0400000000
+NEGATIVE curve, deep premium  dates placed 1/5   input 1.080000 -> 1.0800000000
+```
+
+The reason is that inserting a point at its own interpolated rate is idempotent
+for both schemes. Linear interpolation puts the new point exactly on the line;
+flat forwards is log-linear in the discount factor, which puts it exactly on
+that curve. Splitting an interval at a point already on the path leaves the
+path alone.
+
+So the finding is about data, not prices: a caller who inspects the finished
+curve sees a different number of points depending on the sign of the rates, for
+no documented reason, and the `>= 0.0` test is dead weight that happens to be
+visible.
+
+### In the port
+
+The port reproduces no filter at all — every missing date gets its interpolated
+rate, which is what the comment describes. The divergence is recorded as data
+rather than prose: the golden vectors carry the exact dates upstream dropped,
+and the replay asserts that the port's curve differs from upstream's by exactly
+those dates and nothing else. Twelve of the sixty recorded bootstraps diverge
+this way, and that count is asserted too, so a change in upstream's behaviour
+surfaces as a failure rather than as fewer checks.

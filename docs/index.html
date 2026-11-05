@@ -483,6 +483,24 @@
           <td><span class="chip immune">Fixed deliberately</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u21">UPSTREAM-21</a></td>
+          <td>An empty cash flow list crashes the bootstrap — <strong>including the handler that exists to report the error</strong></td>
+          <td><span class="chip mid">Medium · SIGSEGV</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
+          <td class="id"><a href="#u22">UPSTREAM-22</a></td>
+          <td>When the final payment lands on the curve's last date, every branch declines and the function reports <strong>success having done nothing</strong></td>
+          <td><span class="chip mid">Medium · silent no-op</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
+          <td class="id"><a href="#u23">UPSTREAM-23</a></td>
+          <td>A bare <code>if (rate &gt;= 0.0)</code> drops curve points on a negative-rate curve, in the function whose job is to add them</td>
+          <td><span class="chip low">Low · no pricing effect found</span></td>
+          <td><span class="chip immune">Not reproduced</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u20">UPSTREAM-20</a></td>
           <td>A public merge documents one precondition and checks it, while omitting the one the algorithm actually needs — that both inputs are <strong>ordered</strong></td>
           <td><span class="chip low">Low · public header only</span></td>
@@ -1832,6 +1850,207 @@ rate=-100  df1=inf           df2=inf           fwd=<span class="hit">nan</span> 
 
     <div class="tests">
       <span>Reproduce:</span> ./build/debug/defect_evidence u20
+    </div>
+  </section>
+
+  <!-- ============ U21 ============ -->
+  <section class="record sev-mid" id="u21">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-21</span>
+      <h2>The error path dereferences a null pointer</h2>
+    </div>
+    <div class="chips">
+      <span class="chip mid">Medium · deterministic SIGSEGV, in the error handler</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">zcall.c — JpmcdsZCAddCashFlowList</p>
+
+    <h3>Mechanism</h3>
+    <p>Two reads of the last element, neither guarded:</p>
+<pre><code>if (date==0L)                       /* add at last c.f. if not set up */
+{
+    date = cfl-&gt;fArray[ <span class="hit">cfl-&gt;fNumItems-1</span>].fDate;
+}
+...
+done:
+    if (status == FAILURE)
+        JpmcdsErrMsg("%s: Failed for CFL maturing %s.\n", routine,
+                     JpmcdsFormatDate(cfl-&gt;fArray[<span class="hit">cfl-&gt;fNumItems-1</span>].fDate));</code></pre>
+    <p>
+      <code>JpmcdsNewEmptyCFL(0)</code> — a public constructor — returns
+      <code>fNumItems = 0</code> with <code>fArray = NULL</code>, so both reads
+      are <code>NULL[-1]</code>.
+    </p>
+
+    <h3>Evidence</h3>
+<pre><code>empty CFL: fNumItems=0 fArray=0x0
+calling with date=0 ...
+exit status: <span class="hit">139</span>          (SIGSEGV)
+
+explicit date, empty CFL -> exit status: <span class="hit">139</span></code></pre>
+    <p>
+      The second measurement is the one that matters. Given an explicit date
+      the first read is skipped, and the function reaches its own
+      <em>"no cash flows in list beyond ZeroCurve. Therefore, nothing to
+      add."</em> branch — the error is detected, the branch is written, the
+      message is composed — and then <code>done:</code> dereferences the empty
+      list while formatting it.
+    </p>
+    <p>
+      <strong>The diagnostic path for an empty list is the one path that cannot
+      survive an empty list.</strong> There is no way for a caller to receive
+      the error this function was written to report.
+    </p>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Cannot occur.</strong> An empty span is refused before anything
+      reads from it, and nothing formats a payment that is not there. The live
+      reproducer is a <code>DISABLED_</code> test — it takes the process with
+      it — the same arrangement <a href="#u4">UPSTREAM-4</a> and
+      <a href="#u9">UPSTREAM-9</a> use.
+    </p>
+
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u21 --unsafe
+    </div>
+  </section>
+
+  <!-- ============ U22 ============ -->
+  <section class="record sev-mid" id="u22">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-22</span>
+      <h2>Success with nothing added</h2>
+    </div>
+    <div class="chips">
+      <span class="chip mid">Medium · an instrument reported as bootstrapped that was not</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">zcall.c — JpmcdsZCAddCashFlowList</p>
+
+    <h3>Mechanism</h3>
+    <p>
+      When the final payment falls exactly on the curve's last date, every
+      branch declines in turn:
+    </p>
+    <ul>
+      <li>the guard rejects a final payment <em>earlier</em> than the curve's
+        last date, so equality passes it;</li>
+      <li>the backward search for the first uncovered payment finds none, and
+        <code>firstUncovered</code> is left at <code>fNumItems</code>;</li>
+      <li><code>firstUncovered == cfl-&gt;fNumItems-1</code> is false, so the
+        single-payment branch is skipped;</li>
+      <li><code>firstUncovered &lt; cfl-&gt;fNumItems</code> is false, so the
+        root-finding branch is skipped — and so is the
+        <code>JpmcdsZCAddCFLPoints</code> call guarded by the same test;</li>
+      <li><code>status = SUCCESS</code>.</li>
+    </ul>
+
+    <h3>Evidence</h3>
+    <p>
+      A 3-point curve ending 2027-01-01, a list ending on that same date, asked
+      to add a point at 2030-01-01:
+    </p>
+<pre><code>rc=<span class="hit">SUCCESS</span>   numItems 3 -&gt; 3   point at 2030 present? <span class="hit">NO</span></code></pre>
+    <p>
+      The caller is told the instrument was bootstrapped. The curve does not
+      contain the date it asked for, and no rate was solved for anything. The
+      next instrument then bootstraps against a curve one point shorter than
+      the caller believes, which is how a silent no-op becomes a wrong curve
+      rather than a missing point.
+    </p>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Cannot occur.</strong> <code>add_cash_flow_list</code> returns
+      false when there is nothing uncovered to solve for. If no rate was found,
+      the instrument was not added, and saying so is the only honest answer.
+    </p>
+
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u22
+    </div>
+  </section>
+
+  <!-- ============ U23 ============ -->
+  <section class="record sev-low" id="u23">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-23</span>
+      <h2>A sign test that silently drops curve points</h2>
+    </div>
+    <div class="chips">
+      <span class="chip low">Low · no pricing consequence found, having looked for one</span>
+      <span class="chip immune">Not reproduced</span>
+    </div>
+    <p class="locus">zcall.c — JpmcdsZCAddCFLPoints</p>
+
+    <h3>Mechanism</h3>
+<pre><code>if (<span class="hit">rate &gt;= 0.0</span>)
+{
+    dates[n] = d;
+    rates[n++] = rate;
+}</code></pre>
+    <p>
+      No <code>else</code>, no message, no status. A cash flow date whose
+      interpolated rate is negative is not added — in a function whose own
+      comment is <em>"Ensure all uncovered cash flow dates in curve. ... This
+      will make sure they can be priced appropriately by the curve."</em>
+    </p>
+
+    <h3>Evidence</h3>
+    <p>A five-payment zero-coupon bond over a curve at −0.5%, varying only the price:</p>
+<pre><code>price=0.97  solved rate +0.0044     dates placed 2 of 5
+price=1.00  solved rate <span class="hit">−2.2e-13</span>    dates placed 1 of 5
+price=1.06  solved rate −0.0083     dates placed 1 of 5
+price=1.20  solved rate −0.0257     dates placed 1 of 5</code></pre>
+    <p>
+      The cliff is at exactly zero. A solved rate of −2e-13 drops four points
+      that a rate of +2e-13 would have kept, so the curve's <em>shape</em>
+      turns on the sign of a number that is, at that magnitude, noise.
+    </p>
+    <p>
+      Negative zero rates are not exotic — EUR, CHF and JPY curves were
+      negative for most of a decade after 2014 — so this is reachable from
+      ordinary market data rather than from a pathological input.
+    </p>
+
+    <h3>What it does not do, having tried to show that it does</h3>
+    <p>
+      The expected consequence was a broken bootstrap: points missing means the
+      instrument no longer reprices to its own input. <strong>It
+      does not.</strong> Measured under linear interpolation and under flat
+      forwards, with 1 of 5 dates placed, the instrument still reprices to
+      within the solver's f-tolerance:
+    </p>
+<pre><code>NEGATIVE curve, price&gt;par     dates placed 1/5   input 1.040000 -&gt; 1.0400000000
+NEGATIVE curve, deep premium  dates placed 1/5   input 1.080000 -&gt; 1.0800000000</code></pre>
+    <p>
+      Inserting a point at its own interpolated rate is idempotent for both
+      schemes. Linear interpolation puts the new point exactly on the line;
+      flat forwards is log-linear in the discount factor, which puts it exactly
+      on that curve. Splitting an interval at a point already on the path
+      leaves the path alone.
+    </p>
+    <p>
+      So the finding is about data, not prices: a caller who inspects the
+      finished curve sees a different number of points depending on the sign of
+      the rates, for no documented reason.
+    </p>
+
+    <h3>Status in the port</h3>
+    <p>
+      The port reproduces no filter at all — every missing date gets its
+      interpolated rate, which is what the comment describes. The divergence is
+      recorded as <em>data</em> rather than prose: the golden vectors carry the
+      exact dates upstream dropped, and the replay asserts that the port's
+      curve differs from upstream's by exactly those dates and nothing else.
+      Twelve of the sixty recorded bootstraps diverge this way, and that count
+      is asserted too, so a change in upstream's behaviour surfaces as a
+      failure rather than as fewer checks.
+    </p>
+
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u23
     </div>
   </section>
 
