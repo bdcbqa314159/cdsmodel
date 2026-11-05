@@ -495,6 +495,12 @@
           <td><span class="chip immune">Cannot occur</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u25">UPSTREAM-25</a></td>
+          <td>A one-date schedule with a stub reads and writes <strong>past a one-element allocation</strong> — and reads before it in the other direction</td>
+          <td><span class="chip mid">Medium · heap overflow</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u24">UPSTREAM-24</a></td>
           <td>A roll date is consulted when there is <strong>no stub</strong> and ignored when there is one — the opposite of what its header documents</td>
           <td><span class="chip low">Low · one day, leap years</span></td>
@@ -2169,6 +2175,136 @@ with rollDate = 0    n=13: 154511 154602 ... 155607
 
     <div class="tests">
       <span>Reproduce:</span> ./build/debug/defect_evidence u24
+    </div>
+  </section>
+
+  <!-- ============ U25 ============ -->
+  <section class="record sev-mid" id="u25">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-25</span>
+      <h2>A heap buffer overflow on a one-date schedule</h2>
+    </div>
+    <div class="chips">
+      <span class="chip mid">Medium · out of bounds in both directions, plus a latent write</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">cashflow.c — JpmcdsNewCFLFromDL3</p>
+
+    <h3>Mechanism</h3>
+    <p>
+      The function detects a stub by comparing the instrument's dates against
+      the grid it was handed:
+    </p>
+<pre><code>frontStub = ( startDate    &gt; dates-&gt;fArray[0] );
+backStub  = ( maturityDate &lt; dates-&gt;fArray[numDates-1] );</code></pre>
+    <p>
+      Neither branch checks that the grid is long enough to have a surrounding
+      period. With <code>numDates == 1</code> the front branch indexes past the
+      end:
+    </p>
+<pre><code>JpmcdsStubPayment(accrualDates-&gt;fArray[0],
+                  accrualDates-&gt;fArray[<span class="hit">1</span>],      /* index 1 of a 1-element list */
+                  accrualStart,
+                  accrualDates-&gt;fArray[<span class="hit">1</span>],
+                  rate, couponDayCountConv,
+                  &amp;cfl-&gt;fArray[<span class="hit">1</span>].fAmount)      /* WRITE past a 1-element array */</code></pre>
+    <p>
+      and the back branch indexes before it,
+      <code>accrualDates-&gt;fArray[numDates-2]</code> being
+      <code>fArray[-1]</code>.
+    </p>
+
+    <h3>Evidence</h3>
+<pre><code>front stub: ERROR: AddressSanitizer: <span class="hit">heap-buffer-overflow</span> on address 0x...0f8
+            READ of size 8    #0 JpmcdsNewCFLFromDL3
+            allocated by      #2 JpmcdsNewEmptyDateList
+
+back stub:  ERROR: AddressSanitizer: <span class="hit">heap-buffer-overflow</span> on address 0x...0e8
+            READ of size 8    #0 JpmcdsNewCFLFromDL3</code></pre>
+    <p>
+      Note the two addresses: <code>…0f8</code> is past the one-element
+      allocation and <code>…0e8</code> is before it. Both directions are real.
+    </p>
+    <p>
+      In the unsanitised build the front case happens to return NULL — the
+      garbage it read as <code>nextCouponDate</code> failed
+      <code>JpmcdsStubPayment</code>'s
+      <code>prevCouponDate &gt;= nextCouponDate</code> check.
+      <strong>That is luck, not safety.</strong> A garbage value on the other
+      side of that comparison lets the function proceed to the out-of-bounds
+      <em>write</em>, which ASan never gets to report because it aborts on the
+      read first.
+    </p>
+
+    <h3>Reachability</h3>
+    <p>
+      <code>JpmcdsMakeCFL</code> builds its own grid, and
+      <code>JpmcdsNewDateListExtended</code> never returns a single date
+      together with a stub — it anchors the grid on whichever end the stub is
+      not at, so one of the two comparisons is always false. Measured:
+    </p>
+<pre><code>stubAtEnd=0: first=154261 last=155722 -&gt; frontStub=1 backStub=0
+stubAtEnd=1: first=154547 last=156008 -&gt; frontStub=0 backStub=1</code></pre>
+    <p>
+      But <code>JpmcdsNewCFLFromDL3</code> is declared in
+      <code>cashflow.h</code> and takes the grid as an argument, so a caller
+      supplying its own date list reaches it directly. That is why this is
+      medium rather than high: unreachable from inside upstream, reachable from
+      outside it.
+    </p>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Cannot occur.</strong> The grid arrives as a
+      <code>std::span</code>, and a grid shorter than two dates is refused when
+      a stub was detected. There is nothing to compute: a stub payment needs
+      the period surrounding it, and a one-date grid has none.
+    </p>
+    <p>
+      The live reproducer is a <code>DISABLED_</code> test — ASan aborts the
+      process — the arrangement <a href="#u4">UPSTREAM-4</a>,
+      <a href="#u9">UPSTREAM-9</a> and <a href="#u21">UPSTREAM-21</a> already
+      use.
+    </p>
+
+    <h3>A second finding in the same function, not filed</h3>
+    <p>
+      The long-stub coalescing block runs two branches in sequence, and the
+      first reassigns the pointer the second reads from:
+    </p>
+<pre><code>if ( frontStub )
+{
+    datesCopy-&gt;fArray[0] = dates-&gt;fArray[0];
+    memcpy(&amp;datesCopy-&gt;fArray[1], &amp;dates-&gt;fArray[2], (numDates - 2) * sizeof(TDate));
+    <span class="hit">dates = datesCopy;</span>          /* simply overwrite pointer, hiding original */
+    --numDates;
+}
+if (backStub)
+{
+    memcpy(&amp;datesCopy-&gt;fArray[0], <span class="hit">&amp;dates-&gt;fArray[0]</span>, (numDates - 2) * sizeof(TDate));</code></pre>
+    <p>
+      With both stubs present, <code>dates == datesCopy</code> by the time the
+      second <code>memcpy</code> runs, so source and destination are the same
+      pointer. C11 7.24.1p2 makes copying between overlapping objects
+      undefined, and identical objects overlap.
+    </p>
+    <p>
+      Not filed as a defect. The result is correct — five grid dates coalesce
+      to three flows, as intended — and no implementation mishandles
+      <code>memcpy(p, p, n)</code>. Recorded because a compiler entitled to
+      assume <code>restrict</code> on those parameters would be within its
+      rights to make it stop working.
+    </p>
+    <p>
+      Worth noting for the harness rather than for upstream: <strong>neither
+      AddressSanitizer nor UndefinedBehaviorSanitizer reports it.</strong> The
+      project already records that ASan cannot see uninitialised reads; this is
+      a second class it cannot see, in the same function where it caught the
+      overflow above.
+    </p>
+
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u25 --unsafe
     </div>
   </section>
 

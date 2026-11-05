@@ -2840,3 +2840,137 @@ instruction to look at the schedule. Upstream encodes both as plain integers
 and relies on the parameter name to tell them apart, which is exactly the
 mistake the two-enum split of `TStubMethod` was made to prevent in the first
 half of this file.
+
+## Decision 27 — Seven booleans in two integers, and an overflow behind a public door
+
+`cashflow.c` is complete with this slice. The two schedule constructors —
+`JpmcdsMakeCFL` and `JpmcdsNewCFLFromDL3`, about 400 lines between them — were
+the last things in the file, and they were blocked on `datelist.c` and the rest
+of `stub.c`. Both arrived in the previous two slices, so every dependency was
+already ported before this one started.
+
+### The signature is the specification, and upstream's hides seven booleans
+
+`JpmcdsMakeCFL` takes ten parameters, two of which are integers carrying
+independent flags:
+
+```c
+flags & JPMCDS_SUBTRACT_INITIAL            (1)
+flags & JPMCDS_ADD_FINAL                   (2)
+flags & JPMCDS_PRESTART_ZERO_PAYMENT       (4)
+flags & JPMCDS_POST_MATURITY_ZERO_PAYMENT  (8)
+flags & JPMCDS_KEEP_START_DATE            (16)
+stubPlacement & JPMCDS_STUB_POSN_MASK      (1)
+stubPlacement & JPMCDS_STUB_LENGTH_LONG    (2)
+```
+
+Seven booleans in two `long`s, decoded by mask at the top of the function.
+Nothing stops a caller putting the stub bits in the flags word, where they
+would silently read as `SUBTRACT_INITIAL` and `ADD_FINAL` — bit 1 is
+`JPMCDS_STUB_POSN_BACK` and also `JPMCDS_SUBTRACT_INITIAL`.
+
+Two structs with named fields in the port. The payoff is not readability, it is
+that the two combinations upstream forbids become conditions on names:
+
+```cpp
+if ((flags.subtract_initial || flags.keep_start_date) && flags.prestart_zero_payment)
+```
+
+reads as what upstream's error message says — *"cannot subtract initial payment
+at prestart date"* and *"Also cannot keep both the start and prestart dates"* —
+rather than as arithmetic on a word.
+
+### UPSTREAM-25, and why the grid being an argument matters
+
+`JpmcdsNewCFLFromDL3` works out whether there is a stub by comparing the
+instrument's dates against the grid it was handed:
+
+```c
+frontStub = ( startDate    > dates->fArray[0] );
+backStub  = ( maturityDate < dates->fArray[numDates-1] );
+```
+
+and then, with no check on the grid's length, indexes `dates[1]` in the front
+branch and `dates[numDates-2]` in the back one. On a one-date grid those are
+`dates[1]` and `dates[-1]`. The front branch also *writes* `cfl->fArray[1]`,
+past a one-element allocation.
+
+ASan confirms both, and the addresses are the tell: `0x…0f8` past the
+allocation for the front case, `0x…0e8` before it for the back one. Two
+directions, one missing length check.
+
+What I want to record is the reasoning that nearly stopped me looking. I had
+already proved, for a different purpose, that `frontStub` and `backStub` are
+mutually exclusive for any grid `date_list_extended` produces — it anchors the
+grid on whichever end the stub is *not* at, so one comparison is always false.
+From that it is a short step to "stubs are well-behaved here" and on to the next
+function.
+
+The step that is wrong is the one from *the in-library caller is safe* to *the
+function is safe*. `JpmcdsNewCFLFromDL3` is declared in `cashflow.h`. It takes
+the grid as an argument. A caller outside the library supplies its own, and
+nothing in the function's contract says it must be longer than one date. The
+mutual-exclusivity result bounds what `JpmcdsMakeCFL` can trigger; it says
+nothing about what the public entry point accepts.
+
+That is the same shape as UPSTREAM-20 and UPSTREAM-24, where severity turned on
+"reachable only through the public header". The difference is that there I used
+reachability to *lower* a severity, and here I nearly used it to skip a search.
+**Reachability is an argument about how bad a defect is, never an argument that
+there is not one.**
+
+### The unsanitised build returns NULL, which is worse than crashing
+
+In a plain build the front case returns NULL rather than misbehaving. Tracing
+why: the garbage read as `nextCouponDate` happened to fail
+`JpmcdsStubPayment`'s `prevCouponDate >= nextCouponDate` check, so the function
+reported failure.
+
+That is luck. A garbage value on the other side of that comparison lets
+execution continue to the out-of-bounds write — which ASan never reports,
+because it aborts on the read first. So the sanitiser shows the read and the
+plain build shows an orderly error, and neither shows the write that is sitting
+behind both.
+
+### The memcpy that ASan and UBSan both miss
+
+A smaller thing in the same function. The long-stub coalescing block runs two
+branches in sequence and the first reassigns the pointer the second reads from:
+
+```c
+if (frontStub) { ...; dates = datesCopy; --numDates; }
+if (backStub)  { memcpy(&datesCopy->fArray[0], &dates->fArray[0], ...); }
+```
+
+With both stubs, `dates == datesCopy`, so the second `memcpy` has source and
+destination equal. C11 7.24.1p2 makes copying between overlapping objects
+undefined, and identical objects overlap.
+
+Not filed. The result is correct — five grid dates coalesce to three flows, as
+intended — and no real implementation mishandles `memcpy(p, p, n)`.
+
+The part worth keeping is what it says about the harness. **Neither
+AddressSanitizer nor UndefinedBehaviorSanitizer reports it**, in the same
+function where ASan caught the overflow. The project already records that ASan
+cannot see uninitialised reads and that no MSan job exists; this is a second
+blind spot, and it is in the tool the project leans on hardest. A clean ASan run
+is evidence about one class of bug, not about memory correctness.
+
+### The property that would catch a shifted period boundary
+
+The tier-1 suite checks that the amounts sum to `rate * yearFraction(start,
+maturity)`. ACT/365F is additive in days, so the per-period fractions must add
+to the whole span.
+
+That is worth more than it looks. Every amount is `rate * yearFraction(dates[i-1],
+dates[i])`, and a port that computed the boundary from the wrong neighbour —
+`dates[i]` to `dates[i+1]`, say — would produce a stream that still had the
+right number of flows, the right dates, plausible amounts, and would match
+upstream nowhere. But a differential test catches that only if the two
+implementations disagree, and this is exactly the kind of mistake a careful
+transcription can make on *both* sides of a rewrite. The sum pins it against
+arithmetic rather than against upstream.
+
+It is also the slice's one accumulating quantity, so it is the only comparison
+here at the relative 1e-12 tier. Everything else — each amount, each date — is
+a single multiplication or an integer, and compared exactly.
