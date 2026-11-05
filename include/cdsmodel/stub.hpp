@@ -10,9 +10,25 @@
 //
 // The parser carries one defect and one documentation divergence; both are
 // recorded below.
+//
+// A later slice completed the file: `JpmcdsStubPayment`, `JpmcdsIsEndStub`,
+// `JpmcdsStubPosMake` and `JpmcdsBadDayAndStubPosSplit`. They are what
+// `cashflow.c`'s schedule constructors and four sites in `zcswap.c` were
+// waiting on, and they are below the parser.
+//
+// No new defect came out of that half, which is worth stating rather than
+// leaving as an absence. Two things looked like one and measurement said
+// otherwise; both are recorded as observations at their sites.
+
+#include <cdsmodel/bad_day.hpp>
+#include <cdsmodel/date.hpp>
+#include <cdsmodel/date_interval.hpp>
+#include <cdsmodel/date_sup.hpp>
+#include <cdsmodel/day_count.hpp>
 
 #include <optional>
 #include <string_view>
+#include <utility>
 
 namespace cdsmodel {
 
@@ -99,6 +115,231 @@ parse_stub_method(std::string_view name) noexcept {
     return std::nullopt;
   }
   return stub;
+}
+
+/// Upstream's `TStubPos`: the DEFAULT policy for where a stub goes, which is
+/// three-valued because it includes "decide from the schedule".
+///
+/// Deliberately not the same type as `StubPosition`. That one answers "which
+/// end is the stub at?" and has two values because a stub is at one end or the
+/// other. This one answers "what should I do if nobody said?", and `Auto` is
+/// not a position. Upstream encodes both as plain integers and relies on the
+/// parameter name.
+enum class StubPosDefault { Auto = 0, Front = 1, Back = 2 };
+
+/// Replaces `JpmcdsStubPosMake`, which is a switch over the three values that
+/// rejects anything else.
+[[nodiscard]] constexpr std::optional<StubPosDefault> stub_pos_from_upstream(long code) noexcept {
+  switch (code) {
+  case 0:
+    return StubPosDefault::Auto;
+  case 1:
+    return StubPosDefault::Front;
+  case 2:
+    return StubPosDefault::Back;
+  default:
+    return std::nullopt;
+  }
+}
+
+[[nodiscard]] constexpr long to_upstream_code(StubPosDefault pos) noexcept {
+  return static_cast<long>(pos);
+}
+
+/// Should the stub go at the end? Replaces `JpmcdsIsEndStub`.
+///
+/// `Front` and `Back` answer directly. `Auto` looks at the schedule: if the
+/// span divides evenly there is no stub and the answer is `true`; otherwise
+/// there is one and it goes at the front.
+///
+/// The `Auto` arm is the only one that can fail, and only because counting
+/// intervals can. Note what the answer means when there is no stub: nothing.
+/// `true` is returned because some value must be, not because an end stub
+/// exists -- there is no stub to place. Upstream's comment describes the same
+/// thing from the other side ("will return TRUE, unless there is a stub"), and
+/// here code and comment agree, which is not true of every function in this
+/// port.
+[[nodiscard]] inline std::optional<bool>
+is_end_stub(Date start, Date maturity, DateInterval interval, StubPosDefault position) {
+  switch (position) {
+  case StubPosDefault::Back:
+    return true;
+  case StubPosDefault::Front:
+    return false;
+  case StubPosDefault::Auto: {
+    const std::optional<DateCount> span = count_dates(start, maturity, interval);
+    if (!span) {
+      return std::nullopt;
+    }
+    return span->extra_days <= 0;
+  }
+  }
+  return std::nullopt; // unreachable: the enum has no other value
+}
+
+/// Split a packed bad-day-convention-and-stub-position into its two parts.
+/// Replaces `JpmcdsBadDayAndStubPosSplit`.
+///
+/// Upstream packs them into one `long`: the convention in the low byte, the
+/// stub position in the next one.
+///
+/// ```c
+/// long bdc = value & JPMCDS_BDC_MASK;                              /* 0x000000FF */
+/// long sp  = (value & JPMCDS_STUB_POS_MASK) >> JPMCDS_STUB_POS_SHIFT;  /* 0x0000FF00 */
+/// if (JpmcdsStubPosMake(sp, stubPos) != SUCCESS) goto done;
+/// *badDayConv = bdc;
+/// ```
+///
+/// ## An observation, not a defect
+///
+/// One output is validated and the other is not. `sp` goes through
+/// `JpmcdsStubPosMake`, which rejects anything outside {0,1,2}. `bdc` is
+/// masked out and assigned, with no check, although
+/// `JpmcdsBadDayConvValid` is right there in the same library. Measured:
+///
+/// ```
+/// input    rc        badDayConv  valid?  stubPos
+/// 0x0046   SUCCESS   70 ('F')    yes     0
+/// 0x0346   FAILURE   -           -       -        <- stub position rejected
+/// 0x0041   SUCCESS   65 ('A')    NO      0        <- convention is not
+/// 0x0000   SUCCESS   0           NO      0
+/// 0x00FF   SUCCESS   255         NO      0
+/// ```
+///
+/// My first reading was that this lets a meaningless convention travel until
+/// some date happens to need adjusting -- making detection depend on the data
+/// rather than on the input. It does not. `JpmcdsBusinessDay` validates the
+/// convention **before** asking whether the date is a business day, so the
+/// same bogus value fails on a Monday and on a Saturday alike:
+///
+/// ```
+/// date                        rc
+/// Monday (business day)       FAILURE
+/// Saturday (needs adjusting)  FAILURE
+/// ```
+///
+/// So every caller does receive an error. The only consequence is that it is
+/// reported from the adjustment site rather than from the split that produced
+/// the value, which is a worse diagnostic and not a wrong answer. Recorded
+/// here, not in the defect register.
+///
+/// ## A deliberate difference that follows from the type
+///
+/// The port cannot reproduce the pass-through, because `BadDayConv` is an enum
+/// with four values and an arbitrary byte is not one of them. So the port
+/// validates at the split, where upstream validates at first use. Both reject
+/// the same inputs overall; the port rejects them earlier. That is recorded in
+/// the "Deliberate differences" table, because it IS observable: upstream
+/// returns SUCCESS here and fails later, so a caller that splits a packed
+/// value and never adjusts a date would see success from upstream and failure
+/// from the port.
+[[nodiscard]] constexpr std::optional<std::pair<BadDayConv, StubPosDefault>>
+split_bad_day_and_stub_pos(long packed) noexcept {
+  constexpr long kBadDayMask = 0x000000FF;
+  constexpr long kStubPosMask = 0x0000FF00;
+  constexpr int kStubPosShift = 8;
+
+  const std::optional<StubPosDefault> position =
+      stub_pos_from_upstream((packed & kStubPosMask) >> kStubPosShift);
+  if (!position) {
+    return std::nullopt;
+  }
+  const std::optional<BadDayConv> conv = bad_day_conv_from_upstream(packed & kBadDayMask);
+  if (!conv) {
+    return std::nullopt; // upstream assigns it unchecked; see above
+  }
+  return std::pair{*conv, *position};
+}
+
+/// The payment accrued over a stub period. Replaces `JpmcdsStubPayment`.
+///
+/// ## Two values computed and both discarded
+///
+/// Upstream's body, after the validation:
+///
+/// ```c
+/// JpmcdsDayCountFraction(prevCouponDate, nextCouponDate, dcc, &couponYearFrac);
+/// coupon = rate * couponYearFrac;              /* never read */
+///
+/// JpmcdsDayCountFraction(stubStart, stubEnd, dcc, &stubYears);
+/// stubFrac = stubYears / couponYearFrac;       /* never read */
+///
+/// *stubPayment = rate * stubYears;
+/// ```
+///
+/// `coupon` and `stubFrac` are dead. The obvious reading is that the intended
+/// answer was `coupon * stubFrac` -- the coupon scaled by the stub's share of
+/// its period -- and that is exactly what the two dead lines compute between
+/// them. It is also **algebraically the same number**:
+///
+///     coupon * stubFrac = (rate * couponYearFrac) * (stubYears / couponYearFrac)
+///                       = rate * stubYears
+///
+/// So this is not a defect. It is a simplification that was applied and whose
+/// scaffolding was left standing, and the surviving form is the better one:
+/// one multiplication instead of a multiply, a divide and a multiply, so one
+/// rounding instead of three. The port keeps the single multiplication, which
+/// is what upstream actually evaluates.
+///
+/// ## The validation outlives its purpose
+///
+/// The answer depends only on `stub_start`, `stub_end`, `rate` and the day
+/// count. The coupon period affects nothing in it -- measured, by moving
+/// `next_coupon` and watching the result not change:
+///
+/// ```
+/// stub 154511..154602, coupon period ends 154693 -> 0.012465753424657534
+/// stub 154511..154602, coupon period ends 154877 -> 0.012465753424657534
+/// ```
+///
+/// But it still decides **acceptance**. Four checks reject inputs on the
+/// strength of a period the answer ignores, and the fourth is the interesting
+/// one: a stub must touch at least one boundary, so a window strictly inside
+/// the period is refused even though `rate * stubYears` is perfectly
+/// computable for it:
+///
+/// ```
+/// starts at prevCoupon          SUCCESS
+/// ends at nextCoupon            SUCCESS
+/// the whole period              SUCCESS
+/// strictly inside               refused
+/// starts before prevCoupon      refused
+/// ```
+///
+/// All four checks are reproduced. They are the function's contract whatever
+/// their original motivation was, and a caller relying on the rejection is
+/// relying on observable behaviour -- the same reasoning that kept the
+/// `expected_points` check in `ZeroCurveBuilder::create` after it stopped
+/// controlling an allocation.
+///
+/// Returns nullopt where upstream fails: a non-positive coupon period, a stub
+/// boundary outside it, a stub touching neither end, or a day count the
+/// fraction cannot compute.
+[[nodiscard]] inline std::optional<double> stub_payment(Date prev_coupon, Date next_coupon,
+                                                        Date stub_start, Date stub_end, double rate,
+                                                        DayCount day_count) {
+  if (prev_coupon >= next_coupon) {
+    return std::nullopt;
+  }
+  if (stub_start < prev_coupon || stub_start > next_coupon) {
+    return std::nullopt;
+  }
+  if (stub_end > next_coupon || stub_end < prev_coupon) {
+    return std::nullopt;
+  }
+  if (stub_start != prev_coupon && stub_end != next_coupon) {
+    return std::nullopt;
+  }
+  // Computed and discarded by upstream, but it can FAIL, and that failure is
+  // observable -- so the call stays even though the value does not.
+  if (!year_fraction(prev_coupon, next_coupon, day_count)) {
+    return std::nullopt;
+  }
+  const std::optional<double> stub_years = year_fraction(stub_start, stub_end, day_count);
+  if (!stub_years) {
+    return std::nullopt;
+  }
+  return rate * *stub_years;
 }
 
 } // namespace cdsmodel

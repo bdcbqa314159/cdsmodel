@@ -185,7 +185,8 @@ if(CDSMODEL_BUILD_TESTS)
                    tests/zero_curve_builder_differential_test.cpp
                    tests/cash_flow_list_differential_test.cpp
                    tests/cash_flow_bootstrap_differential_test.cpp
-                   tests/date_schedule_differential_test.cpp)
+                   tests/date_schedule_differential_test.cpp
+                   tests/stub_differential_test.cpp)
     target_link_libraries(cdsmodel_differential_tests
                           PRIVATE cdsmodel cds_reference GTest::gtest_main)
     target_include_directories(cdsmodel_differential_tests PRIVATE tests)
@@ -198,7 +199,7 @@ if(CDSMODEL_BUILD_TESTS)
                  fee_leg schedule cds root_find bootstrap cdsone defaulted
                  date_sup interpolation rate_conversion
                  zero_curve_builder cash_flow_list
-                 cash_flow_bootstrap date_schedule)
+                 cash_flow_bootstrap date_schedule stub)
       add_executable(gen_${gen}_golden tools/gen_${gen}_golden.cpp)
       target_link_libraries(gen_${gen}_golden PRIVATE cdsmodel cds_reference)
       target_include_directories(gen_${gen}_golden PRIVATE tests)
