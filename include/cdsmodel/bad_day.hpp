@@ -114,8 +114,13 @@ roll_to_business_day(Date start, int direction, std::span<const Calendar> calend
 
 /// Adjust a date onto a business day under the given convention.
 ///
-/// Replaces `JpmcdsHolidayListBusinessDay` and
-/// `JpmcdsMultiHolidayListBusinessDay`. With several calendars the result is
+/// Replaces `JpmcdsHolidayListBusinessDay`,
+/// `JpmcdsMultiHolidayListBusinessDay` and `JpmcdsBusinessDay`.
+///
+/// The last of those is upstream's file-based wrapper: it takes a holiday FILE
+/// name, resolves it through a process-wide cache, and then does exactly this.
+/// Calendars are passed explicitly here, so the lookup is the caller's --
+/// `JpmcdsHolidayLoadFromDisk` is not ported. With several calendars the result is
 /// the first date in the chosen direction that is a business day in *all* of
 /// them, which is what upstream's restart-on-change loop computes.
 ///

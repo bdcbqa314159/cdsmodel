@@ -164,6 +164,10 @@ public:
   }
 
   /// Weekends first, then the holiday list -- the order upstream uses.
+  /// Replaces `JpmcdsIsBusinessDay` and
+  /// `JpmcdsHolidayListIsBusinessDay`. Upstream returns a status plus a
+  /// TBoolean out-param; a predicate cannot fail once the calendar exists,
+  /// which is the point of validating it at construction.
   [[nodiscard]] bool is_business_day(Date d) const noexcept {
     return !is_weekend(d) && !is_holiday(d);
   }

@@ -109,6 +109,12 @@ template <std::totally_ordered T>
 /// (bSearchCheckOrder_g, toggled by JpmcdsBSearchCheckOrder) -- process-wide
 /// state that silently changed the behaviour of every caller. Here the caller
 /// picks the function and the global is gone.
+///
+/// So `JpmcdsBSearchCheckOrder` has no port and never will: it existed only to
+/// toggle that global, and a function whose entire purpose is to mutate
+/// process-wide state has nothing to replace it with. Recorded here as a
+/// deliberate non-port rather than left as an omission -- see UPSTREAM-13,
+/// which is the defect that global caused.
 template <std::totally_ordered T>
 [[nodiscard]] constexpr std::optional<Bracket> bracket_checked(std::span<const T> xs,
                                                                double desired) noexcept {
