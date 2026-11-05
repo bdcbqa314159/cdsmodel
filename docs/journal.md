@@ -1667,6 +1667,102 @@ to mean -- and TDate 0 is a legitimate date, 1601-01-01, which a span-based
 caller could reasonably include. The same input is now refused as out of order
 rather than silently truncated, which is the better failure.
 
+## Decision 20 — A split proposed, checked, and withdrawn
+
+I proposed a three-way split of `zcall.c` and then, before writing any code,
+checked it. It did not hold, and finding that out cost twenty minutes instead
+of a wasted slice.
+
+**What was wrong.** I had based the split entirely on the `cashflow.c`
+dependency and never looked at the others. Two things break it:
+
+- the "builder" half calls into the "add points" half -- `ZCFromTCurve` calls
+  `ZCAddRate`, `ZCAddPrefixCurve` calls `ZCAddGenRate` -- so they cannot be
+  separated without stubbing;
+- both halves need `cfinanci.cpp`, which was not ported. `ZCInterpolate` and
+  `ZCComputeDiscount` go through `JpmcdsDiscountToRate` and
+  `JpmcdsRateToDiscount`.
+
+I also miscounted the file: 24 functions, not 23. `JpmcdsZCDiscountFactor` (47
+lines) has its return type and name on separate lines and my regex skipped it.
+Two smaller things fell out of the recount: `JpmcdsBasisValid` is a macro
+local to `zcall.c` reading `((x)>=1 && (x)<=5001 ? SUCCESS : FAILURE)` -- note
+the bound, 5001, where the continuous sentinel is 5000 -- and the public
+function `JpmcdsJpmcdsZCPresentValueCFL` has `Jpmcds` in its name twice,
+permanently, because it is an exported symbol.
+
+So the corrected plan put `cfinanci.cpp` first, which is this slice.
+
+### What a "basis" actually is
+
+`cfinanci.cpp` is where the concept lives, and the concept is one `double`
+carrying five meanings:
+
+```
+    0     simple interest
+    1-365 compounding periods per year
+   -2     the "rate" IS a discount factor
+  512     a discount rate rather than an interest rate
+ 5000     continuous compounding
+```
+
+Five branches, one field, no type. The port keeps the `double` -- it is a
+published contract -- but names the sentinels, and `kContinuousBasis` moved
+here from `zero_curve.hpp`, where it had been living because that header was
+written first. I had annotated that misplacement in a comment rather than
+fixing it, which is the wrong instinct: a comment explaining why something is
+in the wrong file is a note to fix it later.
+
+### The mistake worth recording: assuming symmetry
+
+I wrote `discount_to_rate` as the mirror of `rate_to_discount`, having read
+only the latter. Then I read it. Three behaviours have no counterpart in the
+forward direction:
+
+- a zero-length period is **rejected outright** for every basis except the
+  discount-factor sentinel, before the year fraction is even computed. The
+  forward direction has no such check and asks for the year fraction of
+  nothing quite happily -- getting 1.0, which is right: a rate over no time
+  discounts by nothing.
+- for the discount-factor basis over a zero-length period, a factor that is
+  not within `DBL_EPSILON` of 1.0 is an **error** -- over no time nothing can
+  be discounted, so any other value is contradictory.
+- and in that case the rate returned is **1.0**, not the factor. So the
+  discount-factor basis does not simply pass through in both directions.
+
+None of that is deducible from the forward function. Symmetry was an
+assumption dressed as a reading, and the only reason it got caught is that I
+went back to the source before writing the tests rather than after.
+
+### A signature inconsistency the test found
+
+The year-fraction forms take `double basis`; the **date-based** forms take
+`long basis`. So a `TCurve`, whose `fBasis` is a `double`, truncates its basis
+whenever it passes through the date-based conversion -- and the formulas use
+the basis directly, so 1.5 arriving as 1 is a different number out.
+
+That is the same truncation `ZCurve` performs by storing `basis` as a `long`,
+in a second and independent place. My first port widened both to `double`,
+which made the port disagree with upstream for every fractional basis. The
+differential sweep caught it at basis 1.5 and the signature now matches
+upstream, with the inconsistency documented rather than smoothed. No real
+convention uses a fractional compounding basis; `checkTCurve` admits them only
+because its test is `>= -2.0`.
+
+There is a related curiosity worth knowing: the `switch` dispatches on
+`(long)basis` but the formulas use the full `double`. So 1.5 dispatches to the
+compounding branch *as if it were 1* and then computes `pow(1 + r/1.5,
+-1.5t)`. Consistent in both directions, and pinned by a test.
+
+### Verification
+
+The contract is the round trip, and it needs no oracle: wherever both
+directions succeed, the rate must come back. 100+ combinations at relative
+1e-12 -- not bit-exact, because the compounding branch is two transcendental
+calls deep. Plus 1,183 recorded conversions and 520 recorded validity
+verdicts, and the differential sweep over all thirteen bases including the
+fractional and negative ones.
+
 ## The collaboration record
 
 Started at the schedule slice, which means the earlier rows were reconstructed
@@ -1727,6 +1823,12 @@ From here: one line per slice naming what had to be redone and why.
 - **cds** — one real defect introduced and fixed (PORT-9); one comment corrected
   that had argued the defect was not a defect; two wrong argument orders caught
   by the compiler.
+- **cfinanci** — proposed a split of `zcall.c`, checked it before writing, and
+  withdrew it (two dependency errors and a miscount). Then wrote
+  `discount_to_rate` as a mirror of its inverse by assumption and had to
+  correct three behaviours after reading the source; widened a `long` basis to
+  `double` and had the differential sweep catch it; shadowed a function with a
+  local named `year_fraction`.
 - **tcurve** — no new header: `TCurve` is field-for-field the port's
   `ZeroCurve`, so the slice became a validation audit instead. Found PORT-11
   (missing rate check) and UPSTREAM-15. One tier-1 invariant written too

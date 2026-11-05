@@ -21,6 +21,7 @@
 
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/rate_conversion.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -31,10 +32,6 @@
 #include <vector>
 
 namespace cdsmodel {
-
-/// Upstream's `JPMCDS_CONTINUOUS_BASIS`: the sentinel basis meaning
-/// continuous compounding rather than a number of periods per year.
-inline constexpr double kContinuousBasis = 5000.0;
 
 /// One point on a curve. Upstream's `TRatePt`.
 struct RatePoint {
@@ -50,32 +47,10 @@ struct RatePoint {
 /// Preconditions that upstream checks on every call, or not at all, are
 /// checked once at construction instead. That is what lets `zero_rate` and
 /// `zero_price` return a plain `double`: upstream returns `NaN` on failure,
-/// Whether a stored rate can produce a positive discount factor at this
-/// basis. Replaces the part of `JpmcdsRateValidYearFrac` that applies to the
-/// bases a `ZeroCurve` admits.
-///
-/// Upstream's rule, by basis sentinel:
-///
-///   * continuous (5000) -- any rate is valid, since the discount factor is
-///     `exp(-rate * t)` and that is positive for every real rate;
-///   * a compounding frequency n in 1..365 -- `rate > -n`, because the factor
-///     goes through `log(1 + rate/n)` and the argument must be positive.
-///
-/// The other sentinels upstream carries in the same field -- 0 for simple
-/// interest, -2 for "the rate IS a discount factor", 512 for a discount rate
-/// -- have their own rules and their own validity tests, and a `ZeroCurve`
-/// cannot hold them: `create` rejects any basis outside continuous or
-/// 1 to 365. That restriction is `cxzerocurve.c`'s, not `tcurve.c`'s, and it
-/// is the right one here because it is exactly the domain
-/// `convert_compound_rate` supports.
-[[nodiscard]] constexpr bool rate_is_valid(double rate, double basis) noexcept {
-  if (basis == kContinuousBasis) {
-    return true;
-  }
-  // Upstream's `default:` branch: `if (rate <= -basis) reject`.
-  return rate > -basis;
-}
-
+// `rate_is_valid` used to live here, where it was first needed. Its upstream
+// home is cfinanci.cpp, so it moved to rate_conversion.hpp as part of that
+// slice -- and gained the three bases a ZeroCurve cannot hold but the rest of
+// the interest-rate stack can.
 /// a sentinel inside the result space of exactly the kind UPSTREAM-2 is about.
 class ZeroCurve {
 public:
@@ -145,7 +120,7 @@ public:
     // so the constructor's rejection behaviour was never in the comparison.
     // The third time that shape has hidden a defect, after PORT-9.
     for (const RatePoint &point : points) {
-      if (!rate_is_valid(point.rate, basis)) {
+      if (!rate_valid_year_frac(point.rate, 1.0, basis)) {
         return std::nullopt;
       }
     }
