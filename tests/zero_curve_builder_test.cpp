@@ -1,5 +1,6 @@
 // TIER 1 -- the curve builder. The invariant first, then replay.
 
+#include <cdsmodel/bsearch.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/day_count.hpp>
 #include <cdsmodel/rate_conversion.hpp>
@@ -10,7 +11,10 @@
 #include "golden/zero_curve_builder_cases.hpp"
 
 #include <cmath>
+#include <limits>
 #include <optional>
+#include <ranges>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -277,6 +281,249 @@ TEST(ZeroCurveBuilder, MatchesRecordedBuilderStates) {
           << where << " i=" << i;
       ++checked;
     }
+  }
+  EXPECT_GT(checked, 200) << checked;
+}
+
+// =====================================================================
+// EVALUATION.
+// =====================================================================
+
+ZeroCurveBuilder seeded(long basis = 1, DayCount dcc = DayCount::Act365Fixed) {
+  ZeroCurveBuilder b = *ZeroCurveBuilder::create(d(2024, 1, 1), 16, basis, dcc);
+  for (int years : {1, 2, 3, 5, 7, 10, 15, 20, 30}) {
+    [[maybe_unused]] const bool ok = b.add_rate(d(2024 + years, 1, 1), 0.02 + 0.004 * years);
+  }
+  return b;
+}
+
+TEST(ZeroCurveBuilderEval, TheBracketAgreesWithThePortedBinarySearch) {
+  // `bracket_dates` searches the points directly, where `bracket` searches a
+  // span -- two implementations of one thing, which is the mistake UPSTREAM-17
+  // is about. This checks them against each other THROUGH the interpolation,
+  // which is the only way the bracket is ever used.
+  //
+  // Only dates strictly inside the curve and not equal to any stored date, so
+  // none of interpolate's early returns fire and the answer depends purely on
+  // which pair was chosen.
+  const ZeroCurveBuilder b = seeded();
+  std::vector<cdsmodel::TDate> dates;
+  for (const ZeroCurveBuilder::Point &p : b.points()) {
+    dates.push_back(cdsmodel::to_tdate(p.date));
+  }
+  ASSERT_GE(dates.size(), 2u);
+
+  int checked = 0;
+  for (cdsmodel::TDate at = dates.front() + 1; at < dates.back(); at += 7) {
+    if (std::ranges::find(dates, at) != dates.end()) {
+      continue;
+    }
+    const std::optional<cdsmodel::Bracket> want =
+        cdsmodel::bracket(std::span<const cdsmodel::TDate>{dates}, static_cast<double>(at));
+    ASSERT_TRUE(want.has_value()) << at;
+    const ZeroCurveBuilder::Point &lo = b.points()[want->lo];
+    const ZeroCurveBuilder::Point &hi = b.points()[want->hi];
+    const double expected =
+        lo.rate + ((hi.rate - lo.rate) / static_cast<double>(dates[want->hi] - dates[want->lo])) *
+                      static_cast<double>(at - dates[want->lo]);
+
+    const std::optional<double> got =
+        b.interpolate(cdsmodel::from_tdate(at), cdsmodel::InterpType::Linear);
+    ASSERT_TRUE(got.has_value()) << at;
+    // Bit-exact: if the bracket differed anywhere, the rate would too.
+    EXPECT_EQ(*got, expected) << "at " << at;
+    ++checked;
+  }
+  EXPECT_GT(checked, 1000) << checked;
+}
+
+TEST(ZeroCurveBuilderEval, AStoredDateReturnsItsStoredRateExactly) {
+  // Upstream short-circuits an exact hit rather than interpolating to it, so
+  // the result at a stored date is the stored value and not an arithmetic
+  // reconstruction of it.
+  for (cdsmodel::InterpType interp :
+       {cdsmodel::InterpType::Linear, cdsmodel::InterpType::FlatForwards}) {
+    const ZeroCurveBuilder b = seeded();
+    for (const ZeroCurveBuilder::Point &p : b.points()) {
+      const std::optional<double> got = b.interpolate(p.date, interp);
+      ASSERT_TRUE(got.has_value());
+      EXPECT_EQ(*got, p.rate) << "at " << cdsmodel::to_tdate(p.date);
+    }
+  }
+}
+
+TEST(ZeroCurveBuilderEval, ExtrapolationIsFlatBackwardsAndSlopedForwards) {
+  const ZeroCurveBuilder b = seeded();
+  const double first = b.points().front().rate;
+  for (int years : {-20, -5, -1, 0}) {
+    const std::optional<double> got =
+        b.interpolate(d(2025 + years, 1, 1), cdsmodel::InterpType::Linear);
+    ASSERT_TRUE(got.has_value()) << years;
+    EXPECT_EQ(*got, first) << "backwards extrapolation must be flat, at " << years;
+  }
+  // Forward is NOT flat -- the last pair's slope continues.
+  const double last = b.points().back().rate;
+  const std::optional<double> beyond = b.interpolate(d(2070, 1, 1), cdsmodel::InterpType::Linear);
+  ASSERT_TRUE(beyond.has_value());
+  EXPECT_GT(*beyond, last) << "forward extrapolation follows the final slope";
+}
+
+TEST(ZeroCurveBuilderEval, TheValueDateDiscountsByNothingEvenWithNoPoints) {
+  const ZeroCurveBuilder empty =
+      *ZeroCurveBuilder::create(d(2024, 1, 1), 4, 1, DayCount::Act365Fixed);
+  const std::optional<double> at_value_date =
+      empty.discount_factor(d(2024, 1, 1), cdsmodel::InterpType::Linear);
+  ASSERT_TRUE(at_value_date.has_value()) << "it short-circuits before interpolating";
+  EXPECT_EQ(*at_value_date, 1.0);
+  // Anywhere else an empty curve has nothing to say.
+  EXPECT_FALSE(empty.discount_factor(d(2029, 1, 1), cdsmodel::InterpType::Linear).has_value());
+  EXPECT_FALSE(empty.interpolate(d(2029, 1, 1), cdsmodel::InterpType::Linear).has_value());
+}
+
+TEST(ZeroCurveBuilderEval, AForwardFromTheValueDateIsJustTheDiscountFactor) {
+  // df(valueDate) is 1.0, so the composition has to collapse. Stated as a
+  // property because it is the cheapest check that the forward machinery is
+  // wired up the right way round.
+  const ZeroCurveBuilder b = seeded();
+  for (cdsmodel::InterpType interp :
+       {cdsmodel::InterpType::Linear, cdsmodel::InterpType::FlatForwards}) {
+    for (const cdsmodel::Date at : {d(2026, 4, 1), d(2031, 1, 1), d(2045, 9, 30)}) {
+      const std::optional<double> df = b.discount_factor(at, interp);
+      const std::optional<double> fwd = b.forward_discount_factor(d(2024, 1, 1), at, interp);
+      ASSERT_TRUE(df.has_value());
+      ASSERT_TRUE(fwd.has_value());
+      EXPECT_EQ(*fwd, *df) << "at " << cdsmodel::to_tdate(at);
+    }
+    // And a zero-width forward discounts by nothing.
+    const std::optional<double> none =
+        b.forward_discount_factor(d(2031, 1, 1), d(2031, 1, 1), interp);
+    ASSERT_TRUE(none.has_value());
+    EXPECT_EQ(*none, 1.0);
+  }
+}
+
+TEST(ZeroCurveBuilderEval, TheMoneyMarketRateIsTheSimpleForwardFromTheValueDate) {
+  const ZeroCurveBuilder b = seeded();
+  for (cdsmodel::InterpType interp :
+       {cdsmodel::InterpType::Linear, cdsmodel::InterpType::FlatForwards}) {
+    for (DayCount dcc : {DayCount::Act360, DayCount::Act365Fixed}) {
+      for (const cdsmodel::Date at : {d(2025, 1, 1), d(2029, 7, 1), d(2040, 1, 1)}) {
+        const std::optional<double> mm = b.money_market_rate(at, dcc, interp);
+        const std::optional<double> fwd = b.forward_rate(d(2024, 1, 1), at, 0, dcc, interp);
+        ASSERT_EQ(mm.has_value(), fwd.has_value());
+        if (mm) {
+          EXPECT_EQ(*mm, *fwd) << "at " << cdsmodel::to_tdate(at);
+        }
+      }
+    }
+  }
+}
+
+TEST(ZeroCurveBuilderEval, NothingEvaluatesToNaN) {
+  // The headline oracle-free property, and the answer to UPSTREAM-19. Every
+  // evaluation either refuses or returns a number. Infinity is allowed --
+  // UPSTREAM-15 settled that it is a value, not an error -- but NaN is not,
+  // because a double-returning conversion has nowhere to report an error and
+  // a NaN that escapes becomes a price.
+  int checked = 0;
+  for (long basis : {1L, 2L, 12L, 365L, 5000L}) {
+    for (DayCount dcc : {DayCount::Act365Fixed, DayCount::Act360}) {
+      for (double rate : {-24.0, -1.0, -0.5, 0.0, 0.05, 1.0, 25.0, 1e30}) {
+        std::optional<ZeroCurveBuilder> b = ZeroCurveBuilder::create(d(2024, 1, 1), 8, basis, dcc);
+        ASSERT_TRUE(b.has_value());
+        if (!b->add_rate(d(2054, 1, 1), rate) || !b->add_rate(d(2055, 1, 1), rate)) {
+          continue; // refused on the way in, which is also an answer
+        }
+        for (cdsmodel::InterpType interp :
+             {cdsmodel::InterpType::Linear, cdsmodel::InterpType::FlatForwards}) {
+          const std::string where = "basis " + std::to_string(basis) + " rate " +
+                                    std::to_string(rate) + " interp " +
+                                    std::to_string(static_cast<int>(interp));
+          for (const cdsmodel::Date at :
+               {d(2030, 1, 1), d(2054, 1, 1), d(2054, 7, 1), d(2055, 1, 1), d(2070, 1, 1)}) {
+            const std::optional<double> r = b->interpolate(at, interp);
+            const std::optional<double> df = b->discount_factor(at, interp);
+            const std::optional<double> pv = b->present_value(1e6, at, interp);
+            if (r) {
+              EXPECT_FALSE(std::isnan(*r)) << where;
+            }
+            if (df) {
+              EXPECT_FALSE(std::isnan(*df)) << where;
+              EXPECT_GE(*df, 0.0) << where;
+            }
+            if (pv) {
+              EXPECT_FALSE(std::isnan(*pv)) << where;
+            }
+            ++checked;
+          }
+          const std::optional<double> fwd_df =
+              b->forward_discount_factor(d(2054, 1, 1), d(2055, 1, 1), interp);
+          const std::optional<double> fwd =
+              b->forward_rate(d(2054, 1, 1), d(2055, 1, 1), 0, dcc, interp);
+          if (fwd_df) {
+            EXPECT_TRUE(std::isfinite(*fwd_df)) << where << ": a forward factor must be finite";
+            // NOT strictly positive. Measured at basis 365, rate 25: the
+            // factor at the far date underflows to zero while the near one is
+            // still subnormal, so the ratio is exactly 0 -- a forward over
+            // which everything becomes worthless. That is a value, and the
+            // first draft of this test asserted it away. Upstream returns the
+            // same 0 and then refuses to convert it, which is what the port
+            // does too, asserted just below.
+            EXPECT_GE(*fwd_df, 0.0) << where;
+            if (*fwd_df == 0.0) {
+              EXPECT_FALSE(
+                  b->forward_rate(d(2054, 1, 1), d(2055, 1, 1), 0, dcc, interp).has_value())
+                  << where << ": a zero forward factor has no rate";
+            }
+          }
+          if (fwd) {
+            EXPECT_FALSE(std::isnan(*fwd)) << where;
+          }
+        }
+      }
+    }
+  }
+  EXPECT_GT(checked, 200) << checked;
+}
+
+TEST(ZeroCurveBuilderEval, MatchesRecordedEvaluations) {
+  int checked = 0;
+  for (const auto &c : cdsmodel::golden::kEvalCases) {
+    const std::optional<DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
+    ASSERT_TRUE(dcc.has_value()) << c.day_count;
+    const cdsmodel::InterpType interp =
+        c.interp == 0 ? cdsmodel::InterpType::Linear : cdsmodel::InterpType::FlatForwards;
+    std::optional<ZeroCurveBuilder> b =
+        ZeroCurveBuilder::create(cdsmodel::from_tdate(c.value_date), 16, c.basis, *dcc);
+    ASSERT_TRUE(b.has_value()) << "basis " << c.basis;
+    for (int years : {1, 2, 3, 5, 7, 10, 15, 20, 30}) {
+      // The same seeding the generator used, so the recorded answers are
+      // answers to the same curve.
+      ASSERT_TRUE(b->add_rate(d(2024 + years, 1, 1), 0.02 + 0.004 * years));
+    }
+    const cdsmodel::Date at = cdsmodel::from_tdate(c.at);
+    const std::string where = "basis " + std::to_string(c.basis) + " dcc " +
+                              std::to_string(c.day_count) + " interp " + std::to_string(c.interp) +
+                              " at " + std::to_string(c.at);
+    const double eps = std::numeric_limits<double>::epsilon();
+
+    const std::optional<double> rate = b->interpolate(at, interp);
+    ASSERT_EQ(rate.has_value(), c.rate_ok) << where;
+    if (rate) {
+      EXPECT_NEAR(*rate, c.rate, 4.0 * std::max(1.0, std::fabs(c.rate)) * eps) << where;
+    }
+    const std::optional<double> df = b->discount_factor(at, interp);
+    ASSERT_EQ(df.has_value(), c.discount_ok) << where;
+    if (df) {
+      EXPECT_NEAR(*df, c.discount, 4.0 * std::max(1.0, std::fabs(c.discount)) * eps) << where;
+    }
+    const std::optional<double> fwd =
+        b->forward_rate(cdsmodel::from_tdate(c.value_date), at, 0, DayCount::Act365Fixed, interp);
+    ASSERT_EQ(fwd.has_value(), c.forward_ok) << where;
+    if (fwd) {
+      EXPECT_NEAR(*fwd, c.forward, 4.0 * std::max(1.0, std::fabs(c.forward)) * eps) << where;
+    }
+    ++checked;
   }
   EXPECT_GT(checked, 200) << checked;
 }

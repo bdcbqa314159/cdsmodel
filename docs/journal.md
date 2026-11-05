@@ -2056,3 +2056,170 @@ suite covers the divergence. CI therefore verifies that the port builds curves
 correctly; it does **not** verify that the port diverges from upstream where it
 should. Only the local differential run does that, which is the standing
 asymmetry of this project and not new here.
+
+## Decision 22 — Four ways to return a wrong answer with a right status
+
+The evaluation half of `zcall.c` is eight functions that read a finished curve.
+It yielded two defects, and what makes them worth writing up together is that
+they are the same defect at two different levels of the stack.
+
+### The error channel exists and is not used
+
+```c
+*discount = 1.0;
+if (discount1<=0.0)
+{
+    JpmcdsErrMsg("JpmcdsZCFwdDiscountFactor: bad discount at start of fwd\n");
+}
+else
+{
+    *discount = discount2 / discount1;
+}
+return SUCCESS;
+```
+
+Every previous finding of this shape in this project had an excuse available.
+UPSTREAM-2 and UPSTREAM-15 return a bare `double` and have nowhere to report a
+failure; the error *becomes* the number because there is no alternative. Here
+there is: the function returns `int`, the caller checks it, and the condition is
+detected well enough to write a sentence about. The status is simply wrong.
+
+And the fabrication is the maximally plausible one. A forward discount factor
+of 1.0 means "no discounting over this period", so the caller is told the
+forward rate is exactly **0%** — not a sentinel, not an absurdity, a number a
+risk report would print without comment.
+
+### The failure mode gets prettier as the situation gets worse
+
+Sweeping a continuous-basis rate over a 30-year horizon:
+
+```
+rate=20   df1=1.70976e-261   fwd rate=4.85165e+08
+rate=23   df1=1.31182e-300   fwd rate=9.7448e+09
+rate=24   df1=1.20094e-313   fwd rate=2.43073e+10    <- subnormal
+rate=25   df1=0              fwd rate=0              <- fabricated
+```
+
+This is the part I did not expect. Up to the cliff the answers are visibly
+nonsense: 2.4e10 is a forward rate of two billion percent, and any monitor, any
+reviewer, any plausibility check catches it. One rate further on, the output
+becomes a clean zero. **The observable symptom improves monotonically as the
+input deteriorates**, and the single worst-behaved input in the sweep is the one
+that produces the most innocuous-looking number.
+
+That inverts the usual assumption behind sanity checks — that worse inputs
+produce more obviously wrong outputs, so a bounds check on the output catches
+the bad inputs. Here the bounds check catches everything *except* the actual
+failure.
+
+Severity also depends on the basis, and measuring that mattered. Annual
+compounding never reaches the cliff: `(1+r)^-t` decays polynomially, so even a
+rate of 10,000% over 30 years gives `6.7e-61`. Continuous compounding decays
+exponentially and crosses at about 24. So this is reachable only on a
+continuous-basis curve — which I would not have known without sweeping both.
+
+### `x <= 0.0` is not "x is unusable"
+
+The second defect is one character of intent away from the first:
+
+```c
+if (discount<=0.0)                  /* bad discount factor */
+{
+    JpmcdsErrMsg("JpmcdsZCForwardRate: bad discount for forward\n");
+    return FAILURE;
+}
+```
+
+Here the status is used correctly and the *predicate* is wrong. `NaN <= 0.0` is
+false, so the one check whose entire job is to stop an unusable discount factor
+is written as the one comparison every NaN passes. `JpmcdsDiscountToRate` guards
+the same way, so there is no second line of defence.
+
+The comment says what the author meant — "bad discount factor". The code says
+"non-positive discount factor". Those are the same set only if NaN is not a
+double.
+
+### Where the NaN comes from is the interesting part
+
+It is not produced by a bug. Two discount factors overflow to `+inf`, which
+UPSTREAM-15 established — in this journal, deliberately — is a *value* and not a
+finding, because the answer really is that large. Their ratio is indeterminate.
+
+So the chain is: a correct value, combined with another correct value, produces
+something neither function's guard can represent. This is exactly the
+relationship UPSTREAM-9 has with UPSTREAM-10, where one supplies the bad pointer
+and the other performs the unbounded write. Neither is the whole defect;
+together they are.
+
+It also means I could not have found this by looking for wrong arithmetic.
+Every individual computation along the path is correct.
+
+### Fixing it at the conversion, not at the caller
+
+The port's answer is one line in `discount_to_rate`:
+
+```cpp
+if (!(discount > 0.0) || !std::isfinite(discount)) {
+  return std::nullopt;
+}
+```
+
+Placed there rather than in the forward-rate function, because a NaN discount
+factor is not a rate no matter who asks. Guarding each caller means the next
+caller has to remember; guarding the conversion means no caller can get it
+wrong. That is the "make bugs unrepresentable" move applied to an error check
+rather than to a data type.
+
+The headline property is the general form, and it is oracle-free: across every
+basis, day count and rate in the sweep, **no evaluation returns NaN** —
+while infinity remains permitted, because UPSTREAM-15 settled that it is a
+value. Writing the property that way round, allowing one non-finite result and
+forbidding the other, is only possible because the earlier decision recorded
+*why* rather than *what*.
+
+### A dead local that documents a lost intention
+
+`JpmcdsZCInterpolate` computes the day-count metric function and never reads it:
+
+```c
+TMetricDoubleFunc metricFP;
+...
+metricFP = JpmcdsDayCountToMetricFunc(zc->dayCountConv);   /* never used */
+```
+
+Both interpolation branches measure the gap between dates in raw days, so the
+day count has no effect on a linear interpolation at all. Meanwhile
+`JpmcdsLinInterpCurve` in `linterpc.c` performs the same linear interpolation on
+the same kind of curve and *does* pass the metric through, so for a 30/360 curve
+the two disagree.
+
+I did **not** file this as a defect, and the reason is worth recording as much
+as the finding would have been. Nothing in the library says those two functions
+are meant to agree; they have different signatures, different curve types and
+different callers. A raw-day interpolation of zero rates is a defensible
+convention. The dead assignment is evidence of an intention, not of a contract,
+and I have been wrong before by promoting the first into the second — the port's
+own PORT-9 came from assuming a line's absence was deliberate.
+
+So it is recorded as an observation at the site, with the note that the next
+reader will find it just as suspicious. That is the honest resolution: the
+reader is warned, and nothing is claimed that was not measured.
+
+### One assertion I had to weaken, again
+
+The first draft of the no-NaN property also required every forward discount
+factor to be strictly positive. It failed at basis 365, rate 25 — the factor at
+the far date underflows to zero while the near one is still subnormal, so the
+ratio is exactly `0`. A forward over which everything becomes worthless.
+
+I checked upstream before touching the assertion: it returns the same zero and
+then refuses to convert it to a rate, which is precisely what the port does. So
+the invariant was wrong, not the code, and the fix was to assert `>= 0.0` plus
+the separate claim that a zero factor has no rate.
+
+This is the third time in this port that an invariant demanding finiteness or
+positivity has turned out to be stronger than the arithmetic justifies. The
+pattern is clear enough to state as a rule: **before asserting that a quantity
+is well-behaved, check what the floating-point edge of its domain actually
+produces** — and prefer an assertion that names the two outcomes separately to
+one that bans the harder case outright.

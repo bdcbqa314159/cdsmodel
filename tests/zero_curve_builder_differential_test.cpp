@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -23,6 +24,7 @@ extern "C" {
 #include "cerror.h"
 #include "cfinanci.h"
 #include "dateconv.h"
+#include "interp.h"
 #include "ldate.h"
 #include "tcurve.h"
 #include "zcprvt.h"
@@ -380,6 +382,340 @@ TEST_F(BuilderDifferential, TheCurveRoundTripMatches) {
   JpmcdsFreeTCurve(back);
   JpmcdsZCFree(zc);
   JpmcdsFreeTCurve(tc);
+}
+
+// =====================================================================
+// EVALUATION -- reading the curve.
+// =====================================================================
+
+/// A curve seeded identically on both sides, so the evaluation comparisons
+/// start from the same points rather than from the same inputs.
+struct Pair {
+  Ref ref;
+  std::optional<cdsmodel::ZeroCurveBuilder> port;
+
+  Pair(cdsmodel::Date vd, long basis, cdsmodel::DayCount dcc)
+      : ref(cdsmodel::to_tdate(vd), 16, basis, cdsmodel::to_upstream_code(dcc)),
+        port(cdsmodel::ZeroCurveBuilder::create(vd, 16, basis, dcc)) {}
+
+  bool seed(cdsmodel::Date at, double rate) {
+    const int rc = JpmcdsZCAddRate(ref.zc, cdsmodel::to_tdate(at), rate);
+    const bool ok = port->add_rate(at, rate);
+    return rc == SUCCESS && ok;
+  }
+};
+
+long upstream_interp(cdsmodel::InterpType t) {
+  return t == cdsmodel::InterpType::Linear ? JPMCDS_LINEAR_INTERP : JPMCDS_FLAT_FORWARDS;
+}
+
+TEST_F(BuilderDifferential, InterpolationMatchesAcrossBothTypesAndTheWholeDomain) {
+  const cdsmodel::Date vd = d(2024, 1, 1);
+  int compared = 0;
+  for (long basis : {1L, 2L, 4L, 12L, 5000L}) {
+    for (cdsmodel::DayCount dcc : {cdsmodel::DayCount::Act365Fixed, cdsmodel::DayCount::Act360}) {
+      Pair pair(vd, basis, dcc);
+      ASSERT_TRUE(pair.ref);
+      ASSERT_TRUE(pair.port.has_value());
+      for (int years : {1, 2, 3, 5, 7, 10, 15, 20, 30}) {
+        ASSERT_TRUE(pair.seed(d(2024 + years, 1, 1), 0.02 + 0.004 * years));
+      }
+      for (cdsmodel::InterpType interp :
+           {cdsmodel::InterpType::Linear, cdsmodel::InterpType::FlatForwards}) {
+        // Before the first point, on it, between points, on the value date,
+        // and past the last point -- every branch of the function.
+        for (const cdsmodel::Date at :
+             {d(2020, 1, 1), d(2024, 1, 1), d(2025, 1, 1), d(2025, 6, 15), d(2029, 3, 2),
+              d(2039, 7, 1), d(2054, 1, 1), d(2060, 1, 1)}) {
+          double want = 0.0;
+          const int rc = JpmcdsZCInterpolate(pair.ref.zc, cdsmodel::to_tdate(at),
+                                             upstream_interp(interp), nullptr, &want);
+          const std::optional<double> got = pair.port->interpolate(at, interp);
+          ASSERT_EQ(got.has_value(), rc == SUCCESS)
+              << "basis " << basis << " at " << cdsmodel::to_tdate(at);
+          if (got) {
+            // Linear is arithmetic on stored values; flat forwards goes
+            // through pow and a conversion, so the non-accumulating tier.
+            EXPECT_NEAR(*got, want,
+                        4.0 * std::max(1.0, std::fabs(want)) *
+                            std::numeric_limits<double>::epsilon())
+                << "basis " << basis << " at " << cdsmodel::to_tdate(at) << " interp "
+                << upstream_interp(interp);
+          }
+          ++compared;
+        }
+      }
+    }
+  }
+  EXPECT_GT(compared, 150) << compared;
+}
+
+TEST_F(BuilderDifferential, AnUnknownInterpolationTypeIsRejectedByBoth) {
+  // The port's enum cannot express one, so this checks the upstream half of
+  // the claim: that the domain really is just those two values.
+  Pair pair(d(2024, 1, 1), 1, cdsmodel::DayCount::Act365Fixed);
+  ASSERT_TRUE(pair.ref);
+  ASSERT_TRUE(pair.seed(d(2029, 1, 1), 0.05));
+  ASSERT_TRUE(pair.seed(d(2034, 1, 1), 0.06));
+  double out = 0.0;
+  for (const long bogus : {1L, 2L, 123L, 125L, 999L}) {
+    EXPECT_EQ(
+        JpmcdsZCInterpolate(pair.ref.zc, cdsmodel::to_tdate(d(2031, 1, 1)), bogus, nullptr, &out),
+        FAILURE)
+        << "interp type " << bogus;
+  }
+}
+
+TEST_F(BuilderDifferential, DiscountFactorAndPresentValueMatch) {
+  const cdsmodel::Date vd = d(2024, 1, 1);
+  int compared = 0;
+  for (long basis : {1L, 2L, 12L, 5000L}) {
+    Pair pair(vd, basis, cdsmodel::DayCount::Act365Fixed);
+    ASSERT_TRUE(pair.ref);
+    for (int years : {1, 3, 7, 12, 25}) {
+      ASSERT_TRUE(pair.seed(d(2024 + years, 1, 1), 0.03 + 0.002 * years));
+    }
+    for (cdsmodel::InterpType interp :
+         {cdsmodel::InterpType::Linear, cdsmodel::InterpType::FlatForwards}) {
+      for (const cdsmodel::Date at :
+           {d(2024, 1, 1), d(2026, 5, 9), d(2031, 1, 1), d(2040, 11, 30), d(2049, 1, 1)}) {
+        double want_df = 0.0;
+        double want_pv = 0.0;
+        const int rc_df = JpmcdsZCDiscountFactor(pair.ref.zc, cdsmodel::to_tdate(at),
+                                                 upstream_interp(interp), nullptr, &want_df);
+        const int rc_pv = JpmcdsZCPresentValue(pair.ref.zc, 1'000'000.0, cdsmodel::to_tdate(at),
+                                               upstream_interp(interp), nullptr, &want_pv);
+        const std::optional<double> df = pair.port->discount_factor(at, interp);
+        const std::optional<double> pv = pair.port->present_value(1'000'000.0, at, interp);
+        ASSERT_EQ(df.has_value(), rc_df == SUCCESS) << "basis " << basis;
+        ASSERT_EQ(pv.has_value(), rc_pv == SUCCESS) << "basis " << basis;
+        if (df) {
+          EXPECT_NEAR(*df, want_df,
+                      4.0 * std::max(1.0, std::fabs(want_df)) *
+                          std::numeric_limits<double>::epsilon());
+          // The present value is one multiplication on top, so it must agree
+          // exactly once the discount factor does.
+          EXPECT_EQ(*pv, *df * 1'000'000.0);
+        }
+        ++compared;
+      }
+    }
+  }
+  EXPECT_GT(compared, 30) << compared;
+}
+
+TEST_F(BuilderDifferential, ForwardRatesAndMoneyMarketRatesMatch) {
+  const cdsmodel::Date vd = d(2024, 1, 1);
+  int compared = 0;
+  for (long quote_basis : {0L, 1L, 2L, 4L}) {
+    Pair pair(vd, 1, cdsmodel::DayCount::Act365Fixed);
+    ASSERT_TRUE(pair.ref);
+    for (int years : {1, 2, 4, 8, 16}) {
+      ASSERT_TRUE(pair.seed(d(2024 + years, 1, 1), 0.03 + 0.003 * years));
+    }
+    for (cdsmodel::InterpType interp :
+         {cdsmodel::InterpType::Linear, cdsmodel::InterpType::FlatForwards}) {
+      const cdsmodel::Date starts[] = {d(2024, 1, 1), d(2025, 1, 1), d(2028, 6, 1)};
+      const cdsmodel::Date ends[] = {d(2026, 1, 1), d(2030, 1, 1), d(2039, 1, 1)};
+      for (const cdsmodel::Date start : starts) {
+        for (const cdsmodel::Date end : ends) {
+          double want_fwd_df = 0.0;
+          double want_fwd = 0.0;
+          const int rc_df = JpmcdsZCFwdDiscountFactor(
+              pair.ref.zc, cdsmodel::to_tdate(start), cdsmodel::to_tdate(end),
+              upstream_interp(interp), nullptr, &want_fwd_df);
+          const int rc_fwd = JpmcdsZCForwardRate(
+              pair.ref.zc, cdsmodel::to_tdate(start), cdsmodel::to_tdate(end), quote_basis,
+              JPMCDS_ACT_365F, upstream_interp(interp), nullptr, &want_fwd);
+          const std::optional<double> fwd_df =
+              pair.port->forward_discount_factor(start, end, interp);
+          const std::optional<double> fwd = pair.port->forward_rate(
+              start, end, quote_basis, cdsmodel::DayCount::Act365Fixed, interp);
+          ASSERT_EQ(fwd_df.has_value(), rc_df == SUCCESS) << "basis " << quote_basis;
+          ASSERT_EQ(fwd.has_value(), rc_fwd == SUCCESS) << "basis " << quote_basis;
+          if (fwd_df) {
+            EXPECT_NEAR(*fwd_df, want_fwd_df,
+                        4.0 * std::max(1.0, std::fabs(want_fwd_df)) *
+                            std::numeric_limits<double>::epsilon());
+          }
+          if (fwd) {
+            EXPECT_NEAR(*fwd, want_fwd,
+                        4.0 * std::max(1.0, std::fabs(want_fwd)) *
+                            std::numeric_limits<double>::epsilon());
+          }
+          ++compared;
+        }
+      }
+      // And the money market rate, which is the simple-interest forward from
+      // the value date.
+      for (const cdsmodel::Date at : {d(2025, 1, 1), d(2029, 7, 1), d(2040, 1, 1)}) {
+        double want = 0.0;
+        const int rc = JpmcdsZCMoneyMarketRate(pair.ref.zc, cdsmodel::to_tdate(at), JPMCDS_ACT_360,
+                                               upstream_interp(interp), nullptr, &want);
+        const std::optional<double> got =
+            pair.port->money_market_rate(at, cdsmodel::DayCount::Act360, interp);
+        ASSERT_EQ(got.has_value(), rc == SUCCESS);
+        if (got) {
+          EXPECT_NEAR(*got, want,
+                      4.0 * std::max(1.0, std::fabs(want)) *
+                          std::numeric_limits<double>::epsilon());
+        }
+        ++compared;
+      }
+    }
+  }
+  EXPECT_GT(compared, 80) << compared;
+}
+
+TEST_F(BuilderDifferential, AddMoneyMarketMatchesPointForPoint) {
+  const cdsmodel::Date vd = d(2024, 1, 1);
+  for (long basis : {1L, 2L, 12L}) {
+    for (cdsmodel::DayCount quote_dcc :
+         {cdsmodel::DayCount::Act360, cdsmodel::DayCount::Act365Fixed}) {
+      Ref ref(cdsmodel::to_tdate(vd), 8, basis, JPMCDS_ACT_365F);
+      ASSERT_TRUE(ref);
+      std::optional<cdsmodel::ZeroCurveBuilder> port =
+          cdsmodel::ZeroCurveBuilder::create(vd, 8, basis, cdsmodel::DayCount::Act365Fixed);
+      ASSERT_TRUE(port.has_value());
+
+      TDate dates[4] = {cdsmodel::to_tdate(d(2024, 2, 1)), cdsmodel::to_tdate(d(2024, 4, 1)),
+                        cdsmodel::to_tdate(d(2024, 7, 1)), cdsmodel::to_tdate(d(2025, 1, 1))};
+      double rates[4] = {0.0525, 0.0531, 0.0540, 0.0552};
+      const std::vector<cdsmodel::RatePoint> quotes{{cdsmodel::from_tdate(dates[0]), rates[0]},
+                                                    {cdsmodel::from_tdate(dates[1]), rates[1]},
+                                                    {cdsmodel::from_tdate(dates[2]), rates[2]},
+                                                    {cdsmodel::from_tdate(dates[3]), rates[3]}};
+
+      const int rc =
+          JpmcdsZCAddMoneyMarket(ref.zc, dates, rates, 4, cdsmodel::to_upstream_code(quote_dcc));
+      const bool ok = port->add_money_market(quotes, quote_dcc);
+      ASSERT_EQ(ok, rc == SUCCESS) << "basis " << basis;
+      ASSERT_EQ(port->points().size(), static_cast<std::size_t>(ref.zc->numItems));
+      for (std::size_t i = 0; i < port->points().size(); ++i) {
+        EXPECT_EQ(cdsmodel::to_tdate(port->points()[i].date), ref.zc->date[i]) << i;
+        EXPECT_NEAR(port->points()[i].rate, ref.zc->rate[i],
+                    4.0 * std::max(1.0, std::fabs(ref.zc->rate[i])) *
+                        std::numeric_limits<double>::epsilon())
+            << i;
+      }
+    }
+  }
+}
+
+// =====================================================================
+// The two divergences. These fail loudly if upstream is ever fixed.
+// =====================================================================
+
+TEST_F(BuilderDifferential, Upstream18_ABadStartingDiscountIsLoggedAndReportedAsSuccess) {
+  // Continuous basis, 30 years, a rate large enough to underflow the discount
+  // factor to exactly zero. Upstream detects it, writes the error message,
+  // and returns SUCCESS with a fabricated 1.0 -- which becomes a forward rate
+  // of exactly zero.
+  const cdsmodel::Date vd = d(2024, 1, 1);
+  const cdsmodel::Date start = d(2054, 1, 1);
+  const cdsmodel::Date end = d(2055, 1, 1);
+  Pair pair(vd, 5000, cdsmodel::DayCount::Act365Fixed);
+  ASSERT_TRUE(pair.ref);
+  ASSERT_TRUE(pair.seed(start, 25.0));
+  ASSERT_TRUE(pair.seed(end, 25.0));
+
+  double at_start = -1.0;
+  ASSERT_EQ(JpmcdsZCDiscountFactor(pair.ref.zc, cdsmodel::to_tdate(start), JPMCDS_LINEAR_INTERP,
+                                   nullptr, &at_start),
+            SUCCESS);
+  ASSERT_EQ(at_start, 0.0) << "the premise: the discount factor underflowed";
+
+  double fwd_df = -1.0;
+  EXPECT_EQ(JpmcdsZCFwdDiscountFactor(pair.ref.zc, cdsmodel::to_tdate(start),
+                                      cdsmodel::to_tdate(end), JPMCDS_LINEAR_INTERP, nullptr,
+                                      &fwd_df),
+            SUCCESS)
+      << "upstream reports success";
+  EXPECT_EQ(fwd_df, 1.0) << "with a fabricated 1.0 -- no discounting over the forward";
+
+  double fwd = -1.0;
+  EXPECT_EQ(JpmcdsZCForwardRate(pair.ref.zc, cdsmodel::to_tdate(start), cdsmodel::to_tdate(end),
+                                JPMCDS_SIMPLE_BASIS, JPMCDS_ACT_365F, JPMCDS_LINEAR_INTERP, nullptr,
+                                &fwd),
+            SUCCESS);
+  EXPECT_EQ(fwd, 0.0) << "and the caller is told the forward rate is zero";
+
+  // The port refuses both.
+  EXPECT_FALSE(
+      pair.port->forward_discount_factor(start, end, cdsmodel::InterpType::Linear).has_value());
+  EXPECT_FALSE(pair.port
+                   ->forward_rate(start, end, 0, cdsmodel::DayCount::Act365Fixed,
+                                  cdsmodel::InterpType::Linear)
+                   .has_value());
+  // The underflow itself is NOT the divergence -- both sides agree there.
+  const std::optional<double> ported_df =
+      pair.port->discount_factor(start, cdsmodel::InterpType::Linear);
+  ASSERT_TRUE(ported_df.has_value());
+  EXPECT_EQ(*ported_df, 0.0) << "the port underflows to the same zero";
+}
+
+TEST_F(BuilderDifferential, Upstream19_ANanDiscountFactorPassesTheGuardMeantToStopIt) {
+  // Two legitimately infinite discount factors -- the overflow UPSTREAM-15
+  // rules is a value, not a defect -- whose ratio is indeterminate. The guard
+  // is `if (discount <= 0.0)`, and NaN passes every comparison.
+  const cdsmodel::Date vd = d(2024, 1, 1);
+  const cdsmodel::Date start = d(2054, 1, 1);
+  const cdsmodel::Date end = d(2055, 1, 1);
+  Pair pair(vd, 5000, cdsmodel::DayCount::Act365Fixed);
+  ASSERT_TRUE(pair.ref);
+  ASSERT_TRUE(pair.seed(start, -24.0));
+  ASSERT_TRUE(pair.seed(end, -24.0));
+
+  double at_start = 0.0;
+  double at_end = 0.0;
+  ASSERT_EQ(JpmcdsZCDiscountFactor(pair.ref.zc, cdsmodel::to_tdate(start), JPMCDS_LINEAR_INTERP,
+                                   nullptr, &at_start),
+            SUCCESS);
+  ASSERT_EQ(JpmcdsZCDiscountFactor(pair.ref.zc, cdsmodel::to_tdate(end), JPMCDS_LINEAR_INTERP,
+                                   nullptr, &at_end),
+            SUCCESS);
+  ASSERT_TRUE(std::isinf(at_start) && std::isinf(at_end)) << "the premise: both overflowed";
+
+  double fwd_df = 0.0;
+  EXPECT_EQ(JpmcdsZCFwdDiscountFactor(pair.ref.zc, cdsmodel::to_tdate(start),
+                                      cdsmodel::to_tdate(end), JPMCDS_LINEAR_INTERP, nullptr,
+                                      &fwd_df),
+            SUCCESS);
+  EXPECT_TRUE(std::isnan(fwd_df)) << "inf / inf";
+
+  double fwd = 0.0;
+  EXPECT_EQ(JpmcdsZCForwardRate(pair.ref.zc, cdsmodel::to_tdate(start), cdsmodel::to_tdate(end),
+                                JPMCDS_SIMPLE_BASIS, JPMCDS_ACT_365F, JPMCDS_LINEAR_INTERP, nullptr,
+                                &fwd),
+            SUCCESS)
+      << "a NaN discount factor walked through `if (discount <= 0.0)`";
+  EXPECT_TRUE(std::isnan(fwd)) << "and came back out as a NaN rate, reported as success";
+
+  // Upstream's own conversion has the same blind guard, independent of the
+  // curve: this is why the port fixed it there rather than at each caller.
+  double direct = 0.0;
+  EXPECT_EQ(JpmcdsDiscountToRate(std::numeric_limits<double>::quiet_NaN(),
+                                 cdsmodel::to_tdate(start), cdsmodel::to_tdate(end),
+                                 JPMCDS_ACT_365F, JPMCDS_SIMPLE_BASIS, &direct),
+            SUCCESS);
+  EXPECT_TRUE(std::isnan(direct));
+  EXPECT_FALSE(cdsmodel::discount_to_rate(std::numeric_limits<double>::quiet_NaN(), start, end,
+                                          cdsmodel::DayCount::Act365Fixed, 0)
+                   .has_value())
+      << "the port refuses it at the conversion, so no caller can leak a NaN";
+
+  // The port refuses the whole chain, while still agreeing on the infinities
+  // that produced it.
+  const std::optional<double> ported_start =
+      pair.port->discount_factor(start, cdsmodel::InterpType::Linear);
+  ASSERT_TRUE(ported_start.has_value());
+  EXPECT_TRUE(std::isinf(*ported_start)) << "the port overflows to the same infinity";
+  EXPECT_FALSE(
+      pair.port->forward_discount_factor(start, end, cdsmodel::InterpType::Linear).has_value());
+  EXPECT_FALSE(pair.port
+                   ->forward_rate(start, end, 0, cdsmodel::DayCount::Act365Fixed,
+                                  cdsmodel::InterpType::Linear)
+                   .has_value());
 }
 
 } // namespace

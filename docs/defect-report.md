@@ -1325,3 +1325,127 @@ Pinned both ways: a test asserts the two paths agree for every rate inside the
 boundary, and that nothing infinite can be stored. `ZeroCurve::create` would
 also refuse `rate <= -basis` downstream (that was PORT-11), so the curve is
 protected twice over.
+
+## UPSTREAM-18 — An error that is logged, then reported as success
+
+**Location:** `lib/src/zcall.c`, `JpmcdsZCFwdDiscountFactor`.
+**Severity:** Medium. A fabricated answer returned with a success status, on a
+path the function has already identified as broken.
+
+### Mechanism
+
+```c
+*discount = 1.0;
+if (discount1<=0.0)                 /* bad discount factor */
+{
+    JpmcdsErrMsg("JpmcdsZCFwdDiscountFactor: bad discount at start of fwd\n");
+}
+else
+{
+    *discount = discount2 / discount1;
+}
+
+return SUCCESS;
+```
+
+There is no missing error channel here. The function returns `int`, every
+caller checks it, and the condition is detected well enough to write a message
+about. The status simply does not match what the function found.
+
+And 1.0 is the worst available stand-in: a forward discount factor of 1.0 means
+*no discounting over this period*, so `JpmcdsZCForwardRate` converts it to a
+forward rate of exactly **zero**.
+
+### Evidence
+
+Reachable by underflow. Continuous basis, a 30-year point, sweeping the rate:
+
+```
+rate=20   df1=1.70976e-261  fwd=2.06115e-09  fwd rate=4.85165e+08
+rate=23   df1=1.31182e-300  fwd=1.02619e-10  fwd rate=9.7448e+09
+rate=24   df1=1.20094e-313  fwd=4.11398e-11  fwd rate=2.43073e+10   <- subnormal
+rate=25   df1=0             fwd=1            fwd rate=0             <- fabricated
+rate=30   df1=0             fwd=1            fwd rate=0             <- fabricated
+```
+
+Reproduce with `./build/debug/defect_evidence u18`.
+
+Note the direction of travel. As the input deteriorates the output stops
+*looking* wrong: 2.4e10 is visibly nonsense and any sanity check would catch
+it, 0 is not. The failure mode improves in appearance exactly as the situation
+gets worse.
+
+The defect is basis-specific. Annual compounding never reaches it — `(1+r)^-t`
+decays polynomially in `r`, so even a rate of 10,000% over 30 years gives
+`6.7e-61`, nowhere near underflow. Continuous compounding decays exponentially
+and crosses the cliff at a rate of about 24 over 30 years.
+
+A 2500% continuous rate is not a market quote. It is what a diverged bootstrap
+produces — precisely the moment a caller needs the failure reported rather
+than smoothed over.
+
+### In the port
+
+**Cannot occur.** `forward_discount_factor` returns nullopt where upstream
+fabricates. The underflow itself is reproduced exactly — the port returns the
+same zero discount factor, because that part is arithmetic and not a defect;
+only the fabricated forward is refused.
+
+## UPSTREAM-19 — The guard against a bad discount factor cannot see NaN
+
+**Location:** `lib/src/zcall.c`, `JpmcdsZCForwardRate`; and
+`lib/src/cfinanci.cpp`, `JpmcdsDiscountToRate`.
+**Severity:** Medium. A NaN rate returned as success.
+
+### Mechanism
+
+```c
+if (discount<=0.0)                  /* bad discount factor */
+{
+    JpmcdsErrMsg("JpmcdsZCForwardRate: bad discount for forward\n");
+    return FAILURE;
+}
+```
+
+`NaN <= 0.0` is false. The one check whose entire job is to stop an unusable
+discount factor is written as the one comparison every NaN passes. The NaN goes
+into `JpmcdsDiscountToRate`, which guards the same way — `if (discount <= 0.0)`
+— and comes back out as a NaN rate with a SUCCESS status.
+
+### Where the NaN comes from, and why that matters
+
+Continuous basis, a 30-year horizon, a large **negative** rate overflows the
+discount factor:
+
+```
+rate=-20   df1=5.84877e+260  df2=2.83762e+269  fwd=4.85165e+08  rate=-1
+rate=-23   df1=7.62298e+299  df2=inf           fwd=inf          rate=-1
+rate=-24   df1=inf           df2=inf           fwd=nan          rate=nan
+rate=-100  df1=inf           df2=inf           fwd=nan          rate=nan
+```
+
+Reproduce with `./build/debug/defect_evidence u19`.
+
+Both discount factors are legitimately infinite. That is the same overflow
+UPSTREAM-15 concluded is a **value** and not a finding, since the answer really
+is that large, and the port returns the same infinities. The defect is
+downstream of it: the ratio of two infinities is indeterminate, and nothing
+stops the result.
+
+So the lineage is UPSTREAM-15's accepted infinity feeding UPSTREAM-19's blind
+guard. A correct value flows into a check that cannot represent what happens
+when two of them are combined — the same relationship UPSTREAM-9 has with
+UPSTREAM-10, where one supplies the bad input and the other fails to contain
+it.
+
+### In the port
+
+**Cannot occur.** `forward_discount_factor` rejects any non-finite result, and
+`discount_to_rate` was tightened to `!(discount > 0.0) || !std::isfinite(...)`
+— upstream's guard written so that it means what it was for.
+
+Fixed at the conversion rather than at each caller, because a NaN discount
+factor is not a rate no matter who asks. The tier-1 property is the general
+form: across every basis, day count and rate in the sweep, **no evaluation
+returns NaN**. Infinity is still permitted, since UPSTREAM-15 settled that it
+is a value.
