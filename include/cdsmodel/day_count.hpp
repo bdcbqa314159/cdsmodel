@@ -42,6 +42,9 @@ inline constexpr DayCount kActAct = DayCount::Act365;
   return static_cast<long>(dcc);
 }
 
+/// The day count for an upstream code, or nullopt if there is none. Replaces
+/// `JpmcdsDayCountValid` -- upstream returns a status and the port returns the
+/// value, so validity and conversion are one step rather than two.
 [[nodiscard]] constexpr std::optional<DayCount> from_upstream_code(long code) noexcept {
   switch (code) {
   case 1:

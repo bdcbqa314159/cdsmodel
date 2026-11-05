@@ -3226,3 +3226,111 @@ a narrowed sweep and a test that silently stops testing.**
 needed. `cds_reference` now exposes both directories, with a comment saying
 why. Reaching into a private header is exactly what a differential test is for;
 the alternative is testing the type through its users, which tests them instead.
+
+## Decision 30 — The script was wrong, and it nearly cost a slice
+
+`tools/port_order.py` said `zr2coup.c` was a leaf. I started reading it to port
+it, and it needs three `tcurve.c` functions — `JpmcdsDiscountDate`,
+`JpmcdsCashFlowPV`, `JpmcdsCurveFirstDate` — none of which is ported.
+
+The script was written last slice specifically to stop me choosing an
+unreachable file, and it chose one. Worth being precise about why, because the
+flaw is one I have now made twice in different forms.
+
+### File-level claiming is not function-level portedness
+
+The script asked: for each `Jpmcds*` symbol this file references, which object
+file defines it, and does some port header claim that file? `tcurve.c` is
+claimed — `zero_curve.hpp` says *"Port of upstream cxzerocurve.c + tcurve.c"* —
+so every function in `tcurve.c` counted as done.
+
+But a header claiming a file does not mean every function in it is ported.
+`zero_curve.hpp` covers nine of `tcurve.c`'s functions and not the other
+eight, which is exactly what my own progress measurement reported two sessions
+ago: *"26 of the 154 functions in claimed files are never named in any port
+header"*. I had the number and then wrote a script that assumed it was zero.
+
+The fix is to ask the question at function level: is *this symbol* named in some
+header's provenance clause? That is the same data the progress measurement used,
+so the script now agrees with it.
+
+### Over-report rather than under-report
+
+Switching to function level immediately over-reported. It called `JpmcdsFreeCFL`
+and `JpmcdsFormatDate` blockers, which they cannot be — the port replaces
+allocation with `std::vector` and error strings with `std::optional`, so there
+is nothing to port. Those are now a named `STRUCTURAL` set with the reason
+given, the same shape as the existing out-of-scope file list.
+
+It also missed `JpmcdsBSearchLong`, which `bsearch.hpp` does cover — under the
+words *"Equivalent to upstream"* rather than *"Replaces"*. Both phrasings are
+in use in this codebase, so the script accepts both rather than my rewording
+thirty headers to match a regex.
+
+The remaining over-reports are left deliberately, and the docstring says so: a
+reported blocker is a **ceiling**. It can mean the port already covers that
+function under another name and the header never said so. The fix for a false
+positive is to make the header claim it — which is the provenance mechanism
+`verify.py` already enforces — not to special-case it in the script.
+Over-reporting costs a minute of checking; under-reporting costs a slice.
+
+### Four claims the port had earned and never made
+
+Resolving the false positives turned up four functions the port genuinely
+replaces without saying so:
+
+- `bad_day.hpp`'s `adjust` also replaces `JpmcdsBusinessDay`, upstream's
+  file-based wrapper — the only part not ported is the holiday-file lookup.
+- `calendar.hpp`'s `is_business_day` replaces `JpmcdsIsBusinessDay` and
+  `JpmcdsHolidayListIsBusinessDay`. Upstream returns a status plus a `TBoolean`
+  out-param; a predicate cannot fail once the calendar exists, which is the
+  point of validating it at construction.
+- `date_interval.hpp`'s `make_date_interval` replaces
+  `JpmcdsMakeDateInterval`.
+- `day_count.hpp`'s `from_upstream_code` replaces `JpmcdsDayCountValid` —
+  upstream returns a status, the port returns the value, so validity and
+  conversion are one step rather than two.
+
+And one deliberate non-port, now recorded as such rather than left as an
+omission: `JpmcdsBSearchCheckOrder` exists only to toggle the mutable global
+that caused UPSTREAM-13. A function whose entire purpose is to mutate
+process-wide state has nothing to replace it with.
+
+That is the part worth keeping. **An unstated claim and a missing port look
+identical from outside**, and the only reason these four were visible at all is
+that a tool started reading the claims instead of a person remembering them.
+
+### What the corrected order actually says
+
+```
+  fltrate         47 lines   *** leaf ***
+  linterpc        93 lines   *** leaf ***
+  zcswutil       169 lines   *** leaf ***
+  cxbsearch      180 lines   *** leaf ***
+  cx             230 lines   *** leaf ***
+  interpc        572 lines   *** leaf ***
+  zr2fwd          64 lines   blocked by 1: tcurve:JpmcdsDiscountDate
+  zr2coup        231 lines   blocked by 3: tcurve:CashFlowPV, CurveFirstDate, DiscountDate
+  schedule       832 lines   blocked by 1: busday:JpmcdsDateFromBusDaysOffset
+  streamcf      1100 lines   blocked by 4: schedule, zr2coup, fltrate, zr2fwd
+  zcswap         940 lines   blocked by 5: streamcf, zr2coup, zcswutil, tcurve:CashFlowPV, schedule
+```
+
+`interpc.c` is the real next step, not `zr2coup`. `JpmcdsDiscountDate` needs
+`JpmcdsInterpRate`, which lives there — and `interpc.c` is now a leaf precisely
+because the `JpmcdsBSearchCheckOrder` non-port got written down.
+
+Also worth noting what `JpmcdsDiscountDate` is not: `ZeroCurve::zero_price`
+already replaces `JpmcdsZeroPrice`, and the two are different functions.
+`JpmcdsZeroPrice` hardcodes continuous compounding on ACT/365F;
+`JpmcdsDiscountDate` honours the curve's own basis and day count and respects
+an interpolation type. I checked that before assuming either was redundant,
+which is the habit that found the other four.
+
+### And a clean rebuild found two warnings an incremental one had hidden
+
+`stub_differential_test.cpp` passed a string literal where upstream wants
+`char *`, twice. The incremental build never recompiled that file after the
+flag change that surfaced it, so CI had been green on a tree that warns.
+Zero warnings again, and a reminder that `cmake --build` is not a verification
+step — a clean configure is.

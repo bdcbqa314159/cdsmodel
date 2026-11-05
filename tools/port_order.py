@@ -6,9 +6,18 @@ before choosing the next module:
 
     python3 tools/port_order.py
 
-A file is a LEAF when every Jpmcds* symbol its source references is defined
-either in itself, in a file a port header already claims, or in one of the
-files the port deliberately does not reproduce.
+A file is a LEAF when every Jpmcds* symbol its source references is either
+defined in itself, named in some port header's "Replaces ..." clause, in a file
+the port does not reproduce at all, or in the STRUCTURAL set below.
+
+Reported blockers are a CEILING, not a floor: a `file:function` blocker can
+also mean the port already covers that function under a different name and the
+header simply never said so. The fix for a false positive is to make the header
+claim it -- which is the provenance mechanism verify.py already enforces --
+rather than to special-case it here. Over-reporting costs a minute of checking;
+under-reporting costs a wasted slice, which is why this script is function-level
+at all: the file-level version called zr2coup a leaf when it needs three
+unported tcurve.c functions.
 
 Why the symbol table and not a regex over the sources: a regex for function
 definitions undercounted three files in a row -- one function in zcall.c, two
@@ -28,13 +37,46 @@ for line in out.splitlines():
     if m: owner[m.group(2)] = re.sub(r"\.(c|cpp)$","",m.group(1))
 
 OUT_OF_SCOPE = {"cerror","lscanf","lprintf","cfileio","strutil","cmemory","version"}
+
+# Functions the port replaces STRUCTURALLY rather than one-for-one, so they can
+# never block a file. Allocation and lifetime become std::vector and value
+# semantics; error text becomes std::optional, so there is nothing to format.
+# Listed by category rather than per function, because the decision was
+# categorical -- see the headers' "no port needed" notes.
+STRUCTURAL = {
+    # allocation and lifetime
+    "JpmcdsFreeCFL", "JpmcdsNewEmptyCFL", "JpmcdsFreeTCurve", "JpmcdsNewTCurve",
+    "JpmcdsCopyCurve", "JpmcdsFreeDateList", "JpmcdsNewEmptyDateList",
+    "JpmcdsCopyDateList", "JpmcdsZCFree", "JpmcdsZCMake", "JpmcdsSwapDatesFree",
+    "JpmcdsSwapDatesNewEmpty", "JpmcdsFreeHoliday", "JpmcdsHolidayListDelete",
+    "JpmcdsFreeCouponDateList", "JpmcdsFreeTStreamFixed", "JpmcdsFreeTStreamFloat",
+    # error reporting
+    "JpmcdsErrMsg", "JpmcdsErrMsgFailure", "JpmcdsFormatDate",
+    "JpmcdsFormatDayCountConv", "JpmcdsFormatDateInterval",
+    # mutable global state, deliberately not reproduced -- see UPSTREAM-13
+    "JpmcdsBSearchCheckOrder",
+}
 claimed = set()
+ported_funcs = set()
 for h in (ROOT/"include"/"cdsmodel").glob("*.hpp"):
-    head = "".join(h.open(encoding="utf-8").readlines()[:8])
+    text = h.read_text(encoding="utf-8")
+    head = "".join(text.splitlines(keepends=True)[:8])
     m = re.search(r"Port of upstream ([a-z0-9_.+ ]+)", head)
     if m:
         for n in re.findall(r"[a-z0-9_]+(?:\.c|\.cpp|\.inc)", m.group(1)):
             claimed.add(re.sub(r"\.(c|cpp|inc)$","",n))
+    # FUNCTION level, which is what actually decides whether a file can be
+    # ported. The first version of this script only tracked which FILES a port
+    # header claimed, and called zr2coup a leaf when it needs three unported
+    # tcurve.c functions -- a header claiming a file does not mean every
+    # function in it is done. Only names inside a "Replaces ..." clause count,
+    # so prose naming a function as missing is never miscounted as present.
+    # Two phrasings are in use: "Replaces X" and "Equivalent to upstream X".
+    # Both are provenance claims, and only counting the first undercounted
+    # bsearch.hpp, which covers JpmcdsBSearchLong under the second.
+    for clause in re.findall(r"(?:Replaces|Equivalent to)\b(.{0,400}?)(?:\.\s|\.$)",
+                             text, re.S):
+        ported_funcs.update(re.findall(r"Jpmcds\w+", clause))
 
 remaining = []
 for src in sorted(UP.glob("*.c")) + sorted(UP.glob("*.cpp")):
@@ -45,8 +87,10 @@ for src in sorted(UP.glob("*.c")) + sorted(UP.glob("*.cpp")):
     blockers = collections.Counter()
     for f in calls:
         o = owner[f]
-        if o != stem and o not in claimed and o not in OUT_OF_SCOPE:
-            blockers[o] += 1
+        if o == stem or o in OUT_OF_SCOPE or f in ported_funcs or f in STRUCTURAL:
+            continue
+        # The file may be claimed while this particular function is not.
+        blockers[o if o not in claimed else f"{o}:{f}"] += 1
     remaining.append((stem, sum(1 for _ in src.open(errors="replace")), blockers))
 
 print("REMAINING IN-SCOPE FILES, by how much is in their way:")

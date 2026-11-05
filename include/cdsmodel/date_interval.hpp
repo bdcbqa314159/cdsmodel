@@ -73,6 +73,8 @@ namespace detail {
 ///
 /// Returns nullopt for the period types upstream accepts but cannot advance
 /// by, as well as for genuinely invalid characters.
+/// Build an interval from a count and a unit character. Replaces
+/// `JpmcdsMakeDateInterval`.
 [[nodiscard]] constexpr std::optional<DateInterval> make_date_interval(int periods,
                                                                        char period_type) noexcept {
   const char t = (period_type >= 'a' && period_type <= 'z')

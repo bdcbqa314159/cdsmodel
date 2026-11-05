@@ -190,7 +190,7 @@ TEST_F(StubDifferential, Upstream_TheSplitValidatesOnlyOneOfItsTwoOutputs) {
         EXPECT_FALSE(got.has_value())
             << where << ": the port refuses a convention it cannot represent";
         // And upstream's own validator disagrees with upstream's own split.
-        EXPECT_EQ(JpmcdsBadDayConvValid("test", conv), FAILURE) << where;
+        EXPECT_EQ(JpmcdsBadDayConvValid(const_cast<char *>("test"), conv), FAILURE) << where;
       }
     } else {
       EXPECT_FALSE(got.has_value()) << where;
@@ -209,7 +209,7 @@ TEST_F(StubDifferential, AnUnvalidatedConventionStillFailsAtFirstUseWhateverTheD
   const cdsmodel::Date monday = d(2024, 1, 8);
   const cdsmodel::Date saturday = d(2024, 1, 6);
   for (const long conv : {long{'A'}, 0L, 255L, long{'f'}}) {
-    ASSERT_EQ(JpmcdsBadDayConvValid("test", conv), FAILURE) << conv;
+    ASSERT_EQ(JpmcdsBadDayConvValid(const_cast<char *>("test"), conv), FAILURE) << conv;
     for (const cdsmodel::Date date : {monday, saturday}) {
       TDate out = 0;
       EXPECT_EQ(JpmcdsBusinessDay(cdsmodel::to_tdate(date), conv, const_cast<char *>("NONE"), &out),
