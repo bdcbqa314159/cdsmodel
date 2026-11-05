@@ -23,12 +23,21 @@
 // That invariant is why the building functions cannot be split from each
 // other, and it is where both defects in this file live.
 //
-// This slice stops at the boundary between BUILDING a curve and EVALUATING
-// one. `ZCInterpolate`, `ZCDiscountFactor`, `ZCPresentValue`,
-// `ZCMoneyMarketRate`, `ZCForwardRate`, `ZCFwdDiscountFactor` and
-// `ZCAddMoneyMarket` only read a finished curve and are the next slice;
+// Evaluation came in a second slice, and is below: `ZCInterpolate`,
+// `ZCDiscountFactor`, `ZCPresentValue`, `ZCMoneyMarketRate`, `ZCForwardRate`,
+// `ZCFwdDiscountFactor`, plus `ZCAddMoneyMarket`, which belongs to building
+// but is expressed in terms of the evaluation side's basis conventions.
 // `ZCAddCashFlowList`, `ZCAddCFLPoints` and `JpmcdsJpmcdsZCPresentValueCFL`
-// need cashflow.c and are the one after.
+// need cashflow.c and are the next slice.
+//
+// One thing the evaluation half reveals about the building half: the cached
+// `discount[]` array is never read by any function here. Every evaluation
+// path recomputes the discount factor from the rate. Upstream reads the cache
+// in exactly one place -- `JpmcdsJpmcdsZCPresentValueCFL`, which is in the
+// slice after this -- so within this file it is write-mostly state. That is
+// also how UPSTREAM-17's stored infinity escapes: the cash-flow present value
+// reads `zc->discount[j]` directly, without passing back through the
+// computation that would have refused it.
 
 #include <cdsmodel/bsearch.hpp>
 #include <cdsmodel/date.hpp>
@@ -40,6 +49,7 @@
 #include <cmath>
 #include <cstddef>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <vector>
 
@@ -67,6 +77,24 @@ namespace cdsmodel {
 [[nodiscard]] constexpr bool builder_basis_valid(long basis) noexcept {
   return basis >= 1 && basis <= 5001;
 }
+
+/// Upstream's interpolation types, as the two values a ZCurve supports.
+///
+/// ```c
+/// #define JPMCDS_LINEAR_INTERP     0L
+/// #define JPMCDS_FLAT_FORWARDS   124L
+/// ```
+///
+/// `JpmcdsZCInterpolate` switches on a `long` and rejects anything else, so
+/// these are the whole domain and an enum loses nothing. Distinct from
+/// `interpolation.hpp`'s `Metric`, which selects how a gap between dates is
+/// MEASURED; this selects what is interpolated -- the rate itself, or the
+/// forward implied by it.
+///
+/// `FlatForwards` here is NOT the same code as `interpc.c`'s
+/// `InterpRateFlatFwds`. The two are independent implementations of the same
+/// idea on two different curve types.
+enum class InterpType { Linear, FlatForwards };
 
 /// A curve under construction: a rate and its discount factor at each date.
 ///
@@ -169,7 +197,7 @@ public:
   ///
   /// ```
   /// rate         ZCComputeDiscount          JpmcdsRateToDiscount
-  /// -0.9999999   1.0923357953681824e+35     1.0923357953681824e+35
+  /// -0.9999999   1.0923357970930543e+56     1.0923357953681824e+35
   /// -1.0         inf                        FAILURE
   /// -1.5         FAILURE                    FAILURE
   /// ```
@@ -178,7 +206,7 @@ public:
   ///
   /// ```
   /// JpmcdsZCAddRate(curve, date, -1.0) -> SUCCESS
-  ///   stored: date=156324 rate=-1 discount=inf
+  ///   stored: date=157419 rate=-1 discount=inf
   ///   JpmcdsZCDiscountFactor at that date -> SUCCESS  inf
   /// ```
   ///
@@ -406,7 +434,335 @@ public:
     return builder;
   }
 
+  // =====================================================================
+  // EVALUATION -- reading a curve rather than building one.
+  // =====================================================================
+
+  /// Add a run of money-market instruments. Replaces `JpmcdsZCAddMoneyMarket`.
+  ///
+  /// Money-market quotes are simple-interest rates, which a builder cannot
+  /// hold -- `builder_basis_valid` rejects basis 0 -- so each one is converted
+  /// into the curve's own terms on the way in. That is the whole function:
+  /// `add_general_rate` with the simple basis.
+  ///
+  /// Upstream takes `dates[]` and `rates[]` as parallel arrays and indexes
+  /// them together; one span of `RatePoint` here, for the same reason the
+  /// points themselves are one vector.
+  ///
+  /// Upstream returns on the first failure, leaving the curve holding every
+  /// instrument before it. That is kept: a partial curve is the caller's to
+  /// discard, and unwinding would be a new behaviour rather than a port. It is
+  /// NOT the partial mutation of UPSTREAM-16 -- there, a single call reported
+  /// failure after committing its own point; here each committed point
+  /// genuinely succeeded.
+  [[nodiscard]] bool add_money_market(std::span<const RatePoint> quotes, DayCount day_count) {
+    for (const RatePoint &quote : quotes) {
+      if (!add_general_rate(quote.date, quote.rate, static_cast<long>(kSimpleBasis), day_count)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// The interpolated zero rate at a date. Replaces `JpmcdsZCInterpolate`.
+  ///
+  /// Four behaviours before any interpolation happens, all upstream's:
+  ///
+  ///  * **flat extrapolation backwards.** A date at or before the first point
+  ///    returns the first rate unchanged. Upstream's comment gives the reason:
+  ///    *"so that swaps which have payments before the beginning of the stub
+  ///    zero curve will still value to par"*. Forward extrapolation is NOT
+  ///    flat -- the bracket for a late date is the last pair, and the linear
+  ///    branch extends that slope indefinitely.
+  ///  * **the value date is nudged forward a day.** `date == value_date` would
+  ///    be a rate over no time, so upstream takes the next day instead. This
+  ///    is only reachable when the curve has a point before its own value
+  ///    date, since otherwise the flat-extrapolation branch has already
+  ///    returned.
+  ///  * **an exact hit on either bracket end** returns that rate without
+  ///    interpolating, so the result at a stored date is exactly the stored
+  ///    rate rather than an interpolation that merely ought to reproduce it.
+  ///  * **the UNCHECKED binary search.** Upstream calls
+  ///    `JpmcdsBSearchLongFast`, so the sorted precondition is the type's
+  ///    invariant, not something re-verified per call. Here the builder keeps
+  ///    the dates strictly increasing, so `bracket`'s walk past a run of equal
+  ///    values is unreachable from this type.
+  ///
+  /// ## The day count has no effect on linear interpolation
+  ///
+  /// Upstream computes the day-count metric function and then never uses it:
+  ///
+  /// ```c
+  /// TMetricDoubleFunc metricFP;   /* day counting metric function */
+  /// ...
+  /// metricFP = JpmcdsDayCountToMetricFunc(zc->dayCountConv);   /* never read */
+  /// ```
+  ///
+  /// Both branches measure the gap between dates in raw days. `metricFP` and
+  /// `yearsFromBaseDate` (also computed, also never read) are dead locals.
+  ///
+  /// The port interpolates in raw days too, because that is the behaviour, and
+  /// the dead assignment is only evidence of what was once intended. It is
+  /// worth recording what the intent would have changed: `JpmcdsLinInterpCurve`
+  /// in linterpc.c performs the same linear interpolation on the same kind of
+  /// curve and DOES pass the metric through, so for a 30/360 curve the two
+  /// disagree. Not filed as a defect -- nothing says the two functions are
+  /// meant to agree, and a raw-day interpolation of zero rates is a defensible
+  /// convention on its own. Filed as an observation, because a dead metric
+  /// lookup beside a live raw-day calculation is the kind of thing that looks
+  /// like an oversight to the next reader too.
+  ///
+  /// Returns nullopt for an empty curve or an unknown interpolation type.
+  [[nodiscard]] std::optional<double> interpolate(Date date, InterpType interp) const {
+    if (points_.empty()) {
+      return std::nullopt;
+    }
+    if (date <= points_.front().date) {
+      return points_.front().rate;
+    }
+    if (date == value_date_) {
+      // Upstream's `++date`: "cannot calculate rate for value date, so get
+      // the value at the next date which is the next best thing".
+      date = from_tdate(to_tdate(date) + 1);
+    }
+
+    const std::optional<Bracket> at = bracket_dates(date);
+    if (!at) {
+      return std::nullopt;
+    }
+    const Point &lo = points_[at->lo];
+    const Point &hi = points_[at->hi];
+    if (lo.date == date) {
+      return lo.rate;
+    }
+    if (hi.date == date) {
+      return hi.rate;
+    }
+
+    const TDate hi_lo = to_tdate(hi.date) - to_tdate(lo.date);
+    const TDate dt_lo = to_tdate(date) - to_tdate(lo.date);
+
+    switch (interp) {
+    case InterpType::Linear:
+      if (hi_lo == 0) {
+        return lo.rate;
+      }
+      // Divide then multiply, in upstream's order. Reassociating this is a
+      // one-ULP change, which is exactly how PORT-10 happened.
+      return lo.rate +
+             ((hi.rate - lo.rate) / static_cast<double>(hi_lo)) * static_cast<double>(dt_lo);
+
+    case InterpType::FlatForwards: {
+      if (hi_lo == 0) {
+        return lo.rate;
+      }
+      // Recomputed from the rates, NOT read from the cached discounts --
+      // upstream does the same, which is why the cache is write-mostly.
+      const std::optional<double> disc_lo = compute_discount(lo.date, lo.rate);
+      const std::optional<double> disc_hi = compute_discount(hi.date, hi.rate);
+      if (!disc_lo || !disc_hi || *disc_lo == 0.0) {
+        return std::nullopt;
+      }
+      const double disc_date =
+          *disc_lo *
+          std::pow(*disc_hi / *disc_lo, static_cast<double>(dt_lo) / static_cast<double>(hi_lo));
+      return discount_to_rate(disc_date, value_date_, date, day_count_, basis_);
+    }
+    }
+    return std::nullopt;
+  }
+
+  /// The discount factor to a date. Replaces `JpmcdsZCDiscountFactor`.
+  ///
+  /// The value date discounts by nothing and short-circuits before any
+  /// interpolation, so it needs no points at all -- an empty curve still has
+  /// a discount factor of 1.0 at its own value date, which is upstream's
+  /// behaviour and is defensible.
+  [[nodiscard]] std::optional<double> discount_factor(Date date, InterpType interp) const {
+    if (date == value_date_) {
+      return 1.0;
+    }
+    const std::optional<double> rate = interpolate(date, interp);
+    if (!rate) {
+      return std::nullopt;
+    }
+    return compute_discount(date, *rate);
+  }
+
+  /// A payment discounted to the value date. Replaces `JpmcdsZCPresentValue`.
+  [[nodiscard]] std::optional<double> present_value(double price, Date date,
+                                                    InterpType interp) const {
+    const std::optional<double> discount = discount_factor(date, interp);
+    if (!discount) {
+      return std::nullopt;
+    }
+    return price * *discount;
+  }
+
+  /// The discount factor for a forward period. Replaces
+  /// `JpmcdsZCFwdDiscountFactor`.
+  ///
+  /// ## UPSTREAM-18 -- an error that is logged, then reported as success
+  ///
+  /// Upstream detects a non-positive discount factor at the start of the
+  /// forward, writes the error message, and returns SUCCESS anyway with a
+  /// fabricated answer:
+  ///
+  /// ```c
+  /// *discount = 1.0;
+  /// if (discount1<=0.0)
+  /// {
+  ///     JpmcdsErrMsg("JpmcdsZCFwdDiscountFactor: bad discount at start of fwd\n");
+  /// }
+  /// else
+  /// {
+  ///     *discount = discount2 / discount1;
+  /// }
+  /// return SUCCESS;
+  /// ```
+  ///
+  /// There is no missing error channel here -- the function returns `int` and
+  /// the caller checks it. The status simply does not match what the function
+  /// found. And 1.0 is the worst possible stand-in: it means "no discounting
+  /// over this period", so `forward_rate` converts it to a forward rate of
+  /// exactly **zero**.
+  ///
+  /// Reachable by underflow, and the boundary is sharp. Continuous basis, a
+  /// 30-year point, sweeping the rate:
+  ///
+  /// ```
+  /// rate=20   df1=1.70976e-261  fwd rate=4.85165e+08
+  /// rate=23   df1=1.31182e-300  fwd rate=9.7448e+09
+  /// rate=24   df1=1.20094e-313  fwd rate=2.43073e+10     <- subnormal
+  /// rate=25   df1=0             fwd rate=0               <- fabricated
+  /// rate=30   df1=0             fwd rate=0               <- fabricated
+  /// ```
+  ///
+  /// Note the direction of travel. As the input gets worse the output stops
+  /// looking wrong: 2.4e10 is visibly nonsense and a monitor would catch it,
+  /// 0 is not. The failure mode improves in appearance exactly as the
+  /// situation deteriorates.
+  ///
+  /// A 2500% continuous rate is not a market quote. It is what a diverged
+  /// bootstrap produces, which is precisely when a caller needs the failure
+  /// reported rather than smoothed over.
+  ///
+  /// The port returns nullopt where upstream fabricates, and also where the
+  /// result is not finite -- see UPSTREAM-19 on `forward_rate`.
+  [[nodiscard]] std::optional<double> forward_discount_factor(Date start, Date end,
+                                                              InterpType interp) const {
+    const std::optional<double> at_start = discount_factor(start, interp);
+    const std::optional<double> at_end = discount_factor(end, interp);
+    if (!at_start || !at_end) {
+      return std::nullopt;
+    }
+    if (*at_start <= 0.0) {
+      return std::nullopt; // UPSTREAM-18: upstream returns SUCCESS with 1.0
+    }
+    const double forward = *at_end / *at_start;
+    if (!std::isfinite(forward)) {
+      return std::nullopt; // UPSTREAM-19
+    }
+    return forward;
+  }
+
+  /// The forward rate between two dates, in the requested terms. Replaces
+  /// `JpmcdsZCForwardRate`.
+  ///
+  /// ## UPSTREAM-19 -- the guard against a bad discount factor cannot see NaN
+  ///
+  /// Upstream guards the conversion:
+  ///
+  /// ```c
+  /// if (discount<=0.0)                  /* bad discount factor */
+  /// {
+  ///     JpmcdsErrMsg("JpmcdsZCForwardRate: bad discount for forward\n");
+  ///     return FAILURE;
+  /// }
+  /// ```
+  ///
+  /// `NaN <= 0.0` is false. The one check whose entire job is to stop an
+  /// unusable discount factor is written as the one comparison every NaN
+  /// passes, so a NaN goes straight into `JpmcdsDiscountToRate` -- which
+  /// guards the same way, `if (discount <= 0.0)` -- and comes out as a NaN
+  /// rate reported as success.
+  ///
+  /// How the NaN arises matters, because it is not a defect. Continuous basis,
+  /// a 30-year horizon, a large NEGATIVE rate overflows the discount factor:
+  ///
+  /// ```
+  /// rate=-20   df1=5.84877e+260  df2=2.83762e+269  fwd=4.85165e+08  rate=-1
+  /// rate=-23   df1=7.62298e+299  df2=inf           fwd=inf          rate=-1
+  /// rate=-24   df1=inf           df2=inf           fwd=nan          rate=nan
+  /// rate=-100  df1=inf           df2=inf           fwd=nan          rate=nan
+  /// ```
+  ///
+  /// Both discount factors are legitimately infinite -- that is the same
+  /// overflow UPSTREAM-15 concluded is a VALUE and not a finding, since the
+  /// answer really is that large. The defect is downstream: the ratio of two
+  /// infinities is indeterminate, and nothing stops it.
+  ///
+  /// So the lineage is UPSTREAM-15's accepted infinity, UPSTREAM-19's blind
+  /// guard: a correct value flows into a check that cannot represent the
+  /// result of combining two of them.
+  ///
+  /// The port rejects any non-finite forward discount factor in
+  /// `forward_discount_factor`, which is upstream's guard written as
+  /// `isfinite` instead of `> 0.0`. `discount_to_rate` was tightened the same
+  /// way for the same reason -- a NaN discount factor is not a rate, from any
+  /// caller.
+  [[nodiscard]] std::optional<double> forward_rate(Date start, Date end, long basis,
+                                                   DayCount day_count, InterpType interp) const {
+    const std::optional<double> discount = forward_discount_factor(start, end, interp);
+    if (!discount || *discount <= 0.0) {
+      return std::nullopt;
+    }
+    return discount_to_rate(*discount, start, end, day_count, basis);
+  }
+
+  /// The money-market rate to a date: a simple-interest forward from the value
+  /// date. Replaces `JpmcdsZCMoneyMarketRate`, which is one call through to
+  /// `forward_rate` with the simple basis.
+  [[nodiscard]] std::optional<double> money_market_rate(Date date, DayCount day_count,
+                                                        InterpType interp) const {
+    return forward_rate(value_date_, date, static_cast<long>(kSimpleBasis), day_count, interp);
+  }
+
 private:
+  /// `bracket` over the point dates.
+  ///
+  /// `bracket` takes a span of one type; the dates here are a field of a
+  /// struct, and upstream reaches them by striding `sizeof(TRatePt)` through
+  /// memory, which has no span equivalent. Rather than copy the dates out on
+  /// every call -- this sits inside bootstrap inner loops -- the search is
+  /// expressed over the sorted points directly.
+  ///
+  /// That makes two implementations of one thing, which is the mistake
+  /// UPSTREAM-17 is about, so it is not left to inspection: a test sweeps both
+  /// against each other and requires identical brackets.
+  [[nodiscard]] std::optional<Bracket> bracket_dates(Date date) const noexcept {
+    const std::size_t n = points_.size();
+    if (n < 1) {
+      return std::nullopt;
+    }
+    if (n == 1) {
+      return Bracket{0, 0};
+    }
+    if (date <= points_.front().date) {
+      return Bracket{0, 1};
+    }
+    if (date >= points_.back().date) {
+      return Bracket{n - 2, n - 1};
+    }
+    // Strictly increasing by construction, so the first point at or after
+    // `date` has a predecessor and the pair brackets it. Upstream's walk past
+    // a run of equal dates cannot apply to this type.
+    const auto first_at_or_after = std::ranges::lower_bound(points_, date, {}, &Point::date);
+    const std::size_t hi =
+        static_cast<std::size_t>(std::ranges::distance(points_.begin(), first_at_or_after));
+    return Bracket{hi - 1, hi};
+  }
+
   ZeroCurveBuilder(Date value_date, long basis, DayCount day_count)
       : value_date_{value_date}, basis_{basis}, day_count_{day_count} {}
 

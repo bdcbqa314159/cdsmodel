@@ -26,6 +26,7 @@ extern "C" {
 #include "cdate.h"
 #include "cerror.h"
 #include "dateconv.h"
+#include "interp.h"
 #include "ldate.h"
 #include "zcprvt.h"
 }
@@ -181,6 +182,82 @@ int main() {
   }
   std::printf("inline constexpr std::array<BuilderCase, %zu> kBuilderCases{{\n", rows.size());
   for (const std::string &r : rows) {
+    std::printf("%s\n", r.c_str());
+  }
+  std::printf("}};\n\n");
+
+  // ------------------------------------------------------------------
+  // Evaluation: one curve per (basis, day count), each evaluated at a
+  // spread of dates under both interpolation types.
+  // ------------------------------------------------------------------
+  std::printf("/// One evaluation of a seeded curve. `interp` is 0 for linear and 124\n"
+              "/// for flat forwards, upstream's own constants.\n"
+              "struct EvalCase {\n"
+              "  long basis;\n"
+              "  long day_count;\n"
+              "  long interp;\n"
+              "  TDate value_date;\n"
+              "  TDate at;\n"
+              "  bool rate_ok;\n"
+              "  double rate;\n"
+              "  bool discount_ok;\n"
+              "  double discount;\n"
+              "  bool forward_ok;\n"
+              "  double forward;      ///< forward rate, value date to `at`, simple basis\n"
+              "};\n\n");
+
+  const TDate value_date = ymd(2024, 1, 1);
+  const int seed_years[] = {1, 2, 3, 5, 7, 10, 15, 20, 30};
+  const TDate probes[] = {ymd(2020, 1, 1),  ymd(2024, 1, 1), ymd(2025, 1, 1), ymd(2025, 6, 15),
+                          ymd(2027, 2, 28), ymd(2029, 3, 2), ymd(2034, 1, 1), ymd(2039, 7, 1),
+                          ymd(2054, 1, 1),  ymd(2060, 1, 1)};
+  const long bases[] = {1, 2, 4, 12, 365, 5000};
+  const long dccs[] = {JPMCDS_ACT_365F, JPMCDS_ACT_360};
+  const long interps[] = {JPMCDS_LINEAR_INTERP, JPMCDS_FLAT_FORWARDS};
+
+  std::vector<std::string> evals;
+  for (long basis : bases) {
+    for (long dcc : dccs) {
+      ZCurve *zc = JpmcdsZCMake(value_date, 16, basis, dcc);
+      if (zc == nullptr) {
+        continue;
+      }
+      bool seeded = true;
+      for (int years : seed_years) {
+        if (JpmcdsZCAddRate(zc, ymd(2024 + years, 1, 1), 0.02 + 0.004 * years) == FAILURE) {
+          seeded = false;
+          break;
+        }
+      }
+      if (!seeded) {
+        JpmcdsZCFree(zc);
+        continue;
+      }
+      for (long interp : interps) {
+        for (TDate at : probes) {
+          double rate = 0.0;
+          double discount = 0.0;
+          double forward = 0.0;
+          const bool rate_ok = JpmcdsZCInterpolate(zc, at, interp, nullptr, &rate) == SUCCESS;
+          const bool discount_ok =
+              JpmcdsZCDiscountFactor(zc, at, interp, nullptr, &discount) == SUCCESS;
+          const bool forward_ok =
+              JpmcdsZCForwardRate(zc, value_date, at, JPMCDS_SIMPLE_BASIS, JPMCDS_ACT_365F, interp,
+                                  nullptr, &forward) == SUCCESS;
+          char buf[512];
+          std::snprintf(buf, sizeof buf, "    {%ld, %ld, %ld, %ld, %ld, %s, %s, %s, %s, %s, %s},",
+                        basis, dcc, interp, (long)value_date, (long)at, rate_ok ? "true" : "false",
+                        num(rate).c_str(), discount_ok ? "true" : "false", num(discount).c_str(),
+                        forward_ok ? "true" : "false", num(forward).c_str());
+          evals.emplace_back(buf);
+        }
+      }
+      JpmcdsZCFree(zc);
+    }
+  }
+
+  std::printf("inline constexpr std::array<EvalCase, %zu> kEvalCases{{\n", evals.size());
+  for (const std::string &r : evals) {
     std::printf("%s\n", r.c_str());
   }
   std::printf("}};\n\n} // namespace cdsmodel::golden\n");

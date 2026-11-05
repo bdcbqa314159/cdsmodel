@@ -26,9 +26,11 @@
 #include <cdsmodel/version.hpp>
 #include <cdsmodel/zero_curve_builder.hpp>
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -47,6 +49,7 @@ extern "C" {
 #include "dateconv.h"
 #include "defaulted.h"
 #include "dtlist.h"
+#include "interp.h"
 #include "ldate.h"
 #include "lintrp.h"
 #include "macros.h"
@@ -925,6 +928,148 @@ void u17() {
               "another that nothing infinite can be stored.\n");
 }
 
+void u18() {
+  heading("UPSTREAM-18", "an error that is logged, then reported as success");
+  std::printf("zcall.c's JpmcdsZCFwdDiscountFactor:\n\n"
+              "    *discount = 1.0;\n"
+              "    if (discount1<=0.0)                 /* bad discount factor */\n"
+              "    {\n"
+              "        JpmcdsErrMsg(\"...: bad discount at start of fwd\\n\");\n"
+              "    }\n"
+              "    else\n"
+              "    {\n"
+              "        *discount = discount2 / discount1;\n"
+              "    }\n"
+              "    return SUCCESS;\n\n"
+              "No missing error channel: the function returns int, callers check it, and\n"
+              "the condition is detected well enough to write a message about. The status\n"
+              "just does not match what the function found. And 1.0 is the worst possible\n"
+              "stand-in -- it means NO discounting over the period, so the forward rate\n"
+              "comes out as exactly zero.\n\n");
+
+  const TDate value_date = JpmcdsDate(2024, 1, 1);
+  const TDate start = JpmcdsDate(2054, 1, 1);
+  const TDate end = JpmcdsDate(2055, 1, 1);
+  std::printf("Continuous basis, 30y, sweeping the rate:\n\n");
+  std::printf("  %-10s %-16s %-12s %-10s %s\n", "rate", "df(start)", "fwd df", "fwd rate", "");
+  for (const double rate : {20.0, 23.0, 24.0, 25.0, 30.0}) {
+    ZCurve *zc = JpmcdsZCMake(value_date, 8, 5000, JPMCDS_ACT_365F);
+    if (zc == nullptr) {
+      continue;
+    }
+    JpmcdsZCAddRate(zc, start, rate);
+    JpmcdsZCAddRate(zc, end, rate);
+    double df = 0.0;
+    double fwd_df = 0.0;
+    double fwd = 0.0;
+    JpmcdsZCDiscountFactor(zc, start, JPMCDS_LINEAR_INTERP, nullptr, &df);
+    const int rc_fwd_df =
+        JpmcdsZCFwdDiscountFactor(zc, start, end, JPMCDS_LINEAR_INTERP, nullptr, &fwd_df);
+    const int rc_fwd = JpmcdsZCForwardRate(zc, start, end, JPMCDS_SIMPLE_BASIS, JPMCDS_ACT_365F,
+                                           JPMCDS_LINEAR_INTERP, nullptr, &fwd);
+    std::printf("  %-10g %-16g %-12g %-10g %s\n", rate, df, rc_fwd_df == SUCCESS ? fwd_df : -1.0,
+                rc_fwd == SUCCESS ? fwd : -1.0, df <= 0.0 ? "<- fabricated 1.0, rate 0" : "");
+    JpmcdsZCFree(zc);
+  }
+
+  std::printf("\nNote the direction of travel. As the input deteriorates the output\n"
+              "stops LOOKING wrong: 2.4e10 is visibly nonsense and any sanity check\n"
+              "catches it, 0 is not. The failure mode improves in appearance exactly\n"
+              "as the situation gets worse.\n\n"
+              "It is also basis-specific. Annual compounding never reaches it --\n"
+              "(1+r)^-t decays polynomially in r, so 10,000%% over 30y is 6.7e-61,\n"
+              "nowhere near underflow. Continuous decays exponentially.\n\n");
+
+  std::printf("The port, same sweep:\n\n");
+  std::printf("  %-10s %-16s %s\n", "rate", "df(start)", "forward discount factor");
+  for (const double rate : {20.0, 24.0, 25.0, 30.0}) {
+    std::optional<cdsmodel::ZeroCurveBuilder> b = cdsmodel::ZeroCurveBuilder::create(
+        cdsmodel::from_tdate(value_date), 8, 5000, cdsmodel::DayCount::Act365Fixed);
+    if (!b->add_rate(cdsmodel::from_tdate(start), rate) ||
+        !b->add_rate(cdsmodel::from_tdate(end), rate)) {
+      continue;
+    }
+    const std::optional<double> df =
+        b->discount_factor(cdsmodel::from_tdate(start), cdsmodel::InterpType::Linear);
+    const std::optional<double> fwd = b->forward_discount_factor(
+        cdsmodel::from_tdate(start), cdsmodel::from_tdate(end), cdsmodel::InterpType::Linear);
+    char shown[40] = "refused";
+    if (fwd) {
+      std::snprintf(shown, sizeof shown, "%.17g", *fwd);
+    }
+    std::printf("  %-10g %-16g %s\n", rate, df ? *df : -1.0, shown);
+  }
+  std::printf("\nThe underflow is reproduced exactly -- the same zero discount factor,\n"
+              "because that part is arithmetic and not a defect. Only the fabricated\n"
+              "forward is refused.\n");
+}
+
+void u19() {
+  heading("UPSTREAM-19", "the guard against a bad discount factor cannot see NaN");
+  std::printf("zcall.c's JpmcdsZCForwardRate guards the conversion:\n\n"
+              "    if (discount<=0.0)                  /* bad discount factor */\n"
+              "    {\n"
+              "        JpmcdsErrMsg(\"...: bad discount for forward\\n\");\n"
+              "        return FAILURE;\n"
+              "    }\n\n"
+              "NaN <= 0.0 is false. The one check whose entire job is to stop an\n"
+              "unusable discount factor is written as the one comparison every NaN\n"
+              "passes. JpmcdsDiscountToRate guards the same way.\n\n");
+
+  const TDate value_date = JpmcdsDate(2024, 1, 1);
+  const TDate start = JpmcdsDate(2054, 1, 1);
+  const TDate end = JpmcdsDate(2055, 1, 1);
+  std::printf("Continuous basis, 30y, a large NEGATIVE rate overflows the factor:\n\n");
+  std::printf("  %-10s %-16s %-16s %-10s %s\n", "rate", "df(start)", "df(end)", "fwd df",
+              "fwd rate");
+  for (const double rate : {-20.0, -23.0, -24.0, -100.0}) {
+    ZCurve *zc = JpmcdsZCMake(value_date, 8, 5000, JPMCDS_ACT_365F);
+    if (zc == nullptr) {
+      continue;
+    }
+    JpmcdsZCAddRate(zc, start, rate);
+    JpmcdsZCAddRate(zc, end, rate);
+    double df1 = 0.0;
+    double df2 = 0.0;
+    double fwd_df = 0.0;
+    double fwd = 0.0;
+    JpmcdsZCDiscountFactor(zc, start, JPMCDS_LINEAR_INTERP, nullptr, &df1);
+    JpmcdsZCDiscountFactor(zc, end, JPMCDS_LINEAR_INTERP, nullptr, &df2);
+    JpmcdsZCFwdDiscountFactor(zc, start, end, JPMCDS_LINEAR_INTERP, nullptr, &fwd_df);
+    const int rc = JpmcdsZCForwardRate(zc, start, end, JPMCDS_SIMPLE_BASIS, JPMCDS_ACT_365F,
+                                       JPMCDS_LINEAR_INTERP, nullptr, &fwd);
+    std::printf("  %-10g %-16g %-16g %-10g %-10g %s\n", rate, df1, df2, fwd_df, fwd,
+                (rc == SUCCESS && std::isnan(fwd)) ? "<- NaN, reported as SUCCESS" : "");
+    JpmcdsZCFree(zc);
+  }
+
+  std::printf("\nBoth discount factors are legitimately infinite. That is the same\n"
+              "overflow UPSTREAM-15 concluded is a VALUE and not a finding, and the\n"
+              "port returns the same infinities. The defect is downstream: the ratio\n"
+              "of two infinities is indeterminate and nothing stops it.\n\n"
+              "So the lineage is UPSTREAM-15's accepted infinity feeding UPSTREAM-19's\n"
+              "blind guard -- the same relationship UPSTREAM-9 has with UPSTREAM-10,\n"
+              "where one supplies the bad input and the other fails to contain it.\n\n");
+
+  const double nan_value = std::numeric_limits<double>::quiet_NaN();
+  double direct = 0.0;
+  const int rc_direct =
+      JpmcdsDiscountToRate(nan_value, start, end, JPMCDS_ACT_365F, JPMCDS_SIMPLE_BASIS, &direct);
+  std::printf("Straight at the conversion, no curve involved:\n\n"
+              "  JpmcdsDiscountToRate(NaN, ...) -> %s  rate=%g\n",
+              rc_direct == SUCCESS ? "SUCCESS" : "FAILURE", direct);
+  const std::optional<double> ported =
+      cdsmodel::discount_to_rate(nan_value, cdsmodel::from_tdate(start), cdsmodel::from_tdate(end),
+                                 cdsmodel::DayCount::Act365Fixed, 0);
+  std::printf("  port discount_to_rate(NaN, ...) -> %s\n\n", ported ? "SUCCESS (!)" : "refused");
+
+  std::printf("Which is why the port fixed it there rather than at each caller: a NaN\n"
+              "discount factor is not a rate no matter who asks. The guard is written\n"
+              "as isfinite, so it means what it was for, and the tier-1 property is\n"
+              "the general form -- across every basis, day count and rate in the\n"
+              "sweep, no evaluation returns NaN. Infinity is still permitted.\n");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -997,6 +1142,12 @@ int main(int argc, char **argv) {
   }
   if (want("u17")) {
     u17();
+  }
+  if (want("u18")) {
+    u18();
+  }
+  if (want("u19")) {
+    u19();
   }
   return 0;
 }

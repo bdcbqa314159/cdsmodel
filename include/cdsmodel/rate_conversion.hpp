@@ -260,7 +260,13 @@ discount_to_rate_year_frac(double discount, double year_fraction, double basis) 
 ///    zero-length one.
 [[nodiscard]] inline std::optional<double> discount_to_rate(double discount, Date start, Date end,
                                                             DayCount day_count, long basis) {
-  if (discount <= 0.0) {
+  // Upstream's guard is `if (discount <= 0.0) return FAILURE`, which NaN
+  // passes -- every comparison with NaN is false. That is UPSTREAM-19: a NaN
+  // forward discount factor walks through the one check meant to stop it and
+  // comes back out as a NaN rate reported as success. Written as `isfinite`
+  // here, so the guard means what it was for. A NaN discount factor is not a
+  // rate, from any caller; this is the one place that has to know it.
+  if (!(discount > 0.0) || !std::isfinite(discount)) {
     return std::nullopt;
   }
   if (basis == static_cast<long>(kDiscountFactorBasis)) {
