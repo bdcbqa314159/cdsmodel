@@ -1827,3 +1827,114 @@ The behaviour is reproduced and the disagreement is pinned by a test that
 asserts the roll date is inert in the documented case, effective in the
 undocumented one, and that every `roll == start` difference involves a 29
 February start.
+
+## UPSTREAM-25 — A heap buffer overflow on a one-date schedule
+
+**Location:** `lib/src/cashflow.c`, `JpmcdsNewCFLFromDL3`.
+**Severity:** Medium. Out-of-bounds read in both directions and a latent
+out-of-bounds write, reachable only through the public header.
+
+### Mechanism
+
+The function detects a stub by comparing the instrument's dates against the
+grid it was handed:
+
+```c
+frontStub = ( startDate > dates->fArray[0] );
+backStub = ( maturityDate < dates->fArray[numDates-1] );
+```
+
+Neither branch checks that the grid is long enough to have a surrounding
+period. With `numDates == 1` the front branch indexes past the end:
+
+```c
+JpmcdsStubPayment(accrualDates->fArray[0],
+                  accrualDates->fArray[1],      /* index 1 of a 1-element list */
+                  accrualStart,
+                  accrualDates->fArray[1],
+                  rate, couponDayCountConv,
+                  &cfl->fArray[1].fAmount)      /* WRITE past a 1-element array */
+```
+
+and the back branch indexes before it, `accrualDates->fArray[numDates-2]`
+being `fArray[-1]`.
+
+### Evidence
+
+```
+front stub: ERROR: AddressSanitizer: heap-buffer-overflow on address 0x...0f8
+            READ of size 8    #0 JpmcdsNewCFLFromDL3
+            allocated by      #2 JpmcdsNewEmptyDateList
+
+back stub:  ERROR: AddressSanitizer: heap-buffer-overflow on address 0x...0e8
+            READ of size 8    #0 JpmcdsNewCFLFromDL3
+```
+
+Reproduce with `./build/debug/defect_evidence u25 --unsafe`.
+
+Note the two addresses: `...0f8` is past the one-element allocation and
+`...0e8` is before it. Both directions are real.
+
+In the unsanitised build the front case happens to return NULL — the garbage
+it read as `nextCouponDate` failed `JpmcdsStubPayment`'s
+`prevCouponDate >= nextCouponDate` check. **That is luck, not safety.** A
+garbage value on the other side of that comparison lets the function proceed to
+the out-of-bounds *write*, which ASan never gets to report because it aborts on
+the read first.
+
+### Reachability
+
+`JpmcdsMakeCFL` builds its own grid, and `JpmcdsNewDateListExtended` never
+returns a single date together with a stub — it anchors the grid on whichever
+end the stub is not at, so one of the two comparisons is always false. Measured:
+
+```
+stubAtEnd=0: first=154261 last=155722 -> frontStub=1 backStub=0
+stubAtEnd=1: first=154547 last=156008 -> frontStub=0 backStub=1
+```
+
+But `JpmcdsNewCFLFromDL3` is declared in `cashflow.h` and takes the grid as an
+argument, so a caller supplying its own date list reaches it directly. That is
+why this is medium rather than high: unreachable from inside upstream,
+reachable from outside it.
+
+### In the port
+
+**Cannot occur.** The grid arrives as a `std::span`, and a grid shorter than
+two dates is refused when a stub was detected. There is nothing to compute: a
+stub payment needs the period surrounding it, and a one-date grid has none.
+
+The live reproducer is a `DISABLED_` test — ASan aborts the process — which is
+the arrangement UPSTREAM-4, UPSTREAM-9 and UPSTREAM-21 already use.
+
+### A second finding in the same function, not filed
+
+The long-stub coalescing block runs two branches in sequence, and the first
+reassigns the pointer the second reads from:
+
+```c
+if ( frontStub )
+{
+    datesCopy->fArray[0] = dates->fArray[0];
+    memcpy(&datesCopy->fArray[1], &dates->fArray[2], (numDates - 2) * sizeof(TDate));
+    dates = datesCopy;          /* simply overwrite pointer, hiding original */
+    --numDates;
+}
+if (backStub)
+{
+    memcpy(&datesCopy->fArray[0], &dates->fArray[0], (numDates - 2) * sizeof(TDate));
+```
+
+With both stubs present, `dates == datesCopy` by the time the second `memcpy`
+runs, so source and destination are the same pointer. C11 7.24.1p2 makes
+copying between overlapping objects undefined, and identical objects overlap.
+
+Not filed as a defect. The result is correct — five grid dates coalesce to
+three flows, as intended — and no implementation mishandles `memcpy(p, p, n)`.
+Recorded because a compiler entitled to assume `restrict` on those parameters
+would be within its rights to make it stop working.
+
+Worth noting for the harness rather than for upstream: **neither
+AddressSanitizer nor UndefinedBehaviorSanitizer reports it.** The project
+already records that ASan cannot see uninitialised reads; this is a second
+class it cannot see, in the same function where it caught the overflow above.

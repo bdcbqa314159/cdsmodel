@@ -16,6 +16,7 @@
 #include <cdsmodel/calendar.hpp>
 #include <cdsmodel/cash_flow_bootstrap.hpp>
 #include <cdsmodel/cash_flow_list.hpp>
+#include <cdsmodel/cash_flow_schedule.hpp>
 #include <cdsmodel/cds.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_interval.hpp>
@@ -1487,6 +1488,107 @@ void u24() {
               "porting decision.\n");
 }
 
+void u25(bool unsafe) {
+  heading("UPSTREAM-25", "a heap buffer overflow on a one-date schedule");
+  std::printf("cashflow.c's JpmcdsNewCFLFromDL3 detects a stub by comparing the\n"
+              "instrument's dates against the grid it was handed:\n\n"
+              "    frontStub = ( startDate    > dates->fArray[0] );\n"
+              "    backStub  = ( maturityDate < dates->fArray[numDates-1] );\n\n"
+              "Neither branch checks the grid is long enough to HAVE a surrounding\n"
+              "period. With numDates == 1 the front branch indexes past the end:\n\n"
+              "    JpmcdsStubPayment(accrualDates->fArray[0],\n"
+              "                      accrualDates->fArray[1],   /* index 1 of 1 element */\n"
+              "                      accrualStart,\n"
+              "                      accrualDates->fArray[1],\n"
+              "                      rate, couponDayCountConv,\n"
+              "                      &cfl->fArray[1].fAmount)   /* WRITE past the end */\n\n"
+              "and the back branch reads fArray[numDates-2] = fArray[-1], before it.\n\n");
+
+  std::printf("Reachability first. JpmcdsMakeCFL builds its own grid, and\n"
+              "JpmcdsNewDateListExtended anchors on whichever end the stub is NOT\n"
+              "at -- so one of the two comparisons is always false:\n\n");
+  TDateInterval annual;
+  JpmcdsMakeDateInterval(12, 'M', &annual);
+  const TDate start = JpmcdsDate(2024, 2, 20);
+  const TDate maturity = JpmcdsDate(2027, 5, 10);
+  for (const int stub_at_end : {0, 1}) {
+    TDateList *dl = JpmcdsNewDateListExtended(start, maturity, &annual, stub_at_end ? TRUE : FALSE);
+    if (dl == nullptr) {
+      continue;
+    }
+    std::printf("  stubAtEnd=%d: n=%d first=%ld last=%ld -> frontStub=%d backStub=%d\n",
+                stub_at_end, dl->fNumItems, (long)dl->fArray[0],
+                (long)dl->fArray[dl->fNumItems - 1], static_cast<int>(start > dl->fArray[0]),
+                static_cast<int>(maturity < dl->fArray[dl->fNumItems - 1]));
+    JpmcdsFreeDateList(dl);
+  }
+  std::printf("\nBut JpmcdsNewCFLFromDL3 is declared in cashflow.h and takes the grid\n"
+              "as an argument, so a caller supplying its own list reaches it. That is\n"
+              "why this is medium and not high.\n\n");
+
+  if (!unsafe) {
+    std::printf("Measured under AddressSanitizer, each in its own process:\n\n"
+                "  front stub: heap-buffer-overflow on 0x...0f8  (PAST the allocation)\n"
+                "              READ of size 8   #0 JpmcdsNewCFLFromDL3\n"
+                "              allocated by     #2 JpmcdsNewEmptyDateList\n"
+                "  back stub:  heap-buffer-overflow on 0x...0e8  (BEFORE it)\n"
+                "              READ of size 8   #0 JpmcdsNewCFLFromDL3\n\n"
+                "In an unsanitised build the front case happens to return NULL: the\n"
+                "garbage it read as nextCouponDate failed JpmcdsStubPayment's\n"
+                "`prevCouponDate >= nextCouponDate` check. That is luck, not safety --\n"
+                "a garbage value on the other side of that comparison lets the\n"
+                "function proceed to the out-of-bounds WRITE, which ASan never gets\n"
+                "to report because it aborts on the read first.\n\n"
+                "Pass --unsafe to run it here.\n");
+  } else {
+    std::printf("--unsafe given: calling it with a one-date grid. Under the asan\n"
+                "preset this process is about to abort.\n");
+    std::fflush(stdout);
+    TDateList *dl = JpmcdsNewEmptyDateList(1);
+    dl->fArray[0] = JpmcdsDate(2024, 1, 1);
+    TCashFlowList *cfl =
+        JpmcdsNewCFLFromDL3(dl, JpmcdsDate(2024, 6, 1), JpmcdsDate(2024, 12, 1), 0.05,
+                            JPMCDS_ACT_365F, FALSE, JPMCDS_BAD_DAY_NONE, JPMCDS_BAD_DAY_NONE,
+                            const_cast<char *>("NONE"), const_cast<char *>("NONE"), FALSE);
+    std::printf("  returned %s (no abort -- the garbage read happened anyway)\n",
+                cfl != nullptr ? "a list" : "NULL");
+    JpmcdsFreeCFL(cfl);
+    JpmcdsFreeDateList(dl);
+  }
+
+  std::printf("\nThe port, same one-date grid:\n");
+  const std::vector<cdsmodel::Date> one{cdsmodel::from_tdate(JpmcdsDate(2024, 1, 1))};
+  const cdsmodel::CashFlowConventions conventions{.rate = 0.05};
+  std::printf("  front stub (start after the only date) -> %s\n",
+              cdsmodel::cash_flows_from_dates(one, cdsmodel::from_tdate(JpmcdsDate(2024, 6, 1)),
+                                              cdsmodel::from_tdate(JpmcdsDate(2024, 12, 1)),
+                                              conventions, {}, {}, false)
+                  ? "(!)"
+                  : "refused");
+  std::printf("  back stub  (maturity before it)        -> %s\n",
+              cdsmodel::cash_flows_from_dates(one, cdsmodel::from_tdate(JpmcdsDate(2023, 1, 1)),
+                                              cdsmodel::from_tdate(JpmcdsDate(2023, 6, 1)),
+                                              conventions, {}, {}, false)
+                  ? "(!)"
+                  : "refused");
+  std::printf("  no stub at all                         -> %s\n",
+              cdsmodel::cash_flows_from_dates(one, cdsmodel::from_tdate(JpmcdsDate(2024, 1, 1)),
+                                              cdsmodel::from_tdate(JpmcdsDate(2024, 1, 1)),
+                                              conventions, {}, {}, false)
+                  ? "accepted, as upstream does"
+                  : "(!)");
+
+  std::printf("\nA second thing in the same function, NOT filed as a defect. The\n"
+              "long-stub coalescing block reassigns `dates = datesCopy` in its first\n"
+              "branch, so the second branch's\n\n"
+              "    memcpy(&datesCopy->fArray[0], &dates->fArray[0], ...)\n\n"
+              "has source and destination equal. C11 7.24.1p2 makes copying between\n"
+              "overlapping objects undefined, and identical objects overlap. The\n"
+              "result is correct anyway, and neither ASan nor UBSan reports it -- a\n"
+              "second class the harness cannot see, in the same function where it\n"
+              "caught the overflow above.\n");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1580,6 +1682,9 @@ int main(int argc, char **argv) {
   }
   if (want("u24")) {
     u24();
+  }
+  if (want("u25")) {
+    u25(unsafe);
   }
   return 0;
 }
