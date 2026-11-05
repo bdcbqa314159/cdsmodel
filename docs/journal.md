@@ -2974,3 +2974,113 @@ arithmetic rather than against upstream.
 It is also the slice's one accumulating quantity, so it is the only comparison
 here at the relative 1e-12 tier. Everything else — each amount, each date — is
 a single multiplication or an integer, and compared exactly.
+
+## Decision 28 — Measuring the order before choosing the next file
+
+`zcswap.c` was the obvious next slice: 940 lines, the largest single thing
+left, and the reason four `stub.c` functions were ported two slices ago. I did
+not port it, because I measured its dependencies first and it is not reachable.
+
+`zcswap.c` calls into five unported files — `streamcf` (6 call sites),
+`zcswdate` (4), `schedule` (2), `zcswutil` (1), `zr2coup` (1) — about 2,650
+lines of prerequisite. Starting it would have been the `zcall.c` three-way
+split all over again: a plan that collapses the moment the second function
+needs the first.
+
+So this slice is a dependency measurement and then the smallest leaf it found.
+
+### The measurement, and why the symbol table rather than a regex
+
+The tool that mattered is `nm` on the oracle archive. For each remaining file:
+which `Jpmcds*` symbols does its source reference, which object file defines
+each of them, and is that file already claimed by a port header?
+
+Using the symbol table instead of parsing C is the direct lesson of three
+slices in a row where a regex for function definitions undercounted — it missed
+one function in `zcall.c`, two in `cashflow.c` and four in `datelist.c`, always
+because the return type sat on its own line. The archive has no such ambiguity:
+a defined symbol is a defined symbol.
+
+The result, for the fifteen in-scope files not yet started:
+
+```
+  fltrate         47 lines   *** NO UNPORTED DEPENDENCIES -- a leaf ***
+  zr2fwd          64 lines   *** leaf ***
+  linterpc        93 lines   *** leaf ***
+  badday          97 lines   *** leaf ***
+  cxbsearch      180 lines   *** leaf ***
+  cx             230 lines   *** leaf ***
+  zr2coup        231 lines   *** leaf ***
+  interpc        572 lines   *** leaf ***
+  schedule       832 lines   *** leaf ***
+  zerocurve      135 lines   blocked by 1: gtozc(2)
+  zcswdate       318 lines   blocked by 1: badday(2)
+  gtozc          494 lines   blocked by 1: zcswap(1)
+  zcswutil       169 lines   blocked by 2: badday(1), zcswdate(1)
+  streamcf      1100 lines   blocked by 4: schedule(3), fltrate(1), zr2coup(1), zr2fwd(1)
+  zcswap         940 lines   blocked by 5: streamcf(6), zcswdate(4), schedule(2), ...
+```
+
+Nine leaves, and `zcswap` last in the order rather than next. The path to it
+runs `badday → zcswdate → zcswutil` on one side and
+`schedule`/`zr2coup`/`fltrate`/`zr2fwd` → `streamcf` on the other.
+
+Writing this down as a script rather than as a conclusion matters, because the
+answer changes every slice. It will be re-run rather than remembered.
+
+### `badday.c`, and a module with nothing wrong with it
+
+The smallest leaf on the critical path: 97 lines, three functions, a table of
+substitute dates. Not to be confused with `busday.c` — that computes a business
+day from a *convention* and a calendar; this one looks one up in a
+caller-supplied list of exceptions. The upstream filenames differ by one
+character.
+
+Five things looked like findings and **none of them survived**:
+
+- **A lookup is one step, not a closure.** If a bad day's replacement is itself
+  listed as bad, one call leaves a date the list still calls bad. Measured, and
+  real — but the function's stated job is to convert a bad day *"(if it's in
+  list)"*, and a map that sends a bad day to another bad day is malformed.
+- **The round trip only holds for an injective map.** Two bad days mapping to
+  one good day means the reverse lookup picks the first. That is what a
+  non-injective map *is*.
+- **"Not in the list" and "no list at all" return the same thing.** Deliberate,
+  and upstream says so: *"allow NULL to ignore list"*. Not the UPSTREAM-2 shape,
+  because there is no failure here to report — the identity is the answer.
+- **`maxAllowed` is never read** by any of the three functions, and the symbol
+  table shows no constructor anywhere in the library to maintain it. Dead
+  state, not a defect.
+- **`JpmcdsFixBadDLBadDayList` returns void.** It also cannot fail.
+
+Every one is a consequence of the module being a lookup table rather than an
+algorithm, and in every case upstream's behaviour is well defined for every
+input it will accept. That is the line the port's policy draws and this module
+sits on the faithful side of it.
+
+Two slices in a row with no defect. Worth saying plainly rather than leaving as
+an absence, because the register reaching twenty-five could otherwise make a
+clean module look like an unfinished search.
+
+### The one thing the port adds, and why it is not a constructor
+
+`is_well_formed` is not a port of anything. It names the precondition the three
+lookups quietly assume: no repeated bad day, no repeated good day, and no good
+day that is also a bad day. Each condition corresponds to exactly one of the
+measured oddities.
+
+The tempting design is to validate on construction — a `BadDayMap` type that
+cannot hold a malformed table. I did not, and the reason is a verification
+constraint rather than a taste one: **upstream handles malformed maps
+deterministically, so the port has to be able to hold one in order to be
+compared against upstream on them.** A validating constructor would make the
+duplicated, chained and cyclic shapes unrepresentable, and therefore untestable
+— and those are precisely the shapes where which-entry-wins is the only thing
+there is to verify.
+
+So the lookups are free functions over a span, faithful on every input, and the
+check is available beside them for callers who want it. That is the opposite of
+the `ZeroCurve::create` decision, where refusing at construction was right
+because upstream's accepted-but-unpriceable curves had no defined answer. The
+distinction is whether upstream's behaviour on the bad input is *defined* or
+merely *reached*.
