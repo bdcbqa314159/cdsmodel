@@ -2223,3 +2223,47 @@ pattern is clear enough to state as a rule: **before asserting that a quantity
 is well-behaved, check what the floating-point edge of its domain actually
 produces** — and prefer an assertion that names the two outcomes separately to
 one that bans the harder case outright.
+
+### Addendum — CI rejected the slice, and it was the tolerance tier
+
+The first push of this slice went red on two of four platforms, and the
+diagnosis is worth keeping because it is the second time this project has been
+caught by the same physics.
+
+The replay of recorded evaluations failed on Ubuntu **asan** and Windows while
+passing on Ubuntu **release** and macOS. Ubuntu release and Ubuntu asan are the
+same machine with the same libm; the only difference is the compiler flags. So
+this cannot be a library-function discrepancy — it is `-ffp-contract` turning
+`a + b*c` into an FMA and changing the value *mid-expression*, so the
+interpolation feeding `pow` is already a different double before any library
+call happens.
+
+Worst observed drift: `1.6686705540502349` against a recorded
+`1.6686705540502449`, a relative difference of 6e-15, roughly 27 ULPs.
+
+I had written the replay with the 4-ULP tier. That tier belongs to the
+*differential* suite, where both implementations are compiled into one binary
+with one set of flags and contraction applies identically to both. A recorded
+vector has crossed a compiler and a machine, so the right tier is the
+accumulating one — relative 1e-12 — and the measured 6.8e-15 sits comfortably
+inside it.
+
+Two separate mistakes, and only one of them is about the number:
+
+1. **Wrong tier.** The forward rate is the end of a chain: interpolate, `pow`,
+   ratio, reciprocal, `pow`. Calling that non-accumulating was wishful.
+2. **Wrong *shape* of tolerance.** `4.0 * max(1.0, |want|) * eps` is an
+   absolute tolerance anchored at 1.0. On a discount factor of 0.02 it permits
+   about 200 ULPs; on a rate of 6.5 it permits about 7. It was loose exactly
+   where it claimed to be tight, and tight exactly where the arithmetic could
+   not deliver. The discount-factor comparison in the same test passed only
+   because of that looseness — it was not evidence of anything.
+
+The second is the one I would not have found without the first failing. The
+tolerance was wrong in both directions and the test was green.
+
+That pattern appears in seven other tier-1 files in this project, all currently
+passing on all four platforms. I have not changed them in this slice: they are
+passing with real margin and a project-wide tolerance audit is its own change,
+not a rider on a port. But it is now written down rather than noticed and
+forgotten, which is the only reason this paragraph exists.

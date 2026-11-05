@@ -29,6 +29,38 @@ ZeroCurveBuilder make(long basis = 1, DayCount dcc = DayCount::Act365Fixed) {
   return *ZeroCurveBuilder::create(d(2024, 1, 1), 16, basis, dcc);
 }
 
+/// The tolerance for a comparison against a RECORDED value.
+///
+/// Recorded vectors crossed a compiler and a machine on the way here, so the
+/// 4-ULP tier does not apply to them. That tier is for two implementations
+/// running in the same binary under the same flags, which is the differential
+/// suite -- there, contraction is identical on both sides and 4 ULPs is the
+/// right bar. Here it is not, and CI said so: Ubuntu release passed while
+/// Ubuntu asan failed on the same machine with the same libm, which can only
+/// be the flags. `-ffp-contract` turns `a + b*c` into an FMA and changes the
+/// value MID-EXPRESSION, so the interpolation feeding `pow` is already a
+/// different double before any library function is called.
+///
+/// So these use the project's accumulating tier, relative 1e-12. Worst
+/// measured drift across the four CI platforms was 6.8e-15 relative, on a
+/// forward rate -- the end of a chain of interpolate, pow, ratio, reciprocal,
+/// pow.
+///
+/// Relative, not `4 * max(1.0, |want|) * eps`. That earlier form was an
+/// absolute tolerance anchored at 1.0, which quietly permitted ~200 ULPs on a
+/// discount factor of 0.02 while demanding ~7 on a rate of 6.5 -- loose where
+/// it claimed to be tight, and tight where the arithmetic could not deliver.
+void expect_recorded(double got, double want, const std::string &where) {
+  constexpr double kRelative = 1.0e-12;
+  // A recorded zero has to be reproduced as a zero; there is no relative
+  // tolerance around it.
+  if (want == 0.0) {
+    EXPECT_EQ(got, 0.0) << where;
+    return;
+  }
+  EXPECT_NEAR(got, want, kRelative * std::fabs(want)) << where;
+}
+
 // =====================================================================
 // The invariant: this type caches a discount factor beside every rate,
 // so the two must agree for every stored point, by every route in.
@@ -272,13 +304,9 @@ TEST(ZeroCurveBuilder, MatchesRecordedBuilderStates) {
       EXPECT_EQ(cdsmodel::to_tdate(b->points()[i].date), c.out_dates[i]) << where << " i=" << i;
       // Rates and cached discounts come out of pow/exp, so the
       // non-accumulating tier applies cross-platform.
-      const double eps = std::numeric_limits<double>::epsilon();
-      EXPECT_NEAR(b->points()[i].rate, c.out_rates[i],
-                  4.0 * std::max(1.0, std::fabs(c.out_rates[i])) * eps)
-          << where << " i=" << i;
-      EXPECT_NEAR(b->points()[i].discount, c.out_discounts[i],
-                  4.0 * std::max(1.0, std::fabs(c.out_discounts[i])) * eps)
-          << where << " i=" << i;
+      expect_recorded(b->points()[i].rate, c.out_rates[i], where + " rate i=" + std::to_string(i));
+      expect_recorded(b->points()[i].discount, c.out_discounts[i],
+                      where + " discount i=" + std::to_string(i));
       ++checked;
     }
   }
@@ -505,23 +533,22 @@ TEST(ZeroCurveBuilderEval, MatchesRecordedEvaluations) {
     const std::string where = "basis " + std::to_string(c.basis) + " dcc " +
                               std::to_string(c.day_count) + " interp " + std::to_string(c.interp) +
                               " at " + std::to_string(c.at);
-    const double eps = std::numeric_limits<double>::epsilon();
 
     const std::optional<double> rate = b->interpolate(at, interp);
     ASSERT_EQ(rate.has_value(), c.rate_ok) << where;
     if (rate) {
-      EXPECT_NEAR(*rate, c.rate, 4.0 * std::max(1.0, std::fabs(c.rate)) * eps) << where;
+      expect_recorded(*rate, c.rate, where + " rate");
     }
     const std::optional<double> df = b->discount_factor(at, interp);
     ASSERT_EQ(df.has_value(), c.discount_ok) << where;
     if (df) {
-      EXPECT_NEAR(*df, c.discount, 4.0 * std::max(1.0, std::fabs(c.discount)) * eps) << where;
+      expect_recorded(*df, c.discount, where + " discount");
     }
     const std::optional<double> fwd =
         b->forward_rate(cdsmodel::from_tdate(c.value_date), at, 0, DayCount::Act365Fixed, interp);
     ASSERT_EQ(fwd.has_value(), c.forward_ok) << where;
     if (fwd) {
-      EXPECT_NEAR(*fwd, c.forward, 4.0 * std::max(1.0, std::fabs(c.forward)) * eps) << where;
+      expect_recorded(*fwd, c.forward, where + " forward");
     }
     ++checked;
   }
