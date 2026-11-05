@@ -483,6 +483,12 @@
           <td><span class="chip immune">Fixed deliberately</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u20">UPSTREAM-20</a></td>
+          <td>A public merge documents one precondition and checks it, while omitting the one the algorithm actually needs — that both inputs are <strong>ordered</strong></td>
+          <td><span class="chip low">Low · public header only</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u19">UPSTREAM-19</a></td>
           <td>The guard against an unusable discount factor is <code>if (discount&lt;=0.0)</code> — the one comparison every <strong>NaN</strong> passes</td>
           <td><span class="chip mid">Medium · NaN as success</span></td>
@@ -1719,6 +1725,113 @@ rate=-100  df1=inf           df2=inf           fwd=<span class="hit">nan</span> 
 
     <div class="tests">
       <span>Reproduce:</span> ./build/debug/defect_evidence u19
+    </div>
+  </section>
+
+  <!-- ============ U20 ============ -->
+  <section class="record sev-low" id="u20">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-20</span>
+      <h2>The precondition the documentation does not mention</h2>
+    </div>
+    <div class="chips">
+      <span class="chip low">Low · reachable only through the public header</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">cashflow.c — JpmcdsMergeCFL</p>
+
+    <h3>Mechanism</h3>
+    <p>The header states the contract in one sentence:</p>
+    <blockquote>
+      Merges two cash flow lists. The input cash flow lists cannot be NULL.
+    </blockquote>
+    <p>
+      That precondition is real, and it is checked — on both arguments. The
+      other one is not stated and not checked. The algorithm is a single
+      forward pass that advances whichever side carries the earlier date, so it
+      is a merge <em>only</em> if both inputs are already ordered by date.
+    </p>
+
+    <h3>Evidence</h3>
+    <p>With <code>a = [40000, 20000, 30000]</code> and <code>b = [25000, 15000]</code>:</p>
+<pre><code>MergeCFL -&gt; fNumItems=5
+    [0] date=<span class="hit">25000</span>  amount=10
+    [1] date=<span class="hit">15000</span>  amount=20
+    [2] date=40000  amount=1
+    [3] date=20000  amount=2
+    [4] date=30000  amount=3</code></pre>
+    <p>
+      Every element is present, so nothing is lost — but the output is not
+      sorted, and it is not a stable interleaving of the inputs either. It is
+      an artefact of where the comparison happened to stop. A caller who reads
+      the header, satisfies the one documented precondition and passes lists in
+      whatever order they arrived has no way to learn the result is
+      meaningless.
+    </p>
+
+    <h3>Why the severity is low</h3>
+    <p>
+      Exactly one call site exists in the library — <code>zcswap.c:804</code>,
+      merging a fixed and a floating schedule, both generated in date order. So
+      this is unreachable from inside upstream and reachable only by an
+      external caller of the public header, which is the same tier as
+      <a href="#u12">UPSTREAM-12</a>.
+    </p>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Cannot occur.</strong> <code>merge_cash_flows</code> returns
+      nullopt unless both inputs are ordered. Checking a precondition the
+      documentation forgot is the move <code>ZeroCurve::create</code> makes
+      over <code>checkTCurve</code> (<a href="#u15">UPSTREAM-15</a>): refuse at
+      the boundary what cannot produce a meaningful answer, so the result type
+      never has to carry a "this is nonsense" value.
+    </p>
+    <p>
+      Non-decreasing, not strictly increasing — a list may legitimately carry
+      two payments on one date, and upstream's merge passes such a pair through
+      uncoalesced. Both forms represent the same cash flow, so neither is
+      wrong.
+    </p>
+
+    <h3>And the finding this is not</h3>
+    <p>
+      The first hypothesis in this file was different, and it was wrong.
+      <code>JpmcdsNewEmptyCFL</code> sets <code>fNumItems</code> to the count
+      it was asked for and allocates through <code>JpmcdsMallocSafe</code>,
+      whose allocation line reads:
+    </p>
+<pre><code>ptr = malloc(theSize);              /* Don't use calloc due to RS6000. */</code></pre>
+    <p>
+      On that line alone, a public function named "NewEmpty" returns
+      <em>n</em> cash flows of heap garbage. Four probes said otherwise — a
+      size-matched recycled block, <code>MallocPreScribble=1</code>, and an
+      ASan build all came back zeroed — and the reason is the next branch of
+      the same function:
+    </p>
+<pre><code>/* Clear out the memory for safety. */
+(void)memset((char *)ptr, (size_t)0, theSize);</code></pre>
+    <p>
+      The comment about calloc means "we reproduce calloc by hand", not "we
+      skip the zeroing". <strong>No defect</strong> — and the negative result
+      is worth more than the finding would have been: every <code>NEW</code>
+      and <code>NEW_ARRAY</code> in the library returns zeroed memory, so
+      upstream cannot have an uninitialised-<em>heap</em> read anywhere. The
+      one uninitialised read in this register,
+      <a href="#u14">UPSTREAM-14</a>, is a stack local — where no allocator
+      intervenes.
+    </p>
+    <p>
+      One detail does deserve recording. <code>fDate = 0</code> is not a null
+      in upstream's encoding; TDate 0 is <strong>1601-01-01</strong>, a date
+      like any other. A list from <code>JpmcdsNewEmptyCFL(n)</code> that a
+      caller under-fills does not look uninitialised — it looks like <em>n</em>
+      deliberate payments of zero in 1601. Garbage might be caught downstream;
+      that will not be.
+    </p>
+
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u20
     </div>
   </section>
 

@@ -2267,3 +2267,146 @@ passing on all four platforms. I have not changed them in this slice: they are
 passing with real margin and a project-wide tolerance audit is its own change,
 not a rider on a port. But it is now written down rather than noticed and
 forgotten, which is the only reason this paragraph exists.
+
+## Decision 23 — The hypothesis that cost four probes and was worth it
+
+`cashflow.c` is 514 lines in six functions, and the first job was finding where
+it splits. Four of the six are container operations with no dependencies
+outside the file; the other two build a list from a payment schedule and need
+`JpmcdsNewDateListExtendedRoll`, `JpmcdsNewDateListBusDayAdj`,
+`JpmcdsBusinessDay` and `JpmcdsStubPayment` — none of them ported.
+
+So the slice is the container. And the reason to do it now rather than wait for
+`datelist.c` is that the remaining third of `zcall.c` only ever *consumes* a
+list: checked rather than assumed, by listing every `Jpmcds*` symbol those
+three functions reference. None of them is a constructor.
+
+I also miscounted the file at first — a regex for function definitions found
+three, because `JpmcdsMakeCFL` and `JpmcdsNewCFLFromDL3` put their return type
+on its own line. That is the second time the same regex has undercounted the
+same way (it missed `JpmcdsZCDiscountFactor` in `zcall.c`). Worth noting that
+the fix is not a better regex: it is to stop using a count as evidence of
+having read a file.
+
+### The hypothesis
+
+`JpmcdsNewEmptyCFL(n)` sets `fNumItems = n` and allocates through `NEW_ARRAY`,
+which is `JpmcdsMallocSafe`, whose allocation line is:
+
+```c
+ptr = malloc(theSize);              /* Don't use calloc due to RS6000. */
+```
+
+A public function named `NewEmpty` that reports *n* cash flows over
+uninitialised memory, with a comment explaining that the zeroing primitive was
+deliberately avoided. That looked like a defect, and a good one.
+
+### It is not, and finding that out took four attempts
+
+- **A pre-dirtied heap.** Allocate 64 doubles, fill with a recognisable
+  pattern, free, then call `NewEmptyCFL(6)`. Came back zeroed.
+- **A size-matched block.** `sizeof(TCashFlow)` is 16, so `NewEmptyCFL(6)` asks
+  for exactly 96 bytes; hand the allocator back a 96-byte block pre-filled with
+  `0x7E7E7E7E`, which is the block most allocators reuse first. Came back
+  zeroed.
+- **`MallocPreScribble=1`**, macOS's own diagnostic for exactly this, which
+  fills new allocations with `0xAA`. Came back zeroed.
+- **An ASan build**, whose allocator pre-fills with `0xBE`. Came back zeroed.
+
+Four independent attempts to produce garbage, all producing zeros. At that
+point the hypothesis is not merely unproven, it is being actively contradicted,
+and the honest next step is to stop trying to prove it and go read the function
+properly. Nine lines further on:
+
+```c
+/* Clear out the memory for safety. */
+(void)memset((char *)ptr, (size_t)0, theSize);
+```
+
+The comment about calloc means *"we reproduce calloc by hand"*, not *"we skip
+the zeroing"*. I had read fifteen lines of a twenty-four-line function and
+filed the conclusion.
+
+### Why the negative result is worth more than the finding would have been
+
+Every `NEW` and `NEW_ARRAY` in the library goes through that function.
+So **upstream cannot have an uninitialised-heap read anywhere** — not in the
+11,000 lines still unported, not in the 400-line constructors this slice
+deferred. That rules out a whole category of search.
+
+It also explains something about the register that previously looked like luck.
+UPSTREAM-14 is an uninitialised read, and it is a *stack* local, where no
+allocator intervenes. The split is not arbitrary: heap memory in this library
+is zeroed by construction, stack memory is not zeroed at all, and every
+uninitialised-read defect must therefore be on the stack. That is a prediction,
+not a summary, and it is cheap to check as the port continues.
+
+Four probes to establish that something is *not* broken is a good trade. The
+alternative was a defect record that a careful reader would have demolished by
+reading nine more lines of the source than I did.
+
+### One detail that does survive
+
+`fDate = 0` is not a null in upstream's encoding. TDate 0 is **1601-01-01**, a
+date like any other. So a list from `JpmcdsNewEmptyCFL(n)` that a caller
+under-fills does not look uninitialised — it looks like *n* deliberate payments
+of zero in 1601. Garbage has a chance of being caught downstream; a plausible
+date and a zero amount do not.
+
+The port has no equivalent, and the first draft of the header claimed it did:
+*"`std::vector<CashFlow>(n)` value-initialises, so the port matches it."* That
+is wrong, and a test caught it within a minute — a default-constructed `Date` is
+1970-01-01, the `sys_days` epoch, not 1601-01-01. The port's `Date` has no
+zero, which is the entire point of it. So the port has no "empty list of n
+items" at all: length is the number of payments present, and capacity is
+`reserve`.
+
+Upstream conflates the two, and `ZCurve` in the same library does not — it
+carries `numItems` and `numAlloc` separately. The library knows the
+distinction; this type just does not use it.
+
+### UPSTREAM-20, and a precondition that was never written down
+
+What the slice did find is smaller and cleaner. `cashflow.h` documents
+`JpmcdsMergeCFL`'s contract in one sentence:
+
+> Merges two cash flow lists. The input cash flow lists cannot be NULL.
+
+That precondition is real and it is checked, on both arguments. The other one —
+that both inputs are ordered by date — is required by the algorithm, stated
+nowhere, and checked nowhere. Unordered input produces neither a sorted list
+nor a stable interleaving:
+
+```
+a = [40000, 20000, 30000]   b = [25000, 15000]
+MergeCFL -> SUCCESS, fNumItems=5
+    [0] 25000   [1] 15000   [2] 40000   [3] 20000   [4] 30000
+```
+
+Low severity, and the measurement that sets it is a grep: exactly one call site
+exists in the library, `zcswap.c:804`, merging two schedules that are generated
+in order. So it is unreachable from inside upstream and reachable only through
+the public header — the same tier as UPSTREAM-12.
+
+What makes it worth a record rather than a shrug is the gap between the
+documented contract and the real one. A caller who reads the header carefully,
+satisfies everything it asks for, and passes lists in whatever order they
+arrived gets a wrong answer with a success status. The documentation is not
+silent; it is *specific*, and specifically incomplete, which is worse than
+saying nothing.
+
+### The merge, and an exhaustive sweep instead of examples
+
+A single forward pass over two sequences is a shape that hides off-by-ones at
+the ends and in ties, so the differential test does not pick examples. It takes
+every pair of subsets of a five-date pool — 1,024 pairs — which covers
+disjoint, identical, overlapping, prefix, suffix, empty-on-either-side and
+single-element without any of those cases having to be thought of first. Eleven
+lines of test code instead of eleven hand-written cases, and it does not depend
+on my imagining the right eleven.
+
+Three properties carry the tier-1 side, and they are separable on purpose: the
+output is ordered, the total is conserved *exactly* (these are sums of
+quarter-integers, so a tolerance would hide a lost element), and no date is
+lost or invented. What properties cannot pin is the element order upstream
+chooses when dates tie, so that is what the recorded vectors are for.

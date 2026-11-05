@@ -14,6 +14,7 @@
 //   ./build/asan/defect_evidence --unsafe
 
 #include <cdsmodel/calendar.hpp>
+#include <cdsmodel/cash_flow_list.hpp>
 #include <cdsmodel/cds.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_interval.hpp>
@@ -37,6 +38,7 @@
 
 extern "C" {
 #include "bsearch.h"
+#include "cashflow.h"
 #include "cdate.h"
 #include "cerror.h"
 #include "cgeneral.h"
@@ -1070,6 +1072,86 @@ void u19() {
               "sweep, no evaluation returns NaN. Infinity is still permitted.\n");
 }
 
+void u20() {
+  heading("UPSTREAM-20", "the precondition the documentation does not mention");
+  std::printf("cashflow.h states JpmcdsMergeCFL's contract in one sentence:\n\n"
+              "    \"Merges two cash flow lists. The input cash flow lists cannot be NULL.\"\n\n"
+              "That precondition is real and it IS checked, on both arguments. The\n"
+              "other one is not stated and not checked: the algorithm is a single\n"
+              "forward pass advancing whichever side holds the earlier date, so it is\n"
+              "a merge only if both inputs are already ordered.\n\n");
+
+  TDate a_dates[3] = {40000, 20000, 30000};
+  double a_amounts[3] = {1.0, 2.0, 3.0};
+  TDate b_dates[2] = {25000, 15000};
+  double b_amounts[2] = {10.0, 20.0};
+  TCashFlowList *a = JpmcdsNewCFL(a_dates, a_amounts, 3);
+  TCashFlowList *b = JpmcdsNewCFL(b_dates, b_amounts, 2);
+  TCashFlowList *merged = JpmcdsMergeCFL(a, b);
+  std::printf("  a = [40000, 20000, 30000]   b = [25000, 15000]\n\n");
+  if (merged != nullptr) {
+    std::printf("  MergeCFL -> SUCCESS, fNumItems=%d\n", merged->fNumItems);
+    for (int i = 0; i < merged->fNumItems; ++i) {
+      std::printf("      [%d] date=%-8ld amount=%g\n", i, (long)merged->fArray[i].fDate,
+                  merged->fArray[i].fAmount);
+    }
+    const bool sorted_out =
+        merged->fNumItems < 2 || merged->fArray[0].fDate <= merged->fArray[1].fDate;
+    std::printf("\n  ordered on the way out? %s\n", sorted_out ? "yes" : "NO");
+  }
+
+  std::printf("\nEvery element is present, so nothing is lost -- but the output is not\n"
+              "sorted and not a stable interleaving either. It is an artefact of where\n"
+              "the comparison stopped.\n\n");
+
+  std::printf("The documented precondition, for contrast:\n");
+  std::printf("  MergeCFL(NULL, b) -> %s\n",
+              JpmcdsMergeCFL(nullptr, b) == nullptr ? "NULL" : "(!)");
+  std::printf("  MergeCFL(a, NULL) -> %s\n\n",
+              JpmcdsMergeCFL(a, nullptr) == nullptr ? "NULL" : "(!)");
+
+  const std::vector<cdsmodel::CashFlow> port_a{{cdsmodel::from_tdate(40000), 1.0},
+                                               {cdsmodel::from_tdate(20000), 2.0},
+                                               {cdsmodel::from_tdate(30000), 3.0}};
+  const std::vector<cdsmodel::CashFlow> port_b{{cdsmodel::from_tdate(25000), 10.0},
+                                               {cdsmodel::from_tdate(15000), 20.0}};
+  std::printf("The port:\n  merge_cash_flows(a, b) -> %s\n  merge_cash_flows(b, a) -> %s\n",
+              cdsmodel::merge_cash_flows(port_a, port_b) ? "(!)" : "refused",
+              cdsmodel::merge_cash_flows(port_b, port_a) ? "(!)" : "refused");
+
+  std::printf("\nSeverity is low because of reachability: one call site exists in the\n"
+              "library -- zcswap.c:804, merging a fixed and a floating schedule, both\n"
+              "generated in order. Reachable only through the public header.\n\n");
+
+  std::printf("And the finding this is NOT. JpmcdsNewEmptyCFL sets fNumItems to the\n"
+              "count it was asked for and allocates via JpmcdsMallocSafe, whose\n"
+              "allocation line reads:\n\n"
+              "    ptr = malloc(theSize);        /* Don't use calloc due to RS6000. */\n\n"
+              "On that line alone a public function named \"NewEmpty\" returns n cash\n"
+              "flows of heap garbage. It does not, because the next branch memsets the\n"
+              "block to zero -- \"we reproduce calloc by hand\", not \"we skip it\":\n\n");
+  TCashFlowList *empty = JpmcdsNewEmptyCFL(4);
+  if (empty != nullptr) {
+    std::printf("  NewEmptyCFL(4) -> fNumItems=%d\n", empty->fNumItems);
+    for (int i = 0; i < empty->fNumItems; ++i) {
+      std::printf("      [%d] date=%-8ld amount=%g\n", i, (long)empty->fArray[i].fDate,
+                  empty->fArray[i].fAmount);
+    }
+  }
+  std::printf("\nSo every NEW and NEW_ARRAY in the library returns zeroed memory, and\n"
+              "upstream cannot have an uninitialised-HEAP read anywhere. The one\n"
+              "uninitialised read in this register, UPSTREAM-14, is a stack local --\n"
+              "where no allocator intervenes.\n\n"
+              "One detail still deserves recording: fDate=0 is not a null. TDate 0 is\n"
+              "1601-01-01, a date like any other. An under-filled list does not look\n"
+              "uninitialised, it looks like n deliberate payments of zero in 1601.\n");
+
+  JpmcdsFreeCFL(a);
+  JpmcdsFreeCFL(b);
+  JpmcdsFreeCFL(merged);
+  JpmcdsFreeCFL(empty);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1148,6 +1230,9 @@ int main(int argc, char **argv) {
   }
   if (want("u19")) {
     u19();
+  }
+  if (want("u20")) {
+    u20();
   }
   return 0;
 }
