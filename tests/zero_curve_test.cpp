@@ -179,15 +179,17 @@ TEST(ZeroCurve, FlatCurveGivesTheAnalyticDiscountFactor) {
 // =====================================================================
 
 TEST(ZeroCurve, RateValidityMatchesUpstreamsRule) {
+  // Now lives in rate_conversion.hpp, its upstream home.
   // Upstream's JpmcdsRateValidYearFrac: continuous accepts any rate, a
   // compounding frequency n accepts rate > -n.
-  EXPECT_TRUE(cdsmodel::rate_is_valid(-1e300, cdsmodel::kContinuousBasis));
-  EXPECT_TRUE(cdsmodel::rate_is_valid(1e300, cdsmodel::kContinuousBasis));
+  EXPECT_TRUE(cdsmodel::rate_valid_year_frac(-1e300, 1.0, cdsmodel::kContinuousBasis));
+  EXPECT_TRUE(cdsmodel::rate_valid_year_frac(1e300, 1.0, cdsmodel::kContinuousBasis));
   for (double basis : {1.0, 2.0, 4.0, 12.0, 365.0}) {
-    EXPECT_TRUE(cdsmodel::rate_is_valid(0.0, basis)) << basis;
-    EXPECT_TRUE(cdsmodel::rate_is_valid(-basis + 1.0e-9, basis)) << basis;
-    EXPECT_FALSE(cdsmodel::rate_is_valid(-basis, basis)) << basis << " (boundary is exclusive)";
-    EXPECT_FALSE(cdsmodel::rate_is_valid(-basis - 1.0e-9, basis)) << basis;
+    EXPECT_TRUE(cdsmodel::rate_valid_year_frac(0.0, 1.0, basis)) << basis;
+    EXPECT_TRUE(cdsmodel::rate_valid_year_frac(-basis + 1.0e-9, 1.0, basis)) << basis;
+    EXPECT_FALSE(cdsmodel::rate_valid_year_frac(-basis, 1.0, basis))
+        << basis << " (boundary is exclusive)";
+    EXPECT_FALSE(cdsmodel::rate_valid_year_frac(-basis - 1.0e-9, 1.0, basis)) << basis;
   }
 }
 
