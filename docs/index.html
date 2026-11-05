@@ -483,6 +483,18 @@
           <td><span class="chip immune">Fixed deliberately</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u17">UPSTREAM-17</a></td>
+          <td>A fast path for the common case returns <strong>infinity</strong> where the general path it replaces rejects the input — and the infinity is stored in the curve</td>
+          <td><span class="chip mid">Medium · stored infinity</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
+          <td class="id"><a href="#u16">UPSTREAM-16</a></td>
+          <td>A missing <code>return</code> adds a curve point twice; on one input the second route fails, so the function reports failure with the <strong>curve already mutated</strong></td>
+          <td><span class="chip mid">Medium · partial mutation</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u15">UPSTREAM-15</a></td>
           <td>A validating curve constructor accepts 30/360 and empty curves that <code>JpmcdsZeroPrice</code> then prices as <strong>NaN</strong></td>
           <td><span class="chip mid">Medium · silent NaN</span></td>
@@ -1393,6 +1405,161 @@ empty      construct=accepted  JpmcdsZeroPrice=<span class="hit">nan</span></cod
       include. The same input is refused outright as out of order rather than
       silently truncated.
     </p>
+  </section>
+
+  <!-- ============ U16 ============ -->
+  <section class="record sev-mid" id="u16">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-16</span>
+      <h2>A failure that leaves the curve modified</h2>
+    </div>
+    <div class="chips">
+      <span class="chip mid">Medium · partial mutation on an error path</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">zcall.c — JpmcdsZCAddGenRate</p>
+
+    <h3>Mechanism</h3>
+    <p>
+      The function has a short-circuit for the case where the rate is already
+      quoted in the curve's own terms — and then forgets to stop.
+    </p>
+<pre><code>if (basis==zc-&gt;basis &amp;&amp; dayCountConv==zc-&gt;dayCountConv)
+{
+     if (JpmcdsZCAddRate(zc,date,rate) == FAILURE)
+         goto done;
+}
+<span class="hit">/* no return -- execution falls through */</span>
+if (JpmcdsRateToDiscount(rate, zc-&gt;valueDate, date, dayCountConv, basis, &amp;df) == FAILURE)
+    goto done;
+if (JpmcdsZCAddDiscountFactor(zc,date,df) == FAILURE)
+    goto done;</code></pre>
+    <p>
+      So the matching case adds the point, and then adds it <em>again</em> by a
+      second route.
+    </p>
+
+    <h3>Why it is usually harmless</h3>
+    <p>
+      The duplicate check inside <code>JpmcdsZCAddRateAndDiscount</code> sees
+      the same date, compares the rate against the stored one within a
+      hardcoded <code>1e-7</code>, and returns success having done nothing. The
+      second route's rate has survived a round trip through a discount factor,
+      so it lands well inside that window. Wasted work, not a wrong answer.
+    </p>
+
+    <h3>Why it is not always harmless</h3>
+    <p>
+      A date equal to the curve's value date makes the second route fail —
+      <code>JpmcdsDiscountToRate</code> rejects a zero-length period. The
+      function returns FAILURE, <em>after</em> the first route has already
+      committed the point.
+    </p>
+<pre><code>date == valueDate : rc=FAILURE  numItems=1   <span class="hit">*** curve MUTATED ***</span>
+   orphaned point: date=154497 rate=0.05 discount=1</code></pre>
+    <p>
+      A caller that discards the curve on failure is unaffected. One that
+      retries, or inspects the error and carries on, now holds a point it never
+      successfully added — and <code>numItems</code> says it is there.
+    </p>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Cannot occur.</strong> <code>add_general_rate</code> returns
+      after the matching case, which is what the missing <code>return</code>
+      would have done. That removes the duplicated work as well, and a rate at
+      the value date now simply succeeds — a rate over no time discounts by
+      nothing, which is a perfectly good point. The only reason upstream failed
+      was the redundant second route.
+    </p>
+    <p>
+      The general guarantee is stronger than the one fix: every route into the
+      builder commits only after all of its conversions have succeeded, so no
+      failure anywhere can leave a point behind. That is asserted as a tier-1
+      property rather than inferred from the code.
+    </p>
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u16
+    </div>
+  </section>
+
+  <!-- ============ U17 ============ -->
+  <section class="record sev-mid" id="u17">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-17</span>
+      <h2>An optimisation that changes the answer at its boundary</h2>
+    </div>
+    <div class="chips">
+      <span class="chip mid">Medium · an infinity stored in the curve, reported as success</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">zcall.c — JpmcdsZCComputeDiscount</p>
+
+    <h3>Mechanism</h3>
+    <p>
+      A fast path for the common case, which its own comment calls
+      <em>"a special optimization"</em>:
+    </p>
+<pre><code>if (zc-&gt;basis == 1              &amp;&amp;
+    rate      <span class="hit">&gt;= -1.0</span>           &amp;&amp;
+    date      &gt;= zc-&gt;valueDate  &amp;&amp;
+    (zc-&gt;dayCountConv == JPMCDS_ACT_365F || zc-&gt;dayCountConv == JPMCDS_ACT_360))
+{
+    *discount = pow(1+rate, (zc-&gt;valueDate - date) / ...);
+    return SUCCESS;
+}</code></pre>
+    <p>
+      At exactly <code>-1.0</code> the base is zero and the exponent negative,
+      so <code>pow</code> returns an infinity — while the general path this
+      stands in for <strong>rejects</strong> the same input, because
+      <code>JpmcdsRateToDiscountYearFrac</code> refuses a base at or below
+      zero.
+    </p>
+
+    <h3>Evidence</h3>
+<pre><code>rate         ZCComputeDiscount          JpmcdsRateToDiscount
+-0.9999999   1.0923357970930543e+56     1.0923357970930543e+56
+-1.0         <span class="hit">inf</span>                        FAILURE
+-1.5         FAILURE                    FAILURE</code></pre>
+    <p>And the infinity is not merely returned — it is stored, and then served:</p>
+<pre><code>JpmcdsZCAddRate(curve, date, -1.0) -&gt; SUCCESS
+  stored: date=157419 rate=-1 discount=<span class="hit">inf</span>
+  JpmcdsZCDiscountFactor at that date -&gt; SUCCESS  inf</code></pre>
+    <p>
+      Two code paths for one quantity, disagreeing at the boundary, and the
+      fast one wins because it is tested first. The guard wants
+      <code>rate &gt; -1.0</code>.
+    </p>
+
+    <h3>The distinction that matters</h3>
+    <p>
+      This is the mirror image of the infinity in UPSTREAM-15, and the
+      difference is the whole point. There, <code>exp(1200)</code> overflowing
+      to <code>+inf</code> is a <em>value</em> — the answer really is enormous,
+      and the port returns the same thing. Here, the general path is on record
+      as calling the same input an <em>error</em>; the fast path answers
+      <code>inf</code> only because it was written without that case in mind.
+    </p>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Cannot occur.</strong> The fast path is reproduced — it is not
+      purely an optimisation, since <code>(valueDate - date)/365.0</code> and
+      <code>-1.0 * ((date - valueDate)/365.0)</code> are the same
+      <code>double</code> only because negation is exact — but it is taken only
+      where it agrees with the general path, so the boundary case falls through
+      and is refused.
+    </p>
+    <p>
+      Pinned from both sides: one test asserts the two paths return bit-identical
+      factors for every rate inside the boundary, another that nothing infinite
+      can be stored. <code>ZeroCurve::create</code> would refuse
+      <code>rate &lt;= -basis</code> downstream in any case — that was PORT-11 —
+      so the curve is protected twice over.
+    </p>
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u17
+    </div>
   </section>
 
   <!-- ============ U7 ============ -->

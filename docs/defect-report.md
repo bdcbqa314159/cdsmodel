@@ -1198,3 +1198,130 @@ Not reproduced. The port takes a `std::span`, so the length is explicit and a
 terminator has nothing to mean — and date 0 is a legitimate date, 1601-01-01,
 that a span-based caller could reasonably include. The same input is refused
 outright as out of order rather than silently truncated.
+
+## UPSTREAM-16 — A failure that leaves the curve modified
+
+**Location:** `lib/src/zcall.c`, `JpmcdsZCAddGenRate`.
+**Severity:** Medium. Partial mutation on an error path — the function reports
+failure having already committed a point.
+
+### Mechanism
+
+The function short-circuits when the rate's terms already match the curve's,
+and then forgets to stop:
+
+```c
+if (basis==zc->basis && dayCountConv==zc->dayCountConv)
+{
+     if (JpmcdsZCAddRate(zc,date,rate) == FAILURE)
+         goto done;
+}
+/* no return -- falls through */
+if (JpmcdsRateToDiscount(rate, zc->valueDate, date, dayCountConv, basis, &df) == FAILURE)
+    goto done;
+if (JpmcdsZCAddDiscountFactor(zc,date,df) == FAILURE)
+    goto done;
+```
+
+So the matching case adds the point and then adds it **again** by a second
+route.
+
+### Why it is usually harmless
+
+The duplicate detection in `JpmcdsZCAddRateAndDiscount` sees the same date,
+compares the rate against the stored one within a hardcoded `1e-7`, and
+returns success without doing anything. The second route's rate has survived a
+round trip through a discount factor, so it lands well inside that window.
+Wasted work, not a wrong answer.
+
+### Why it is not always harmless
+
+A date equal to the curve's value date makes the second route fail:
+`JpmcdsDiscountToRate` rejects a zero-length period. The function then returns
+FAILURE — after the first route already committed the point.
+
+```
+date == valueDate : rc=FAILURE  numItems=1   *** curve MUTATED ***
+   orphaned point: date=154497 rate=0.05 discount=1
+```
+
+Reproduce with `./build/debug/defect_evidence u16`.
+
+A caller that discards the curve on failure is unaffected. One that retries,
+or inspects the error and carries on, now holds a point it never successfully
+added — and `numItems` says it is there.
+
+### In the port
+
+**Cannot occur.** `add_general_rate` returns after the matching case, which is
+what the missing `return` would have done. That removes the duplicated work
+as well, and the rate at the value date now simply succeeds — a rate over no
+time discounts by nothing, which is a perfectly good point. The only reason
+upstream failed was the redundant second route.
+
+More generally, every route into the builder commits only after all of its
+conversions have succeeded, so no failure anywhere can leave a point behind.
+That is asserted as a property rather than inferred.
+
+## UPSTREAM-17 — An optimisation that changes the answer at its boundary
+
+**Location:** `lib/src/zcall.c`, `JpmcdsZCComputeDiscount`.
+**Severity:** Medium. An infinite discount factor stored in a curve, reported
+as success.
+
+### Mechanism
+
+A fast path for the common case, whose own comment calls it "a special
+optimization":
+
+```c
+if (zc->basis == 1              &&
+    rate      >= -1.0           &&
+    date      >= zc->valueDate  &&
+    (zc->dayCountConv == JPMCDS_ACT_365F || zc->dayCountConv == JPMCDS_ACT_360))
+{
+    *discount = pow(1+rate, (zc->valueDate - date) /
+                    (zc->dayCountConv == JPMCDS_ACT_360 ? 360.0 : 365.0));
+    return SUCCESS;
+}
+```
+
+The guard is `rate >= -1.0`. At exactly `-1.0` the base is zero and the
+exponent negative, so `pow` returns an infinity — while the general path it
+stands in for **rejects** the same input, because
+`JpmcdsRateToDiscountYearFrac` refuses a base at or below zero.
+
+### Evidence
+
+```
+rate         ZCComputeDiscount          JpmcdsRateToDiscount
+-0.9999999   1.0923357970930543e+56     1.0923357970930543e+56
+-1.0         inf                        FAILURE
+-1.5         FAILURE                    FAILURE
+```
+
+And the infinity is not merely returned; it is stored and then served:
+
+```
+JpmcdsZCAddRate(curve, date, -1.0) -> SUCCESS
+  stored: date=157419 rate=-1 discount=inf
+  JpmcdsZCDiscountFactor at that date -> SUCCESS  inf
+```
+
+Reproduce with `./build/debug/defect_evidence u17`.
+
+Two code paths for one quantity, disagreeing at the boundary, and the fast one
+wins because it is tested first. The guard wants `rate > -1.0`.
+
+### In the port
+
+**Cannot occur.** The fast path is reproduced — it is not merely an
+optimisation, since `(valueDate - date)/365.0` and
+`-1.0 * ((date - valueDate)/365.0)` are the same double only because negation
+is exact — but it is taken only where it agrees with the general path, so the
+boundary case falls through and is refused.
+
+Pinned both ways: a test asserts the two paths agree for every rate inside the
+boundary, and that nothing infinite can be stored. `ZeroCurve::create` would
+also refuse `rate <= -basis` downstream (that was PORT-11), so the curve is
+protected twice over.

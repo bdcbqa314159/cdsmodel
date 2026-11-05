@@ -24,6 +24,7 @@
 #include <cdsmodel/interpolation.hpp>
 #include <cdsmodel/stub.hpp>
 #include <cdsmodel/version.hpp>
+#include <cdsmodel/zero_curve_builder.hpp>
 
 #include <cstdio>
 #include <cstring>
@@ -53,6 +54,7 @@ extern "C" {
 #include "stub.h"
 #include "tcurve.h"
 #include "yearfrac.h"
+#include "zcprvt.h"
 
 // Exported from the library but declared in no public header.
 int JpmcdsLinInterpLongPoint1Discontinuous(long *x, int xskip, int N, double *f, int fskip,
@@ -774,6 +776,155 @@ void u15() {
               "priceable. Pinned by a tier-1 invariant over 810 discount factors.\n");
 }
 
+void u16() {
+  heading("UPSTREAM-16", "a failure that leaves the curve modified");
+  std::printf("zcall.c's JpmcdsZCAddGenRate short-circuits when the rate is already\n"
+              "quoted in the curve's own terms -- and then forgets to stop:\n\n"
+              "    if (basis==zc->basis && dayCountConv==zc->dayCountConv)\n"
+              "    {\n"
+              "         if (JpmcdsZCAddRate(zc,date,rate) == FAILURE)\n"
+              "             goto done;\n"
+              "    }\n"
+              "    /* no return -- execution falls through */\n"
+              "    if (JpmcdsRateToDiscount(...) == FAILURE) goto done;\n"
+              "    if (JpmcdsZCAddDiscountFactor(zc,date,df) == FAILURE) goto done;\n\n"
+              "So the matching case adds the point, and then adds it AGAIN by a\n"
+              "second route. Usually harmless: the duplicate check compares the\n"
+              "rates within a hardcoded 1e-7 and does nothing. Wasted work.\n\n");
+
+  const TDate value_date = JpmcdsDate(2024, 1, 1);
+  std::printf("  %-28s %-9s %-10s %s\n", "date", "rc", "numItems", "verdict");
+  for (const TDate date : {JpmcdsDate(2029, 1, 1), value_date}) {
+    ZCurve *zc = JpmcdsZCMake(value_date, 4, 1, JPMCDS_ACT_365F);
+    if (zc == nullptr) {
+      continue;
+    }
+    const int rc = JpmcdsZCAddGenRate(zc, date, 0.05, 1, JPMCDS_ACT_365F);
+    const char *verdict = (rc == FAILURE && zc->numItems > 0) ? "*** curve MUTATED ***" : "-";
+    std::printf("  %-28s %-9s %-10d %s\n",
+                date == value_date ? "date == valueDate" : "date > valueDate",
+                rc == SUCCESS ? "SUCCESS" : "FAILURE", zc->numItems, verdict);
+    for (int i = 0; i < zc->numItems; ++i) {
+      if (rc == FAILURE) {
+        std::printf("     orphaned point: date=%ld rate=%g discount=%g\n", (long)zc->date[i],
+                    zc->rate[i], zc->discount[i]);
+      }
+    }
+    JpmcdsZCFree(zc);
+  }
+
+  std::printf("\nA date equal to the value date makes the second route fail --\n"
+              "JpmcdsDiscountToRate rejects a zero-length period -- so the function\n"
+              "returns FAILURE after the first route already committed the point.\n"
+              "A caller that discards the curve on failure is unaffected. One that\n"
+              "retries, or carries on past the error, now holds a point it never\n"
+              "successfully added, and numItems says it is there.\n\n");
+
+  std::printf("The port, same two inputs:\n\n");
+  for (const TDate date : {JpmcdsDate(2029, 1, 1), value_date}) {
+    std::optional<cdsmodel::ZeroCurveBuilder> b = cdsmodel::ZeroCurveBuilder::create(
+        cdsmodel::from_tdate(value_date), 4, 1, cdsmodel::DayCount::Act365Fixed);
+    const bool ok =
+        b->add_general_rate(cdsmodel::from_tdate(date), 0.05, 1, cdsmodel::DayCount::Act365Fixed);
+    std::printf("  %-28s %-9s %-10zu %s\n",
+                date == value_date ? "date == valueDate" : "date > valueDate",
+                ok ? "ok" : "refused", b->points().size(), ok ? "-" : "(nothing committed)");
+  }
+  std::printf("\nadd_general_rate returns after the matching case, as the missing\n"
+              "`return` would have. The rate at the value date now simply succeeds:\n"
+              "a rate over no time discounts by nothing, which is a perfectly good\n"
+              "point. The only reason upstream failed was the redundant second\n"
+              "route. The guarantee is broader than the one fix -- every route\n"
+              "commits only after all its conversions succeed, so no failure\n"
+              "anywhere can leave a point behind, asserted as a tier-1 property.\n");
+}
+
+void u17() {
+  heading("UPSTREAM-17", "an optimisation that changes the answer at its boundary");
+  std::printf("zcall.c's JpmcdsZCComputeDiscount has a fast path its own comment\n"
+              "calls \"a special optimization\":\n\n"
+              "    if (zc->basis == 1 && rate >= -1.0 && date >= zc->valueDate && ...)\n"
+              "    {\n"
+              "        *discount = pow(1+rate, (zc->valueDate - date) / 365.0);\n"
+              "        return SUCCESS;\n"
+              "    }\n\n"
+              "The guard is `rate >= -1.0`. At exactly -1.0 the base is zero and the\n"
+              "exponent negative, so pow returns an infinity -- while the general\n"
+              "path it stands in for REJECTS the same input, because\n"
+              "JpmcdsRateToDiscountYearFrac refuses a base at or below zero.\n\n");
+
+  const TDate value_date = JpmcdsDate(2024, 1, 1);
+  const TDate date = JpmcdsDate(2032, 1, 1);
+  ZCurve *zc = JpmcdsZCMake(value_date, 4, 1, JPMCDS_ACT_365F);
+  if (zc == nullptr) {
+    std::printf("  (upstream refused the curve; nothing to show)\n");
+    return;
+  }
+
+  std::printf("  %-12s %-26s %s\n", "rate", "ZCComputeDiscount", "JpmcdsRateToDiscount");
+  for (const double rate : {-0.9999999, -1.0, -1.5}) {
+    double fast = 0.0;
+    double general = 0.0;
+    const int rc_fast = JpmcdsZCComputeDiscount(zc, date, rate, &fast);
+    const int rc_gen = JpmcdsRateToDiscount(rate, value_date, date, JPMCDS_ACT_365F, 1, &general);
+    char a[40];
+    char b[40];
+    std::snprintf(a, sizeof a, "%.17g", fast);
+    std::snprintf(b, sizeof b, "%.17g", general);
+    std::printf("  %-12.9g %-26s %s\n", rate, rc_fast == SUCCESS ? a : "FAILURE",
+                rc_gen == SUCCESS ? b : "FAILURE");
+  }
+
+  std::printf("\nAnd the infinity is not merely returned -- it is stored, and served:\n\n");
+  const int rc = JpmcdsZCAddRate(zc, date, -1.0);
+  std::printf("  JpmcdsZCAddRate(curve, date, -1.0) -> %s\n",
+              rc == SUCCESS ? "SUCCESS" : "FAILURE");
+  for (int i = 0; i < zc->numItems; ++i) {
+    std::printf("    stored: date=%ld rate=%g discount=%g\n", (long)zc->date[i], zc->rate[i],
+                zc->discount[i]);
+  }
+  double served = 0.0;
+  const int rc_df = JpmcdsZCDiscountFactor(zc, date, JPMCDS_LINEAR_INTERP, nullptr, &served);
+  std::printf("    JpmcdsZCDiscountFactor at that date -> %s  %g\n",
+              rc_df == SUCCESS ? "SUCCESS" : "FAILURE", served);
+  JpmcdsZCFree(zc);
+
+  std::printf("\nTwo code paths for one quantity, disagreeing at the boundary, and\n"
+              "the fast one wins because it is tested first. The guard wants\n"
+              "`rate > -1.0`.\n\n"
+              "This is the mirror image of the infinity in UPSTREAM-15, and the\n"
+              "difference is the point. There, exp(1200) overflowing is a VALUE --\n"
+              "the answer really is enormous, and the port returns the same thing.\n"
+              "Here the general path is on record calling the same input an ERROR.\n\n");
+
+  std::printf("The port, same three rates:\n\n");
+  std::optional<cdsmodel::ZeroCurveBuilder> port = cdsmodel::ZeroCurveBuilder::create(
+      cdsmodel::from_tdate(value_date), 4, 1, cdsmodel::DayCount::Act365Fixed);
+  std::printf("  %-12s %-26s %s\n", "rate", "compute_discount", "general path");
+  for (const double rate : {-0.9999999, -1.0, -1.5}) {
+    const std::optional<double> fast = port->compute_discount(cdsmodel::from_tdate(date), rate);
+    const std::optional<double> general =
+        cdsmodel::rate_to_discount(rate, cdsmodel::from_tdate(value_date),
+                                   cdsmodel::from_tdate(date), cdsmodel::DayCount::Act365Fixed, 1);
+    char a[40] = "refused";
+    char b[40] = "refused";
+    if (fast) {
+      std::snprintf(a, sizeof a, "%.17g", *fast);
+    }
+    if (general) {
+      std::snprintf(b, sizeof b, "%.17g", *general);
+    }
+    std::printf("  %-12.9g %-26s %s\n", rate, a, b);
+  }
+  std::printf("\nThe fast path is reproduced -- it is not purely an optimisation,\n"
+              "since (valueDate-date)/365.0 and -1.0*((date-valueDate)/365.0) are\n"
+              "the same double only because negation is exact -- but it is taken\n"
+              "only where it agrees with the general path, so the boundary falls\n"
+              "through and is refused. Pinned from both sides: one test asserts\n"
+              "the two paths return bit-identical factors inside the boundary,\n"
+              "another that nothing infinite can be stored.\n");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -840,6 +991,12 @@ int main(int argc, char **argv) {
   }
   if (want("u15")) {
     u15();
+  }
+  if (want("u16")) {
+    u16();
+  }
+  if (want("u17")) {
+    u17();
   }
   return 0;
 }
