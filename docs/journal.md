@@ -2570,3 +2570,142 @@ UPSTREAM-23.
 Both counts are asserted in the replay. If upstream's filter ever changes, the
 divergence count moves and the test fails, rather than quietly verifying less.
 A gate that is inconvenient is usually a gate that is working.
+
+## Decision 25 — Three probes said inert; the sweep said otherwise
+
+`datelist.c` generates schedules: a start, a maturity, an interval, and a stub
+direction become a list of coupon dates. It is the file `cashflow.c`'s two
+remaining constructors were waiting on.
+
+### The count that was wrong again
+
+A regex for function definitions found three functions. There are seven. Four
+of them put the return type on its own line, which is the same reason the same
+regex missed `JpmcdsZCDiscountFactor` in `zcall.c` and two functions in
+`cashflow.c`.
+
+That is three files in a row, and I wrote in Decision 23 that the fix is not a
+better regex but to stop using a count as evidence of having read a file. This
+time I read it end to end first, which is the only reason `JpmcdsNewPayDates`,
+`JpmcdsNewDateListFromTCurve` and both business-day adjusters are in this
+slice rather than discovered by a linker error in the next one.
+
+### UPSTREAM-24, and a header that describes a different function
+
+The header is specific:
+
+> starting from roll-date we see if we can count forward an integral number of
+> intervals to the maturity date. If this is so then we can generate our
+> datelist by counting forward from the rolldate.
+
+The code counts from `startDate`, not `rollDate`. And the consequence is not a
+small discrepancy, it is an inversion:
+
+ * no stub (`extraDays == 0`) → the roll date is used, in the case where it has
+   nothing to contribute;
+ * a stub → the roll date is dropped, in the only case where it could supply a
+   grid that lands on maturity.
+
+Measured on the documented case — roll-to-maturity integral, start-to-maturity
+stubbed — the roll date changes nothing at all. The feature's stated purpose is
+unreachable.
+
+### The claim I had to withdraw
+
+Here is the part worth keeping. The library's only call site is
+`cashflow.c:230`, and it passes **startDate as the roll date**. That looks
+decisively inert: `count_dates(roll, start)` is trivially integral when the two
+are equal, so `firstDate` becomes `startDate` and the result should be whatever
+`rollDate = 0` gives.
+
+I probed three cases. All three agreed. I wrote "the mechanism is inert for this
+caller" into the header, the defect record and the severity argument.
+
+Then the differential sweep — every pair of start and maturity day-of-month,
+crossed with intervals — failed on `2024-02-29 → 2027-02-28`.
+
+The roll branch ends in `NewDateListExtended(first, maturity, interval, TRUE)`,
+generating **forward** from the start. `rollDate = 0` generates **backward**
+from maturity. Those agree only where month arithmetic does not clamp, and
+clamping is not invertible: 29 February plus twelve months is 28 February, but
+28 February minus twelve months is 28 February, not the 29th.
+
+So passing startDate as the roll date silently converts a back-stub schedule
+into a forward-generated one, and the two differ wherever a month end clamps.
+Measured: 7 of 378 integral-span cases, every one a 29 February start.
+
+The severity does not change much — a one-day difference at one end of a
+schedule, in a window that narrow. What changes is the sentence
+"unreachable from inside upstream", which was false. **A sweep is not a
+thoroughness ritual; it is the only thing that found this.** Three
+deliberately-chosen probes, each one reasonable, all missed it, because the
+hypothesis I was testing told me which cases to pick.
+
+### Reproduce or correct?
+
+UPSTREAM-24 is the first finding where the port had a real choice and chose
+*not* to fix it.
+
+`date_list.hpp` corrects upstream. The policy that allows it is narrow: there
+was no single upstream behaviour to preserve, because UPSTREAM-7's two
+truncation implementations contradicted each other *and* the header. With
+nothing consistent to be faithful to, faithfulness is not available.
+
+That is not this situation. `JpmcdsNewDateListExtendedRoll` is deterministic
+and self-consistent. One source disagrees with it and that source is a comment.
+
+A roll date decides coupon dates, coupon dates decide accrual, accrual decides
+money. Changing which end a schedule is generated from, on the strength of a
+sentence in a header, is not a porting decision — it is a modelling decision
+wearing a porter's hat. PORT-9 happened because I decided a missing line was
+deliberate; this is the same hazard with the sources swapped, and the same
+answer: reproduce the behaviour, record the disagreement, let someone with
+authority over the convention decide.
+
+### Two properties that were too strong, both from the same leap day
+
+The tier-1 suite first asserted that with no stub, `date_list` and
+`date_list_extended` are identical — on the reasoning that if nothing is
+stubbed there is nothing for "extended" to move.
+
+It failed on 2024-02-29 → 2027-02-28, which `count_dates` reports as an
+integral 36 months. Stepping back 36 months from the maturity lands on
+2024-02-28. So `date_list`, which overwrites the boundary with the requested
+start, gives the 29th; `date_list_extended`, which stays on the grid, gives the
+28th. Both are correct.
+
+**`extra_days == 0` does not imply that the start lies on the grid generated
+backward from maturity.** Counting and stepping disagree on clamped month ends,
+and I had quietly assumed they could not.
+
+The replacement property is narrower and says more: the two lists differ in at
+most the single boundary element on the stub side, agree everywhere else, and
+`date_list`'s boundaries are always exactly what the caller asked for. It also
+asserts that the boundary difference actually occurs somewhere in the sweep —
+otherwise the test would be checking a vacuous claim and nobody would notice.
+
+Both of this slice's corrections came from the same date. A leap day with a
+clamped counterpart is now the first input I will reach for in any schedule
+code.
+
+### The gate from last slice earned its keep immediately
+
+The golden header's first generation declared `cdsmodel::golden::ScheduleCase`
+and `kScheduleCases`. Both already exist in `schedule_cases.hpp`, from the CDS
+fee-schedule module.
+
+That is exactly the ODR violation I spent half an hour diagnosing last slice —
+and this time it arrived as:
+
+```
+FAIL: the same name is declared in more than one golden header, which is an
+ODR violation across the test binary:
+  ScheduleCase: date_schedule_cases.hpp, schedule_cases.hpp
+  kScheduleCases: date_schedule_cases.hpp, schedule_cases.hpp
+```
+
+A rename, thirty seconds, no debugging. One slice between writing the gate and
+it catching a real instance is a good return, and it is worth noting that the
+instance was mine both times: the hazard is not that someone else is careless,
+it is that two modules in one namespace will eventually pick the same obvious
+name.
