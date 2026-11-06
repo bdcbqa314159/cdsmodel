@@ -26,7 +26,7 @@ ROOT = pathlib.Path(__file__).parent.resolve()
 # Calibrated to the CI case -- tier 1 only, no oracle present -- because that
 # is the binding one. A local run with the oracle executes strictly more.
 # Bump it when a module lands; never lower it to make a red run green.
-TEST_FLOOR_WITHOUT_ORACLE = 357
+TEST_FLOOR_WITHOUT_ORACLE = 368
 
 
 def fail(msg: str) -> None:

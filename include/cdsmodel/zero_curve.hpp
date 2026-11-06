@@ -60,6 +60,8 @@ public:
   /// binary search assumes ascending order and does not verify it); and a
   /// ## UPSTREAM-15 -- a validating constructor that admits unpriceable curves
   ///
+  /// Replaces `JpmcdsMakeTCurve`, and is deliberately stricter than it.
+  ///
   /// `tcurve.c`'s `JpmcdsMakeTCurve` runs `checkTCurve`, whose stated purpose
   /// is "to guarantee we can generate positive discount factors". It checks
   /// the day count with `JpmcdsDayCountValid` -- which correctly accepts
@@ -126,6 +128,47 @@ public:
     }
     return ZeroCurve{base_date, std::vector<RatePoint>{points.begin(), points.end()}, basis,
                      day_count};
+  }
+
+  /// The earliest date the curve knows about. Replaces
+  /// `JpmcdsCurveFirstDate`.
+  ///
+  /// Upstream takes the MINIMUM of the base date and the first point, which is
+  /// not the same as either:
+  ///
+  /// ```c
+  /// if (curve->fNumItems == 0)
+  ///     *firstDate = curve->fBaseDate;
+  /// else
+  ///     *firstDate = MIN (curve->fBaseDate, curve->fArray[0].fDate);
+  /// ```
+  ///
+  /// So a curve whose first point PRECEDES its base date reports the point.
+  /// That is not a degenerate shape -- it is the straddled-base-date case the
+  /// flat-forwards interpolator has a dedicated branch for, where the base
+  /// date falls between two curve points. "First date" means the earliest date
+  /// the curve has an opinion about, which may be earlier than the date it
+  /// discounts to.
+  ///
+  /// The empty-curve branch is unreachable here: `create` refuses an empty
+  /// curve (UPSTREAM-15), so there is always a first point to compare against.
+  [[nodiscard]] Date first_date() const noexcept {
+    return std::min(base_date_, points_.front().date);
+  }
+
+  /// The curve's dates without its rates. Replaces `JpmcdsDatesFromCurve`.
+  ///
+  /// Upstream allocates a fresh array and returns NULL both for an empty curve
+  /// -- its comment says "no dates in curve is not an error" -- and for a
+  /// failed allocation, so the caller cannot tell those apart. Neither case
+  /// exists here: a curve is never empty, and a vector either exists or threw.
+  [[nodiscard]] std::vector<Date> dates() const {
+    std::vector<Date> out;
+    out.reserve(points_.size());
+    for (const RatePoint &point : points_) {
+      out.push_back(point.date);
+    }
+    return out;
   }
 
   [[nodiscard]] Date base_date() const noexcept { return base_date_; }

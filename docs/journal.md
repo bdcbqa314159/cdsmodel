@@ -3446,3 +3446,110 @@ wrong in a way no tolerance should absorb: those rates are inputs, not results.
 It is three lines and it would catch a swapped bracket, an off-by-one index, or
 a conversion applied twice — none of which a value comparison against upstream
 necessarily would, since both sides could be made to agree on a wrong answer.
+
+## Decision 32 — Two routes to one number, and a tolerance that was wrong for the fourth time
+
+The three `tcurve.c` functions `interpc.c` was blocking: `JpmcdsDiscountDate`,
+`JpmcdsCashFlowPV` and `JpmcdsCurveFirstDate`, plus `JpmcdsDatesFromCurve`
+while the file was open. Together they free `zr2coup` and `zr2fwd`, which the
+port-order script now confirms are leaves.
+
+No new defect. What the slice produced instead is a cross-check and a lesson
+about tolerances that I have now learned four times in different clothes.
+
+### A header split for a dependency reason, not a taste one
+
+`first_date` and `dates` are methods on `ZeroCurve`. `discount_date` and
+`cash_flow_pv` are not, and could not be: `discount_date` interpolates, so it
+needs `interp_curve.hpp`, which needs `zero_curve.hpp`. Putting it on the curve
+would close a cycle.
+
+That is the whole justification for `curve_discount.hpp` existing, and it is
+worth writing down because a reader looking for "discount off a curve" will
+look at the curve first. Two headers claiming the same upstream source is
+already established practice here — `cash_flow_list.hpp` and
+`cash_flow_schedule.hpp` both claim `cashflow.c`.
+
+### The cross-check the port now gets for free
+
+`ZeroCurve::zero_price` and `discount_date` are two implementations of one
+quantity. That is the UPSTREAM-17 shape exactly — and UPSTREAM-17 was a case
+where two such implementations disagreed at a boundary and nobody had compared
+them.
+
+So I compared them, on both sides. They agree. Both suites assert it now, which
+means the port carries the check UPSTREAM-17 showed upstream lacked.
+
+I also nearly got the reason wrong. The port's `zero_price` is
+`exp(-rate * days/365.0)` with a hardcoded 365, which reads like it must
+disagree with a curve on ACT/360 or annual compounding. It does not, because
+`JpmcdsZeroRate` — and the port's `rate_cc` that mirrors it — converts the
+stored rate to continuous compounding *first*, using the curve's own basis and
+day count. The hardcoded 365 is correct because by that point the rate is
+continuous and the time is measured in the same convention the conversion used.
+I checked that before writing either function rather than after.
+
+### The tolerance, and why this one is a different mistake
+
+The tier-1 property "the two routes agree" failed at **basis 365**, by 350
+ULPs. My probe had tested bases 1, 2 and 5000 and found exact agreement, so I
+wrote a 4-ULP bound.
+
+Upstream diverges identically — 8.26e-14 at basis 365 — so this is not a port
+bug. Swept properly:
+
+```
+basis  1    relative 2.4e-16
+basis  12   relative 9.6e-16
+basis  52   relative 3.1e-15
+basis  365  relative 8.3e-14    <- about 350 ULPs
+basis  5000 relative 1.2e-16    <- continuous: no conversion at all
+```
+
+The mechanism is `cc = basis * log(1 + rate/basis)`. At basis 365 and a 3%
+rate that is `log(1 + 8.2e-5)` — the log of a number very close to 1, which
+loses about four digits unless `log1p` is used. The agreement therefore
+degrades with compounding frequency and *recovers* at continuous, where the
+conversion is the identity.
+
+This is the fourth tolerance I have had to widen, and it is a different failure
+from the previous three. Those were cases where I asserted a quantity was
+well-behaved and the floating-point edge of its domain said otherwise. This one
+is about **conditioning**: two routes that are equal in the reals can differ by
+far more than rounding if one of them passes through an ill-conditioned step.
+A ULP bound on such a comparison is not a tight tolerance, it is a claim that
+`log(1+x)` is well conditioned near zero.
+
+So the rule, which I should have had after the FP-contraction episode:
+**cross-checks between two mathematically-equal routes get the accumulating
+tier, not the ULP tier** — the ULP tier is for one computation compared against
+itself under different compilation, which is a different thing entirely.
+
+### The sampling mistake underneath it
+
+The reason the probe missed it is worth more than the tolerance. I sampled
+bases 1, 2 and 5000 — the two smallest and the largest. The divergence peaks in
+the *middle* and vanishes at both ends I had chosen.
+
+A basis list that samples only the extremes hides a middle, and I had no reason
+to expect monotonicity in the first place. The differential test's list is now
+1, 2, 12, 52, 365, continuous, with a comment saying why 52 and 365 are there.
+
+### A claim stronger than either comparison
+
+The differential test now asserts something better than "both agree with
+themselves": that **the port's drift equals upstream's drift**, to 1e-15. Since
+both inherit the discrepancy from the same algebra, that is the claim actually
+worth making — it would catch a port that was accidentally *better* conditioned
+than upstream, which is a divergence even though it looks like an improvement.
+
+### The present value, and an order check disguised as a value check
+
+`cash_flow_pv` is a left-to-right sum of discounted amounts, and the recorded
+cases use amounts spanning 1e-6 to 1e12 on purpose. At that spread a
+reassociated sum misses by far more than any tolerance would absorb, so the
+recorded total pins the accumulation *order* and not merely the arithmetic. The
+differential test compares it bit-exactly for the same reason.
+
+That is the cheapest way I know to test an order dependency: choose inputs
+where the wrong order cannot produce the right answer.
