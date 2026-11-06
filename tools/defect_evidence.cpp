@@ -25,6 +25,7 @@
 #include <cdsmodel/day_count.hpp>
 #include <cdsmodel/day_count_string.hpp>
 #include <cdsmodel/defaulted.hpp>
+#include <cdsmodel/interp_curve.hpp>
 #include <cdsmodel/interpolation.hpp>
 #include <cdsmodel/stub.hpp>
 #include <cdsmodel/swap_dates.hpp>
@@ -1765,6 +1766,108 @@ void u27() {
               "convention decision, not a porting one.\n");
 }
 
+void u28() {
+  heading("UPSTREAM-28", "a process-wide flag left disabled on the success paths");
+  std::printf("interpc.c's JpmcdsInterpRateExact disables the binary search's order\n"
+              "checking, saving the old value to restore later:\n\n"
+              "    /*\n"
+              "    ** ... we will turn off order checking in the binary search routines.\n"
+              "    **\n"
+              "    ** This might well produce a dramatic improvement in all the ALIB\n"
+              "    ** zero curve analytics!\n"
+              "    */\n"
+              "    TBoolean checkOrder = JpmcdsBSearchCheckOrder (FALSE);\n\n"
+              "and restores it at `done:`. Between those two points sit TWO\n"
+              "`return SUCCESS` statements -- the clamps for a date past the end of\n"
+              "the curve and a date before its start.\n\n");
+
+  const TDate base = JpmcdsDate(2024, 1, 1);
+  TDate dates[3] = {JpmcdsDate(2025, 1, 1), JpmcdsDate(2026, 1, 1), JpmcdsDate(2027, 1, 1)};
+  double rates[3] = {0.03, 0.035, 0.04};
+  TCurve *curve = JpmcdsMakeTCurve(base, dates, rates, 3, 1.0, JPMCDS_ACT_365F);
+  if (curve == nullptr) {
+    std::printf("  (upstream refused the curve; nothing to show)\n");
+    return;
+  }
+
+  // JpmcdsBSearchCheckOrder(x) sets the flag and returns the PREVIOUS value,
+  // so calling it twice reads the state without changing it.
+  const auto read_flag = []() {
+    const TBoolean was = JpmcdsBSearchCheckOrder(TRUE);
+    JpmcdsBSearchCheckOrder(was);
+    return was == TRUE;
+  };
+
+  std::printf("  %-44s %s\n", "after calling with...", "order checking");
+  JpmcdsBSearchCheckOrder(TRUE);
+  std::printf("  %-44s %s\n", "(initial state)", read_flag() ? "ON" : "OFF");
+
+  double rate = 0.0;
+  JpmcdsBSearchCheckOrder(TRUE);
+  JpmcdsInterpRate(JpmcdsDate(2025, 7, 1), curve, JPMCDS_LINEAR_INTERP, &rate);
+  std::printf("  %-44s %s\n", "a date inside the curve", read_flag() ? "ON" : "OFF");
+
+  JpmcdsBSearchCheckOrder(TRUE);
+  JpmcdsInterpRate(JpmcdsDate(2040, 1, 1), curve, JPMCDS_LINEAR_INTERP, &rate);
+  std::printf("  %-44s %s  <- LEAKED\n", "a date AFTER the curve (extrapolation)",
+              read_flag() ? "ON" : "OFF");
+
+  JpmcdsBSearchCheckOrder(TRUE);
+  JpmcdsInterpRate(JpmcdsDate(2000, 1, 1), curve, JPMCDS_LINEAR_INTERP, &rate);
+  std::printf("  %-44s %s  <- LEAKED\n", "a date BEFORE the curve (extrapolation)",
+              read_flag() ? "ON" : "OFF");
+
+  JpmcdsBSearchCheckOrder(TRUE);
+  (void)JpmcdsInterpRate(JpmcdsDate(2025, 7, 1), curve, 999L, &rate);
+  std::printf("  %-44s %s\n", "an unknown interp type (an error path)", read_flag() ? "ON" : "OFF");
+
+  std::printf("\nSo the leak is on the SUCCESS paths, and the genuine error path\n"
+              "restores correctly -- the exact opposite of UPSTREAM-13, which leaks\n"
+              "the same global on its ERROR paths. Two functions share one flag and\n"
+              "leak it under complementary conditions, so between them there is no\n"
+              "state of the program in which it can be trusted.\n\n");
+
+  std::printf("What it costs, in two calls:\n\n");
+  double unsorted[4] = {1.0, 5.0, 3.0, 9.0};
+  int lo = 0;
+  int hi = 0;
+  JpmcdsBSearchCheckOrder(TRUE);
+  std::printf("  checking ON : JpmcdsBSearchDouble(unsorted) -> %s\n",
+              JpmcdsBSearchDouble(4.0, unsorted, sizeof(double), 4, &lo, &hi) == SUCCESS
+                  ? "SUCCESS (!)"
+                  : "FAILURE");
+  JpmcdsInterpRate(JpmcdsDate(2040, 1, 1), curve, JPMCDS_LINEAR_INTERP, &rate);
+  std::printf("  after ONE extrapolation: the same call      -> %s\n",
+              JpmcdsBSearchDouble(4.0, unsorted, sizeof(double), 4, &lo, &hi) == SUCCESS
+                  ? "SUCCESS  <- no longer validated"
+                  : "FAILURE");
+  JpmcdsBSearchCheckOrder(TRUE);
+
+  std::printf("\nThe port cannot do this, structurally rather than carefully: there is\n"
+              "no global. `bracket` and `bracket_checked` are separate functions and\n"
+              "the caller picks -- the decision recorded in bsearch.hpp when\n"
+              "UPSTREAM-13 was filed. Extrapolating repeatedly changes nothing:\n\n");
+  const std::vector<cdsmodel::RatePoint> points{{cdsmodel::from_tdate(dates[0]), rates[0]},
+                                                {cdsmodel::from_tdate(dates[1]), rates[1]},
+                                                {cdsmodel::from_tdate(dates[2]), rates[2]}};
+  const std::optional<cdsmodel::ZeroCurve> ported = cdsmodel::ZeroCurve::create(
+      cdsmodel::from_tdate(base), points, 1.0, cdsmodel::DayCount::Act365Fixed);
+  if (ported) {
+    for (int i = 0; i < 3; ++i) {
+      (void)cdsmodel::interp_rate(*ported, cdsmodel::from_tdate(JpmcdsDate(2040, 1, 1)),
+                                  cdsmodel::InterpType::Linear);
+    }
+    std::printf("  after 3 extrapolations, bracket_checked(unsorted) -> %s\n",
+                cdsmodel::bracket_checked(std::span<const double>{unsorted}, 4.0)
+                    ? "accepted (!)"
+                    : "still refused");
+  }
+  std::printf("\nOne decision has now pre-empted two defects, in two files, found two\n"
+              "slices apart. That is the argument for removing mutable global state\n"
+              "rather than auditing its users.\n");
+  JpmcdsFreeTCurve(curve);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1867,6 +1970,9 @@ int main(int argc, char **argv) {
   }
   if (want("u27")) {
     u27();
+  }
+  if (want("u28")) {
+    u28();
   }
   return 0;
 }

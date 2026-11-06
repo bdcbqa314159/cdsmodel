@@ -501,6 +501,12 @@
           <td><span class="chip">Reproduced; signature fixed</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u28">UPSTREAM-28</a></td>
+          <td>Interpolating past the end of a curve leaves order validation <strong>disabled process-wide and permanently</strong> — the same global as UPSTREAM-13, leaking on the success paths instead</td>
+          <td><span class="chip mid">Medium · permanent effect</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u27">UPSTREAM-27</a></td>
           <td>A <code>day &lt;= 28</code> guess declares month-end schedules off cycle when they are not — and the previous coupon date moves with it</td>
           <td><span class="chip low">Low · 14 of 600, all leap days</span></td>
@@ -2480,6 +2486,119 @@ freq=2   2024-02-29 -&gt; 2027-02-28 : on-cycle 155468, off-cycle 155467  DIFFER
 
     <div class="tests">
       <span>Reproduce:</span> ./build/debug/defect_evidence u27
+    </div>
+  </section>
+
+  <!-- ============ U28 ============ -->
+  <section class="record sev-mid" id="u28">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-28</span>
+      <h2>A process-wide flag left disabled on the success paths</h2>
+    </div>
+    <div class="chips">
+      <span class="chip mid">Medium · validation silently off, process-wide, permanently</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">interpc.c — JpmcdsInterpRateExact</p>
+
+    <h3>Mechanism</h3>
+    <p>
+      The function opens by disabling the binary search's order checking,
+      saving the previous value to restore later:
+    </p>
+<pre><code>/*
+** Since we are using the general interpolation functions, but we
+** know that the TCurve should have been constructed properly,
+** we will turn off order checking in the binary search routines.
+**
+** <span class="hit">This might well produce a dramatic improvement in all the ALIB
+** zero curve analytics!</span>
+*/
+TBoolean checkOrder = JpmcdsBSearchCheckOrder (FALSE);</code></pre>
+    <p>and restores it at the <code>done:</code> label:</p>
+<pre><code>done:
+    /* Re-set the global check order flag. */
+    JpmcdsBSearchCheckOrder (checkOrder);</code></pre>
+    <p>
+      Between those two points sit <strong>two <code>return SUCCESS</code>
+      statements</strong> — the clamps for a date past the end of the curve and
+      a date before its start:
+    </p>
+<pre><code>if (desiredDate &gt; curve-&gt;fArray[curveLen-1].fDate)
+{
+    *rate = curve-&gt;fArray[curveLen-1].fRate;
+    <span class="hit">return SUCCESS;</span>                       /* bypasses done: */
+}
+else if (desiredDate &lt; curve-&gt;fArray[0].fDate)
+{
+    *rate = curve-&gt;fArray[0].fRate;
+    <span class="hit">return SUCCESS;</span>                       /* bypasses done: */
+}</code></pre>
+
+    <h3>Evidence</h3>
+<pre><code>after calling with...                        order checking
+(initial state)                              ON
+a date inside the curve                      ON
+a date AFTER the curve (extrapolation)       <span class="hit">OFF</span>  &lt;- LEAKED
+a date BEFORE the curve (extrapolation)      <span class="hit">OFF</span>  &lt;- LEAKED
+an empty curve (an error path)                ON</code></pre>
+    <p>And the consequence, in two calls:</p>
+<pre><code>order checking ON : JpmcdsBSearchDouble(unsorted) -&gt; FAILURE
+after one extrapolation: same call               -&gt; <span class="hit">SUCCESS</span>  &lt;- no longer validated</code></pre>
+    <p>
+      An unsorted array that the checked search correctly rejected now passes.
+      The precondition those functions exist to verify is simply no longer
+      verified, anywhere in the process, for the rest of its life.
+    </p>
+
+    <h3>Its relationship to UPSTREAM-13</h3>
+    <p>
+      Same global, same failure mode, <strong>inverted
+      reachability</strong>. <a href="#u13">UPSTREAM-13</a> leaks
+      <code>bSearchCheckOrder_g</code> on two <em>error</em> paths in
+      <code>lintrp1.inc</code>. This leaks it on two <em>success</em> paths, and
+      extrapolating off the end of a curve is ordinary use rather than a fault
+      — a swap maturing beyond the last curve point hits it on every
+      valuation.
+    </p>
+    <p>
+      Note the last row of the measurement: here the genuine error path reaches
+      <code>done:</code> and restores correctly, the exact opposite of
+      UPSTREAM-13. Two functions share one global and leak it under
+      complementary conditions, so between them there is no state of the
+      program in which the flag can be trusted.
+    </p>
+    <p>
+      The comment is worth keeping too. The mechanism was introduced as a
+      performance speculation — <em>"This might well produce a dramatic
+      improvement in all the ALIB zero curve analytics!"</em> — and the
+      speculation is what created the leak. The optimisation it describes is to
+      skip a validation; the bug is that it skips it for everyone, forever.
+    </p>
+
+    <h3>Status in the port</h3>
+    <p>
+      <strong>Cannot occur</strong>, structurally rather than carefully: there
+      is no global. <code>bracket</code> and <code>bracket_checked</code> are
+      separate functions and the caller picks which to use, which is the
+      decision recorded in <code>bsearch.hpp</code> when UPSTREAM-13 was filed.
+      A flag that does not exist cannot be left in the wrong state.
+    </p>
+    <p>
+      So one decision has now pre-empted <strong>two</strong> defects, in two
+      files, found two slices apart. That is the argument for removing mutable
+      global state rather than auditing its users: the second defect needed no
+      new work to be immune to.
+    </p>
+    <p>
+      The differential test resets the flag in <code>SetUp</code> and
+      <code>TearDown</code>, because the function under test leaks it — without
+      that, test <em>order</em> would decide what the checked searches do for
+      every other test in the binary.
+    </p>
+
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u28
     </div>
   </section>
 

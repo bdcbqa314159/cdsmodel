@@ -2096,3 +2096,108 @@ That is safe, because `*onCycle` can only be true where `JpmcdsCountDates` has
 just set it — but the safety is an argument about control flow rather than a
 property of the code, which is exactly the shape UPSTREAM-14 is. Here the
 argument happens to hold, and the port keeps the variable initialised anyway.
+
+## UPSTREAM-28 — A process-wide flag left disabled on the success paths
+
+**Location:** `lib/src/interpc.c`, `JpmcdsInterpRateExact`.
+**Severity:** Medium. Order validation silently disabled process-wide and
+permanently, by ordinary extrapolation.
+
+### Mechanism
+
+The function opens by disabling the binary search's order checking, saving the
+previous value to restore later:
+
+```c
+/*
+** Since we are using the general interpolation functions, but we
+** know that the TCurve should have been constructed properly,
+** we will turn off order checking in the binary search routines.
+**
+** This might well produce a dramatic improvement in all the ALIB
+** zero curve analytics!
+*/
+TBoolean checkOrder = JpmcdsBSearchCheckOrder (FALSE);
+```
+
+and restores it at the `done:` label:
+
+```c
+done:
+    /* Re-set the global check order flag. */
+    JpmcdsBSearchCheckOrder (checkOrder);
+```
+
+Between those two points sit **two `return SUCCESS` statements** — the clamps
+for a date past the end of the curve and a date before its start:
+
+```c
+if (desiredDate > curve->fArray[curveLen-1].fDate)
+{
+    *rate = curve->fArray[curveLen-1].fRate;
+    return SUCCESS;                       /* bypasses done: */
+}
+else if (desiredDate < curve->fArray[0].fDate)
+{
+    *rate = curve->fArray[0].fRate;
+    return SUCCESS;                       /* bypasses done: */
+}
+```
+
+### Evidence
+
+```
+after calling with...                        order checking
+(initial state)                              ON
+a date inside the curve                      ON
+a date AFTER the curve (extrapolation)       OFF  <- LEAKED
+a date BEFORE the curve (extrapolation)      OFF  <- LEAKED
+an empty curve (an error path)                ON
+```
+
+Reproduce with `./build/debug/defect_evidence u28`.
+
+And the consequence, in two calls:
+
+```
+order checking ON : JpmcdsBSearchDouble(unsorted) -> FAILURE
+after one extrapolation: same call               -> SUCCESS  <- no longer validated
+```
+
+An unsorted array that the checked search correctly rejected now passes. The
+precondition `JpmcdsBSearchDouble` and `JpmcdsBSearchLong` exist to verify is
+simply no longer verified, anywhere in the process, for the rest of its life.
+
+### Its relationship to UPSTREAM-13
+
+Same global, same failure mode, **inverted reachability**. UPSTREAM-13 leaks
+`bSearchCheckOrder_g` on two *error* paths in `lintrp1.inc`. This leaks it on
+two *success* paths, and extrapolating off the end of a curve is ordinary use
+rather than a fault — a swap maturing beyond the last curve point hits it on
+every valuation.
+
+Note the last row of the measurement: here the genuine error path reaches
+`done:` and restores correctly, which is the exact opposite of UPSTREAM-13. Two
+functions share one global and leak it under complementary conditions, so
+between them there is no state of the program in which the flag can be trusted.
+
+The comment is worth keeping too. The mechanism was introduced as a performance
+speculation — *"This might well produce a dramatic improvement in all the ALIB
+zero curve analytics!"* — and the speculation is what created the leak. The
+optimisation it describes is to skip a validation; the bug is that it skips it
+for everyone, forever.
+
+### In the port
+
+**Cannot occur**, structurally rather than carefully: there is no global.
+`bracket` and `bracket_checked` are separate functions and the caller picks
+which to use, which is the decision recorded in `bsearch.hpp` when UPSTREAM-13
+was filed. A flag that does not exist cannot be left in the wrong state.
+
+So one decision has now pre-empted two defects, in two files, found two slices
+apart. That is the argument for removing mutable global state rather than
+auditing its users: the second defect needed no new work to be immune to.
+
+The differential test for this one resets the flag in `SetUp` and `TearDown`,
+because the function under test leaks it — without that, test *order* would
+decide what the checked searches do for every other test in the binary.

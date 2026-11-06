@@ -3334,3 +3334,115 @@ which is the habit that found the other four.
 flag change that surfaced it, so CI had been green on a tree that warns.
 Zero warnings again, and a reminder that `cmake --build` is not a verification
 step — a clean configure is.
+
+## Decision 31 — One decision, two defects, two files, two slices apart
+
+`interpc.c` interpolates a rate off a curve in the curve's own terms, honouring
+its basis, its day count and a chosen interpolation type. It is the file
+`JpmcdsDiscountDate` needs, and `JpmcdsDiscountDate` is what `zr2coup`,
+`zr2fwd` and `zcswap` all need.
+
+### UPSTREAM-28, and what a removed global bought for free
+
+The finding is in the first six lines of `JpmcdsInterpRateExact`:
+
+```c
+TBoolean checkOrder = JpmcdsBSearchCheckOrder (FALSE);
+```
+
+Save the global, disable order checking, restore at `done:`. Between those two
+points sit two `return SUCCESS` statements — the clamps for a date past the end
+of the curve and a date before its start. Both bypass the restore, so **every
+extrapolation leaves order validation off, process-wide and permanently.**
+
+That is UPSTREAM-13's global and UPSTREAM-13's failure mode, with the
+reachability inverted. U13 leaks on two *error* paths in `lintrp1.inc`; this
+leaks on two *success* paths. Measured, the error path here restores correctly
+— the exact opposite. So two functions share one flag and leak it under
+complementary conditions, and between them there is no state of the program in
+which it can be trusted.
+
+The consequence is two calls long:
+
+```
+order checking ON : JpmcdsBSearchDouble(unsorted) -> FAILURE
+after one extrapolation: same call               -> SUCCESS
+```
+
+A precondition check stops checking. Not for this call — for the process.
+
+**The port was already immune, and that is the part worth recording.** When
+UPSTREAM-13 was filed I split the search into `bracket` and `bracket_checked`
+and deleted the flag, writing in `bsearch.hpp` that "the caller picks the
+function and the global is gone". Two slices later a second defect in a
+different file turned out to need no new work at all.
+
+That is the case for removing mutable global state rather than auditing its
+users. An audit finds the leaks you look for; removing the state makes the ones
+you have not looked for impossible. I could not have predicted this instance —
+I had not read `interpc.c` when I made the decision.
+
+A smaller note in the same spirit: the mechanism was introduced as a
+performance *speculation*, and the comment still says so with an exclamation
+mark — *"This might well produce a dramatic improvement in all the ALIB zero
+curve analytics!"* The optimisation is to skip a validation. The defect is that
+it skips it for everyone, forever.
+
+### A test whose own fixture had to defend against the defect
+
+The differential test resets the flag in `SetUp` **and** `TearDown`, because
+the function under test leaks it. Without that, test *order* decides what the
+checked searches do for every other test in the binary — and the golden
+generator needs the same reset between recordings, or the recording would
+depend on its own iteration order.
+
+That is an unusual shape and worth naming: a defect that leaks process state
+makes the test harness part of its blast radius. The reset is not tidiness, it
+is the thing that keeps 571 other tests deterministic.
+
+### Two branches the port cannot reach, and why that is not an omission
+
+`interpc.c` has five day-count arms and a whole function
+(`InterpRateDiscountFactors`) for the discount-factor basis. The port carries
+two arms and none of that function.
+
+Not because I skipped them. `ZeroCurve::create` refuses a basis outside
+{continuous} ∪ [1, 365] and any day count other than ACT/365F or ACT/360 — a
+decision made three modules ago for UPSTREAM-15, where upstream's own
+validating constructor accepted curves that `JpmcdsZeroPrice` then priced as
+NaN. The inputs those branches exist to handle cannot be constructed.
+
+"The port is missing a branch" and "the port cannot represent the input that
+reaches it" look identical in a diff, so both suites assert the second
+directly: the curves are refused at construction, and upstream is shown
+accepting one of them so the refusal reads as a decision rather than an
+accident.
+
+### The two flat-forwards implementations, finally compared
+
+Two slices ago I noted that `zcall.c`'s `ZCInterpolate` has its own
+flat-forwards arm, independent of `interpc.c`'s, and that comparing them
+directly was worth doing. This slice makes it a test.
+
+They agree to the accumulating tier — not bit-for-bit, and they should not be
+expected to: `interp_flat_forwards` has a branch for the base date falling
+between the brackets, which `ZCInterpolate` has no equivalent of because a
+`ZCurve`'s value date is not a curve point. So the two take different routes
+through the same algebra on different inputs and land in the same place.
+
+The cheaper observation is why that branch exists at all. Upstream's comment:
+*"This ensures that basedate will be associated with a 'kink' in the forwards,
+and discount(base) == 1.0"*. Without it the interpolated discount factor at the
+base date would not be exactly 1, and every price computed off the curve would
+inherit that error. The tier-1 suite asserts the consequence rather than the
+branch — `rate_to_discount` at the base date must return exactly 1.0 — which is
+the form that would survive someone rewriting the interpolator.
+
+### The property I would keep if I could keep one
+
+`EveryCurvePointInterpolatesToItsOwnRate`, bit-exactly, under both schemes and
+every basis. An interpolator that merely came close at its own knots would be
+wrong in a way no tolerance should absorb: those rates are inputs, not results.
+It is three lines and it would catch a swapped bracket, an off-by-one index, or
+a conversion applied twice — none of which a value comparison against upstream
+necessarily would, since both sides could be made to agree on a wrong answer.
