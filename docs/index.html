@@ -501,6 +501,12 @@
           <td><span class="chip">Reproduced; signature fixed</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u32">UPSTREAM-32</a></td>
+          <td>The <strong>bizarre rate got a guard; the bizarre maturity did not</strong> &mdash; a read-modify-write through <code>NULL[-1]</code>, two statements after the careful bit</td>
+          <td><span class="chip mid">Medium &middot; null write</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u31">UPSTREAM-31</a></td>
           <td>An output written <strong>after the error label</strong>, from a variable never set &mdash; the first finding here that <em>no</em> sanitizer could have caught</td>
           <td><span class="chip low">Low &middot; UB, value discarded</span></td>
@@ -2651,6 +2657,131 @@ after one extrapolation: same call               -&gt; <span class="hit">SUCCESS
 
     <div class="tests">
       <span>Reproduce:</span> ./build/debug/defect_evidence u28
+    </div>
+  </section>
+
+  <!-- ============ U32 ============ -->
+  <section class="record sev-mid" id="u32">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-32</span>
+      <h2>The bizarre rate got a guard; the bizarre maturity did not</h2>
+    </div>
+    <div class="chips">
+      <span class="chip mid">Medium &middot; read-modify-write through a null-derived pointer</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">zcswutil.c:96 &mdash; JpmcdsZCGetSwapCFL &middot; reachable from zcswap.c:475</p>
+
+    <h3>Mechanism</h3>
+    <p>The function opens by special-casing a degenerate input, and says so:</p>
+<pre><code><span class="c">/* Bizarre rate==0.0 case
+ */</span>
+if (rate==0.0)
+{
+    cfl = JpmcdsNewEmptyCFL(1);        <span class="c">/* simply cash flow of 1.0 at date */</span>
+    if (cfl == NULL)
+        goto done;
+    cfl-&gt;fArray[0].fAmount = 1;
+    ...
+    <span class="hit">return cfl;</span>
+}</code></pre>
+    <p>
+      That path is carefully done. Even the <code>return cfl</code> rather than
+      a jump to <code>done:</code> is deliberate &mdash; <code>status</code> is
+      still <code>FAILURE</code> there, so the shared exit would free the list
+      and return NULL. Somebody thought about it.
+    </p>
+    <p>The other degenerate input gets nothing. With <code>matDate == valueDate</code>:</p>
+    <table class="data">
+      <thead><tr><th>step</th><th>result</th></tr></thead>
+      <tbody>
+        <tr><td><code>JpmcdsNewDateList(v, v, 6M)</code></td><td><strong>1</strong> date</td></tr>
+        <tr><td><code>JpmcdsNewPayDates(v, v, 6M)</code></td><td><strong>0</strong> &mdash; it drops the first element and decrements the count</td></tr>
+        <tr><td><code>JpmcdsNewEmptyCFL(0)</code></td><td><code>fNumItems == 0</code>, <code>fArray == NULL</code></td></tr>
+        <tr><td>the coupon loop</td><td>does not run</td></tr>
+      </tbody>
+    </table>
+    <p>and then, three statements from the end:</p>
+<pre><code><span class="hit">cfl-&gt;fArray[cfl-&gt;fNumItems-1].fAmount += 1.0;</span>   <span class="c">/* add principal */</span></code></pre>
+    <p>
+      which is <code>NULL[-1].fAmount += 1.0</code>. Note that this is a
+      read-modify-<strong>write</strong>, not merely a read as in UPSTREAM-21
+      &mdash; the <code>+=</code> loads and stores.
+    </p>
+    <p>
+      <code>JpmcdsNewPayDates</code> is the step that makes it possible, and
+      the emptying is not an accident of allocation:
+    </p>
+<pre><code><span class="c">/* Now remove startDate, and move all dates back by one.
+ */</span>
+for (idx=0; idx &lt; payDates-&gt;fNumItems-1; idx++)
+{
+    payDates-&gt;fArray[idx] = payDates-&gt;fArray[idx+1];
+}
+<span class="hit">payDates-&gt;fNumItems--;</span></code></pre>
+    <p>
+      With one date the loop body never executes and the count goes to zero.
+      Excluding the value date from a list of payment dates is correct; the
+      case where it is the <em>only</em> date is not considered.
+    </p>
+
+    <h3>Both sanitizers, two diagnostics</h3>
+<pre><code>zcswutil.c:96:4: runtime error: <span class="hit">applying non-zero offset
+                 18446744073709551600 to null pointer</span>
+SUMMARY: UndefinedBehaviorSanitizer: undefined-behavior zcswutil.c:96:4
+
+==22701==ERROR: AddressSanitizer: <span class="hit">SEGV on unknown address 0xfffffffffffffff8</span>
+SUMMARY: AddressSanitizer: SEGV zcswutil.c:96 in JpmcdsZCGetSwapCFL</code></pre>
+    <p>
+      The two numbers are the same bug from two distances.
+      <code>18446744073709551600</code> is <code>-16</code> as an unsigned
+      64-bit value, and <code>sizeof TCashFlow</code> is 16 &mdash; one element
+      backwards. <code>0xfffffffffffffff8</code> is <code>-8</code>, the offset
+      of <code>.fAmount</code> within that element, the address actually
+      touched.
+    </p>
+    <p>
+      The opposite situation from UPSTREAM-31, filed one slice earlier: there
+      the harness could see nothing at all; here two tools independently report
+      it.
+    </p>
+
+    <h3>Reachability</h3>
+<pre><code>cfl = JpmcdsZCGetSwapCFL(<span class="hit">zc-&gt;valueDate</span>,
+                         <span class="hit">matDate</span>, isEndStub,
+                         rate,
+                        &amp;ivl,
+                         fixDayCountConv,</code></pre>
+    <p>
+      There is <strong>no comparison between <code>matDate</code> and
+      <code>zc-&gt;valueDate</code> anywhere in zcswap.c</strong>. A swap
+      benchmark maturing on the curve's own value date is sufficient &mdash; the
+      same trigger as UPSTREAM-29, arriving at a different defect in a different
+      file. The zero-rate path is immune, which is the shape of the whole
+      finding: the input somebody wrote a comment about is handled, and the one
+      two statements later is not.
+    </p>
+
+    <h3>In the port</h3>
+    <p>
+      <strong>Cannot occur.</strong> <code>swap_cash_flows</code> refuses when
+      the coupon-date list is empty, and the guard is on the
+      <strong>outcome</strong> rather than on
+      <code>maturity == value_date</code>. That is UPSTREAM-29's lesson from two
+      slices ago, and it applies here for a fresh reason: the substitution table
+      and the bad-day adjustment both run between the date generation and the
+      flow construction, and <code>fix_bad_dates</code> can collapse two dates
+      onto one.
+    </p>
+    <p>
+      <code>swap_coupon_dates</code> is <em>not</em> changed &mdash; it still
+      returns the empty list, because that is upstream's answer and the date
+      generation is faithful. The refusal belongs where the empty list becomes
+      a problem.
+    </p>
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u32
+      &nbsp;&middot;&nbsp; traces: ./build/asan/defect_evidence u32 --unsafe
     </div>
   </section>
 

@@ -2635,3 +2635,139 @@ rather than writing through an out-pointer, so a failure path has no output to
 write and the shape is unavailable. This is the general argument for returning
 values instead of filling them in: a function that returns cannot write a
 result it did not compute.
+
+## UPSTREAM-32 — The bizarre rate got a guard; the bizarre maturity did not
+
+**Location:** `lib/src/zcswutil.c:96`, `JpmcdsZCGetSwapCFL`. Reachable from
+`lib/src/zcswap.c:475`.
+**Severity:** Medium. A read-modify-write through a null-derived pointer,
+reachable from the curve bootstrap.
+
+### Mechanism
+
+The function opens by special-casing a degenerate input, and says so:
+
+```c
+/* Bizarre rate==0.0 case
+ */
+if (rate==0.0)
+{
+    cfl = JpmcdsNewEmptyCFL(1);        /* simply cash flow of 1.0 at date */
+    if (cfl == NULL)
+        goto done;
+    cfl->fArray[0].fAmount = 1;
+    if (JpmcdsZCAdjustDate(matDate, badDayList, badDayConv, holidayFile,
+                        &cfl->fArray[0].fDate) == FAILURE)
+        goto done;
+
+    return cfl;
+}
+```
+
+That path is carefully done. Even its `return cfl` rather than a jump to
+`done:` is deliberate: `status` is still `FAILURE` at that point, so routing
+through the shared exit would free the list and return NULL. Somebody thought
+about it.
+
+The other degenerate input gets nothing. With `matDate == valueDate`:
+
+| step | result |
+|---|---|
+| `JpmcdsNewDateList(v, v, 6M)` | **1** date |
+| `JpmcdsNewPayDates(v, v, 6M)` | **0** — it drops the first element and decrements the count |
+| `JpmcdsNewEmptyCFL(0)` | `fNumItems == 0`, `fArray == NULL` |
+| the coupon loop | does not run |
+
+and then, three statements from the end:
+
+```c
+cfl->fArray[cfl->fNumItems-1].fAmount += 1.0;   /* add principal */
+```
+
+which is `NULL[-1].fAmount += 1.0`. Note that this is a read-modify-**write**,
+not merely a read as in UPSTREAM-21 — the `+=` loads and stores.
+
+`JpmcdsNewPayDates` is the step that makes this possible, and it is worth
+quoting, because the emptying is not an accident of allocation:
+
+```c
+/* Now remove startDate, and move all dates back by one.
+ */
+for (idx=0; idx < payDates->fNumItems-1; idx++)
+{
+    payDates->fArray[idx] = payDates->fArray[idx+1];
+}
+payDates->fNumItems--;
+```
+
+With one date the loop body never executes and the count goes to zero. The
+value date is correctly excluded from a list of payment dates; the case where
+it is the *only* date is not considered.
+
+### Both sanitizers, two diagnostics
+
+```
+zcswutil.c:96:4: runtime error: applying non-zero offset
+                 18446744073709551600 to null pointer
+SUMMARY: UndefinedBehaviorSanitizer: undefined-behavior zcswutil.c:96:4
+
+==22701==ERROR: AddressSanitizer: SEGV on unknown address 0xfffffffffffffff8
+SUMMARY: AddressSanitizer: SEGV zcswutil.c:96 in JpmcdsZCGetSwapCFL
+```
+
+The two numbers are the same bug seen from two distances.
+`18446744073709551600` is `-16` as an unsigned 64-bit value, and `sizeof
+TCashFlow` is 16 — one element backwards. `0xfffffffffffffff8` is `-8`, the
+offset of `.fAmount` within that element, which is the address actually
+touched.
+
+This is the opposite situation from UPSTREAM-31, filed one slice earlier: there
+the harness could see nothing, here two tools independently report it.
+
+### Reachability
+
+`zcswap.c:475`:
+
+```c
+cfl = JpmcdsZCGetSwapCFL(zc->valueDate,
+                         matDate, isEndStub,
+                         rate,
+                        &ivl,
+                         fixDayCountConv,
+```
+
+There is **no comparison between `matDate` and `zc->valueDate` anywhere in
+`zcswap.c`**. So a swap benchmark maturing on the curve's own value date is
+sufficient — the same trigger as UPSTREAM-29, arriving at a different defect in
+a different file. A benchmark list with a zero-tenor swap in it is malformed
+input, but it is input the library accepts rather than rejects.
+
+The zero-rate path is immune, which is the shape of the whole finding: the
+input somebody wrote a comment about is handled, and the one two statements
+later is not.
+
+Reproduce with `defect_evidence u32`, and `defect_evidence u32 --unsafe` under
+the asan preset for the traces. The live call is also a `DISABLED_` test in the
+differential suite, never enabled.
+
+### In the port
+
+**Cannot occur.** `swap_cash_flows` refuses when the coupon-date list is empty:
+
+```cpp
+if (dates->empty()) {
+  return std::nullopt;
+}
+```
+
+The guard is on the **outcome**, not on `maturity == value_date`. That is the
+lesson UPSTREAM-29 taught two slices ago — there the input test looked
+sufficient and a Saturday-to-Sunday span under FOLLOW reached the same place
+with `start < maturity`. Here the same reasoning applies for a different
+reason: the substitution table and the bad-day adjustment both run between the
+date generation and the flow construction, and `fix_bad_dates` is documented as
+able to collapse two dates onto one.
+
+`swap_coupon_dates` is *not* changed — it still returns the empty list, because
+that is upstream's answer and the date generation is faithful. The refusal
+belongs where the empty list becomes a problem.
