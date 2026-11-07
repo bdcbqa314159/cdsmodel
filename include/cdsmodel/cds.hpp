@@ -14,8 +14,13 @@
 // split is the one the model itself makes: `Cds` is what was traded, the
 // arguments are when and against what it is being valued.
 //
-// `JpmcdsCdsFeeLegFlows` is NOT ported here. It returns a TCashFlowList and
-// needs cashflow.c, which is layer 7 and not on the pricing path.
+// `JpmcdsCdsFeeLegFlows` is not ported here YET, and the reason this comment
+// used to give has expired. It said the function "needs cashflow.c, which is
+// layer 7 and not on the pricing path" -- cashflow.c has since been ported in
+// full (cash_flow_list.hpp and cash_flow_schedule.hpp), so the dependency is
+// available and only the work remains. Flagged by `port_progress.py`'s
+// mentioned-but-not-claimed check, which is how a stale deferral gets noticed
+// instead of calcifying into a permanent-looking decision.
 
 #include <cdsmodel/bad_day.hpp>
 #include <cdsmodel/calendar.hpp>

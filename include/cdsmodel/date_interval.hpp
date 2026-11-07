@@ -116,7 +116,7 @@ namespace detail {
 
 /// Parse an interval such as "1Y", "3M", "-6M", or bare "M" (meaning "1M").
 ///
-/// Reproduces `JpmcdsStringToDateInterval`: an optional sign, optional
+/// Replaces `JpmcdsStringToDateInterval`. An optional sign, optional
 /// digits defaulting to 1, then a period-type character.
 ///
 /// TWO DELIBERATE DIFFERENCES, both refusals to reproduce undefined behaviour:

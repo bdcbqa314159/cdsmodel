@@ -8,7 +8,9 @@
 // caught at the bottom of a switch. Here it is an enum class.
 //
 // Scope: the arithmetic (JpmcdsDaysDiff, JpmcdsDayCountFraction) and the
-// calendar helpers it needs. The string parser JpmcdsStringToDayCountConv
+// calendar helpers it needs, plus `JpmcdsDaysLeftThisYear` from ldate.c,
+// which is here rather than in date.hpp because its answer depends on a day
+// count convention. The string parser JpmcdsStringToDayCountConv
 // (yearfrac.c) is deliberately NOT in this header -- see port-notes.md.
 
 #include <cdsmodel/date.hpp>
@@ -183,6 +185,22 @@ inline constexpr DayCount kActAct = DayCount::Act365;
     }
   }
   return sign * (static_cast<double>(leap_days) / 366.0 + static_cast<double>(other_days) / 365.0);
+}
+/// Day count from `date` to 1 January of the following year. Replaces
+/// `JpmcdsDaysLeftThisYear`.
+///
+/// The name promises calendar days and the answer does not deliver them: the
+/// function takes a day count convention and delegates to `JpmcdsDaysDiff`,
+/// so under 30/360 the result is a 30/360 difference and not a count of days
+/// at all. From 31 December that is 0 under 30/360 and 1 under ACT.
+/// Reproduced, because the convention is a parameter the caller chose.
+///
+/// Upstream builds 1 January of `year + 1` through `TMonthDayYear` and
+/// `JpmcdsMDYToDate`, which is where it would fail for a date in the last
+/// representable year. The port's `next_year_start` is calendar arithmetic
+/// with the same reach, and `days_diff` supplies the only refusal.
+[[nodiscard]] constexpr std::optional<long> days_left_this_year(Date date, DayCount dcc) noexcept {
+  return days_diff(date, next_year_start(date), dcc);
 }
 
 } // namespace cdsmodel

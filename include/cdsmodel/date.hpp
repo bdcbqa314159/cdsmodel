@@ -1,6 +1,8 @@
 #pragma once
 
-// Port of upstream dateconv.c -- the calendar layer everything else sits on.
+// Port of upstream dateconv.c + ldate.c -- the calendar layer everything
+// else sits on. dateconv.c supplies the representation; ldate.c the four
+// year helpers at the bottom of this header.
 //
 // Upstream represents a date as `typedef long int TDate`: days since
 // 1601-01-01, proleptic Gregorian. That typedef is the single most
@@ -152,6 +154,52 @@ inline constexpr TDate kMaxTDate = static_cast<TDate>(std::numeric_limits<detail
 /// upstream's 0-6 Sunday-based numbering.
 [[nodiscard]] constexpr std::chrono::weekday day_of_week(Date d) noexcept {
   return std::chrono::weekday{d};
+}
+
+// ---------------------------------------------------------------------------
+// ldate.c's four year helpers.
+//
+// These exist in upstream to serve `JpmcdsDayCountFraction`'s ACT/ACT branch,
+// which walks whole years adding 365 or 366 and re-deriving the year from a
+// running date. The port's `year_fraction` does not walk years -- it
+// intersects the period with each calendar year directly, which is why these
+// four were still unclaimed long after day_count.hpp was finished.
+//
+// They are ported anyway because all four are declared in `ldate.h` and are
+// therefore public API: an external caller using the model's date layer can
+// reach them even though nothing inside the library now needs them.
+
+/// The date's year as a four-digit number. Replaces `JpmcdsYear`.
+///
+/// Upstream's version is the only function in ldate.c that ends `return 0;`
+/// rather than `return SUCCESS;`. The two are the same -- `SUCCESS` is
+/// `#define`d to 0 -- so this is a style inconsistency and not a defect, but
+/// it is the sort of thing that makes a reader stop and check.
+[[nodiscard]] constexpr int year_of(Date d) noexcept { return static_cast<int>(to_ymd(d).year()); }
+
+/// Whether the date falls in a leap year. Replaces `JpmcdsIsLeap`.
+///
+/// Distinct from the `is_leap(std::chrono::year)` above, which replaces the
+/// `JPMCDS_IS_LEAP` macro: upstream has both a macro taking a year and a
+/// function taking a date, and the function routes through `JpmcdsDateToMDY`
+/// to get the year the macro wants. Expressed here as the composition it is.
+///
+/// Upstream implements the Gregorian rule with three nested `if`s whose "no"
+/// branches are empty statements (`; /* not divisible by 4 */`), which is
+/// correct and reads like a trap. `std::chrono::year::is_leap()` is the same
+/// rule.
+[[nodiscard]] constexpr bool is_leap_year(Date d) noexcept { return is_leap(to_ymd(d).year()); }
+
+/// 1 January of the date's own year. Replaces `JpmcdsYearStart`.
+[[nodiscard]] constexpr Date year_start(Date d) noexcept {
+  return Date{to_ymd(d).year() / std::chrono::January / 1};
+}
+
+/// 1 January of the year AFTER the date's. Not an upstream function, but the
+/// value `JpmcdsDaysLeftThisYear` computes on its way and the only part of it
+/// that is about dates rather than about day counts.
+[[nodiscard]] constexpr Date next_year_start(Date d) noexcept {
+  return Date{(to_ymd(d).year() + std::chrono::years{1}) / std::chrono::January / 1};
 }
 
 /// Last day of the date's own month. Replaces JpmcdsDateToEOM.
