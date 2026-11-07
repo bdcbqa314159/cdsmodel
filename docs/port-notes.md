@@ -95,19 +95,25 @@ Bottom-up, each layer fully differential-tested against `cds_reference`
 before the next begins. The build stays green and hybrid at every commit —
 there is never a big-bang integration.
 
+**All twelve layers are complete**: 163 of 163 in-scope functions, 41 of 41
+files, plus three deliberate non-ports listed above. The ✅ marks below are
+kept at file granularity because that is the level the notes were written at
+and the level `tools/port_progress.py` reports; the per-layer notes record why
+each layer was shaped the way it was, which is still the useful part.
+
 | # | layer | upstream files | notes |
 |---|---|---|---|
 | 0 | harness | — | ✅ done: CMake, GoogleTest, two-tier verification, oracle optional |
-| 1 | search / interp | `bsearch` ✅, `lintrp1`, `linterpc`, `interpc` | `interpc` needs a strided overload — one call site, `interpc.c:560`, `sizeof(TRatePt)` |
-| 2 | dates | `cdate` ✅, `dateconv` ✅, `ldate` ✅ (except calendar-dependent parts), `date_sup`, `dateadj` | epoch pinned: TDate 0 = 1601-01-01, proleptic Gregorian, verified every 13th day to 2200 |
-| 3 | day counts | `ldate` (DCF part) ✅, `yearfrac` ✅, `convert` | layer complete except `convert.c`, which is date intervals rather than day counts and moves to layer 5 |
-| 4 | calendars | `buscache` ✅, `busday` ✅, `badday` → layer 6 | **layer complete.** No global state left. `BusinessDaysDiff` transcribed, `AddBusinessDays` reimplemented — see "Transcribe or reimplement". `badday.c` holds `TBadDayList`, used only by the zero-curve swap code |
-| 5 | intervals / schedules | `convert` ✅ (interval parts), `dtlist` ✅, `schedule`, `datelist`, `cxdatelist`, `stub` | `DateInterval` and the date list operations done. The date lists are the first module to **correct** upstream rather than reproduce it — see Policy |
-| 6 | curves | `tcurve`, `zerocurve`, `cxzerocurve`, `zcall`, `zcswap`, `gtozc` | 3,330 lines; `TCurve` → `std::vector` |
-| 7 | cashflows | `cashflow`, `streamcf`, `fltrate`, `cfinanci` | |
-| 8 | CDS legs | `timeline` ✅, `contingentleg` ✅, `feeleg` ✅, `defaulted` | **both legs of a CDS price bit-identically.** Protection leg across 720 trades, premium leg across 576 configurations — see Decisions 9 and 10 in [journal.md](journal.md) |
-| 9 | solver | `rtbrent` | callback → template parameter / `std::function` |
-| 10 | top-level API | `cds`, `cdsone`, `cdsbootstrap` | the surface users actually call |
+| 1 | search / interp | `bsearch` ✅, `lintrp1` ✅, `linterpc` ✅, `interpc` ✅ | `interpc` needs a strided overload — one call site, `interpc.c:560`, `sizeof(TRatePt)` |
+| 2 | dates | `cdate` ✅, `dateconv` ✅, `ldate` ✅, `date_sup` ✅, `dateadj` ✅ | epoch pinned: TDate 0 = 1601-01-01, proleptic Gregorian, verified every 13th day to 2200 |
+| 3 | day counts | `ldate` (DCF part) ✅, `yearfrac` ✅, `convert` ✅ | layer complete except `convert.c`, which is date intervals rather than day counts and moves to layer 5 |
+| 4 | calendars | `buscache` ✅, `busday` ✅, `badday` ✅ | **layer complete.** No global state left. `BusinessDaysDiff` transcribed, `AddBusinessDays` reimplemented — see "Transcribe or reimplement". `badday.c` holds `TBadDayList`, used only by the zero-curve swap code |
+| 5 | intervals / schedules | `convert` ✅, `dtlist` ✅, `schedule` ✅, `datelist` ✅, `cxdatelist` ✅, `stub` ✅ | `DateInterval` and the date list operations done. The date lists are the first module to **correct** upstream rather than reproduce it — see Policy |
+| 6 | curves | `tcurve` ✅, `zerocurve` ✅, `cxzerocurve` ✅, `zcall` ✅, `zcswap` ✅, `gtozc` ✅ | 3,330 lines; `TCurve` → `std::vector`. `JpmcdsMakeTCurveNoRateCheck` is a deliberate non-port; its TDate-0 terminator is a deliberate difference |
+| 7 | cashflows | `cashflow` ✅, `streamcf` ✅, `fltrate` ✅, `cfinanci` ✅ | |
+| 8 | CDS legs | `timeline` ✅, `contingentleg` ✅, `feeleg` ✅, `defaulted` ✅ | **both legs of a CDS price bit-identically.** Protection leg across 720 trades, premium leg across 576 configurations — see Decisions 9 and 10 in [journal.md](journal.md) |
+| 9 | solver | `rtbrent` ✅ | callback → template parameter. Solver outputs compare at the stopping tolerance, not in ULPs |
+| 10 | top-level API | `cds` ✅, `cdsone` ✅, `cdsbootstrap` ✅ | the surface users actually call |
 | 11 | deleted outright | `cmemory`, `cerror`, `lprintf`, `lscanf`, `cfileio`, `strutil` | ~2,900 lines replaced by the standard library |
 
 Layer 11 is worth stating plainly: roughly **14% of the codebase is

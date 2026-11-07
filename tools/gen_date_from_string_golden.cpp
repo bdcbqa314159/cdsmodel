@@ -147,7 +147,8 @@ void escape(const std::string &text) {
 int main() {
   JpmcdsErrMsgOff();
 
-  std::printf("// GENERATED FILE -- DO NOT EDIT. Emitted by tools/gen_date_from_string_golden.cpp.\n");
+  std::printf(
+      "// GENERATED FILE -- DO NOT EDIT. Emitted by tools/gen_date_from_string_golden.cpp.\n");
   std::printf("//\n");
   std::printf("// Recorded behaviour of JpmcdsStringToDate: the input text, whether it\n");
   std::printf("// was accepted, and the resulting date. See the generator for the two\n");
