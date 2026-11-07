@@ -4310,3 +4310,110 @@ smaller one.
 
 `zerocurve.c` is 135 lines and the last file on the main path. After it the
 only in-scope work left is three independent leaves.
+
+## Decision 40 — The top of the stack, and the byte that is legal by accident
+
+`zerocurve.c` is 135 lines and one function, `JpmcdsBuildIRZeroCurve` — the
+only entry point in the library a caller reaches without knowing anything about
+ZCurves, stub curves or bootstraps. It is the last file on the main path.
+
+### UPSTREAM-35, and the detail that makes it survive review
+
+```c
+instr = toupper(instrNames[i]);
+```
+
+`instrNames` is a `char *`, plain `char` is signed here, and C requires
+`toupper`'s argument to be representable as `unsigned char` or to equal `EOF`.
+A high-bit byte is neither. `(char)0xE9` reaches `toupper` as −23.
+
+Textbook stuff. What made it worth writing up properly is the table I printed
+while measuring it:
+
+| byte | as `char` | permitted? |
+|---|---|---|
+| 0x7F | 127 | yes |
+| 0x80 | −128 | **no** |
+| 0xE9 | −23 | **no** |
+| 0xFF | −1 | **yes** |
+
+`0xFF` is −1, which *equals `EOF`*. So of the 128 high-bit bytes, **exactly one
+is legal, by collision.** And it is the last one — the obvious thing to test.
+
+I did not set out to find that; I printed the whole range because printing a
+range is cheap, and the boundary turned out to be interesting. That is the
+third or fourth time this project has got something from sweeping a domain
+rather than sampling it, and the cost each time has been about a minute.
+
+No consequence is demonstrated: the instrument check rejects the character
+immediately afterwards, and glibc pads its tables for this mistake by
+convention. UBSan has no check for it. So this is the second register entry
+that is UB the harness cannot see, after UPSTREAM-31 — and the contrast between
+them is instructive. UPSTREAM-31 needed cross-translation-unit reasoning to
+identify at all. This one is in every C style guide. The harness misses both,
+for entirely different reasons.
+
+There is a second reason not to write it this way that has nothing to do with
+signedness: `toupper` consults the locale. A function deciding whether a
+benchmark is a swap should not depend on `LC_CTYPE`.
+
+### An overload I had to add because of a decision made twelve slices ago
+
+`zerocurve.c` starts with `JpmcdsNewTCurve(valueDate, 0, 1.0, ACT/365F)` — a
+curve with **zero points** — and feeds it through both stages. The port's
+`ZeroCurve` is non-empty by construction, decided back in the zero_curve slice.
+
+So the function I merged one slice ago, `curve_with_cash(const ZeroCurve &,
+...)`, cannot be called the way the library's own top-level entry point calls
+it. I had noted the empty-curve gap in that header and said "building from
+nothing goes through ZeroCurveBuilder" — which was true, and which turned out
+not to be enough, because the *next* file up needs exactly that path.
+
+The fix is additive: overloads taking a `Date value_date` where the others take
+a curve. Those are what upstream's empty-curve branch actually means, written
+as their own entry points rather than as a state the type forbids.
+
+Worth recording as a cost of the invariant. Making `ZeroCurve` non-empty has
+paid for itself repeatedly — UPSTREAM-21, 22, 29 and 32 all die on
+non-emptiness somewhere — and the bill came due here, one slice late, as two
+overloads. That is a good trade, but it is a trade, and I would rather the
+journal say so than imply the invariant was free.
+
+### The dead-parameter inventory closes with a confession
+
+```c
+char    fwdLength = '3';   /* not used */
+```
+
+Four files in a row now — `fltrate`, `streamcf`, `zcswap`, `gtozc` — carry the
+parameters of a feature that was removed. This is the only place where somebody
+noticed and wrote it down **at the call site** rather than deleting it.
+
+I have stopped finding these interesting individually and started finding the
+count interesting. The model shipped with the signatures of a larger library
+and the body of a smaller one, and this comment is the moment that becomes
+explicit rather than inferred.
+
+### Two tests that needed their names fixed
+
+`InterleavingTheInstrumentKindsChangesNothing` asserted a refusal. The claim in
+the name and the claim in the body were opposites, and the test passed, because
+it was asserting the body's claim. Renamed to
+`ADecreasingBenchmarkListIsRefused`, which is what it checks: order *within*
+each instrument group is load-bearing, order *between* the groups is not.
+
+And I deleted a test called `ThreeParallelArraysBecomeOneSpanOfStructs`, which
+could only ever have asserted that a struct has the members it is declared
+with. That is a tautology dressed as a test — the same thing I caught myself
+writing four slices ago as `EXPECT_TRUE(x || !x)`. The header comment carries
+the claim; nothing executable needs to.
+
+### Where this leaves the project
+
+The main path is done. `JpmcdsBuildIRZeroCurve` works end to end, and its 96
+recorded curves are the closest thing this project has to an end-to-end oracle:
+one call exercises money market, the cash merge, swap schedules, stream cash
+flows, the Brent solve and the curve container together.
+
+Three independent leaves remain in scope: `linterpc` (93 lines), `cxbsearch`
+(180) and `cx` (230).

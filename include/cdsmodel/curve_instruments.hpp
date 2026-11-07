@@ -191,6 +191,44 @@ curve_with_cash(const ZeroCurve &curve, std::span<const RatePoint> quotes, DayCo
   return cash->to_zero_curve();
 }
 
+/// Build a curve from money-market quotes alone, with no input curve.
+///
+/// Upstream's caller for this is `zerocurve.c`, which starts with
+/// `JpmcdsNewTCurve(valueDate, 0, ...)` -- a curve with ZERO points -- and
+/// hands it to `JpmcdsZCCash`. The port's `ZeroCurve` is non-empty by
+/// construction, so that input cannot be expressed; this overload is what
+/// upstream's empty-curve branch means, written as its own entry point rather
+/// than as a state the type forbids.
+///
+/// Same validation as the curve-taking overload, except that the "quote on or
+/// before the value date" check compares against `value_date` directly.
+[[nodiscard]] inline std::optional<ZeroCurve>
+curve_with_cash(Date value_date, std::span<const RatePoint> quotes, DayCount day_count) {
+  if (quotes.empty()) {
+    return std::nullopt; // no input curve and no quotes is nothing at all
+  }
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    if (i > 0 && quotes[i - 1].date > quotes[i].date) {
+      return std::nullopt;
+    }
+    if (quotes[i].rate <= -1.0) {
+      return std::nullopt;
+    }
+    if (quotes[i].date <= value_date) {
+      return std::nullopt;
+    }
+  }
+  std::optional<ZeroCurveBuilder> cash = ZeroCurveBuilder::create(
+      value_date, static_cast<int>(quotes.size()) + 2, kCashCurveBasis, kCashCurveDayCount);
+  if (!cash) {
+    return std::nullopt;
+  }
+  if (!cash->add_money_market(quotes, day_count)) {
+    return std::nullopt;
+  }
+  return cash->to_zero_curve();
+}
+
 /// Replaces `JpmcdsZCSwaps`: add swap benchmarks to a curve.
 ///
 /// Interpolation is `FlatForwards`, which upstream hardcodes at the call site
@@ -253,6 +291,64 @@ curve_with_swaps(const ZeroCurve &curve, const std::optional<ZeroCurve> &discoun
                    conventions, std::nullopt, calendar)) {
       return std::nullopt;
     }
+  }
+  return builder->to_zero_curve();
+}
+
+/// Build a curve from swap benchmarks alone, with no input curve.
+///
+/// The counterpart to the cash overload above, and reachable in upstream the
+/// same way: `zerocurve.c` with an instrument list containing no money-market
+/// entries hands `JpmcdsZCSwaps` the zero-point curve it started with. There
+/// `lastStubDate` falls back to the curve's base date --
+/// `if (zeroCurve->fNumItems < 1) lastStubDate = zeroCurve->fBaseDate;` --
+/// which is what this does.
+[[nodiscard]] inline std::optional<ZeroCurve>
+curve_with_swaps(Date value_date, const std::optional<ZeroCurve> &discount_curve,
+                 std::span<const Date> maturities, std::span<const double> rates,
+                 const SwapConventions &conventions, const Calendar &calendar) {
+  if (maturities.size() != rates.size()) {
+    return std::nullopt;
+  }
+  if (maturities.empty()) {
+    return std::nullopt; // no input curve and no benchmarks is nothing at all
+  }
+  for (const double rate : rates) {
+    if (rate <= -1.0) {
+      return std::nullopt;
+    }
+  }
+  for (std::size_t i = 0; i + 1 < maturities.size(); ++i) {
+    if (maturities[i + 1] <= maturities[i]) {
+      return std::nullopt;
+    }
+  }
+  for (const Date date : maturities) {
+    if (date < value_date) {
+      return std::nullopt;
+    }
+  }
+  if (!calendar.is_business_day(value_date)) {
+    return std::nullopt;
+  }
+
+  std::optional<ZeroCurveBuilder> builder = ZeroCurveBuilder::create(
+      value_date, static_cast<int>(maturities.size()) + 2, kCashCurveBasis, kCashCurveDayCount);
+  if (!builder) {
+    return std::nullopt;
+  }
+
+  // lastStubDate is the base date when the curve has no points.
+  std::size_t offset = 0;
+  while (offset < maturities.size() && maturities[offset] < value_date) {
+    ++offset;
+  }
+  if (offset >= maturities.size()) {
+    return std::nullopt; // every benchmark was dropped; nothing to build from
+  }
+  if (!add_swaps(*builder, discount_curve, maturities.subspan(offset), rates.subspan(offset),
+                 conventions, std::nullopt, calendar)) {
+    return std::nullopt;
   }
   return builder->to_zero_curve();
 }
