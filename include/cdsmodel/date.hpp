@@ -1,8 +1,9 @@
 #pragma once
 
-// Port of upstream dateconv.c + ldate.c -- the calendar layer everything
-// else sits on. dateconv.c supplies the representation; ldate.c the four
-// year helpers at the bottom of this header.
+// Port of upstream dateconv.c + ldate.c + convert.c -- the calendar layer
+// everything else sits on. dateconv.c supplies the representation; ldate.c
+// the four year helpers at the bottom of this header; convert.c the string
+// parser below them.
 //
 // Upstream represents a date as `typedef long int TDate`: days since
 // 1601-01-01, proleptic Gregorian. That typedef is the single most
@@ -21,9 +22,11 @@
 //   - days[] / leapDays[] / cumDays[] / leapCumDays[] month tables.
 //   - the JPMCDS_IS_LEAP macro.
 
+#include <array>
 #include <chrono>
 #include <limits>
 #include <optional>
+#include <string_view>
 
 namespace cdsmodel {
 
@@ -154,6 +157,192 @@ inline constexpr TDate kMaxTDate = static_cast<TDate>(std::numeric_limits<detail
 /// upstream's 0-6 Sunday-based numbering.
 [[nodiscard]] constexpr std::chrono::weekday day_of_week(Date d) noexcept {
   return std::chrono::weekday{d};
+}
+
+/// Parse a date written as text. Replaces `JpmcdsStringToDate`.
+///
+/// Four formats are documented: `YYYYMMDD`, `MM/DD/YYYY`, `Mth-DD-YYYY` and
+/// `DD-Mth-YYYY`. All four are accepted, and so are several things the
+/// documentation does not mention -- measured rather than assumed:
+///
+///   * the delimiter set is `-/. ` and not just `-` and `/`, so
+///     `03.15.2024` and `03 15 2024` parse;
+///   * TRAILING TOKENS ARE SILENTLY IGNORED. Upstream calls `strtok` exactly
+///     three times and never asks whether anything is left, so
+///     `1-1-2024-GARBAGE` parses as 1 January 2024. Reproduced: a stricter
+///     parser would reject input the library accepts, and the output for the
+///     input it does accept is not in doubt;
+///   * two-digit years pivot at `CROSSOVER_YEAR 60` -- `59` is 2059 and `60`
+///     is 1960;
+///   * years from 100 to 1600 are rejected outright, so the +1900 branch only
+///     ever sees 60 to 99 and there is no three-digit-year surprise.
+///
+/// ## The contrast worth noticing
+///
+/// This function copies its input with
+///
+///     (void)strncpy(dateCopy, mmddyyyy, sizeof(dateCopy)-1);
+///     dateCopy[sizeof(dateCopy)-1] = '\0';
+///
+/// into a 32-byte stack buffer, with a comment explaining why ("use strncpy to
+/// prevent accidental use of long strings"). Measured: a 48-character input
+/// truncates and still parses.
+///
+/// `JpmcdsStringToDateInterval`, in the SAME FILE with the SAME buffer size,
+/// copies digits with `while (isdigit(*inp)) *nump++ = *inp++;` and overflows
+/// -- that is UPSTREAM-4, the stack write driven by spreadsheet input. One
+/// author bounded the copy and wrote down why; the other did not. The two
+/// functions are 225 lines apart.
+///
+/// Not reproduced: `strtok`, which keeps static state and makes upstream's
+/// version non-reentrant. Nothing about parsing a date needs that.
+/// DELIBERATE DIFFERENCE, UPSTREAM-38. The month-name helper lowercases three
+/// bytes unconditionally -- `cp[0] = tolower(cp[0]); cp[1] = ...; cp[2] = ...`
+/// -- however short the token is, and those are read-modify-WRITES. With a
+/// short non-numeric token at the end of the 32-byte buffer the third one
+/// lands past it. Confirmed: `stack-buffer-overflow` at convert.c:395. See the
+/// register. Here the token is a `string_view` and its length is checked
+/// before any character is touched.
+[[nodiscard]] inline std::optional<Date> date_from_string(std::string_view text) {
+  // Upstream copies into a 32-byte buffer and truncates, so a longer input is
+  // parsed from its first 31 characters. Reproduced, because truncation is
+  // observable: "03/15/2024" followed by padding still parses.
+  text = text.substr(0, 31);
+
+  constexpr std::string_view kDelimiters = "-/. ";
+
+  const auto to_month_name = [](std::string_view token) -> std::optional<int> {
+    // Upstream compares the lowercased first three characters against three-
+    // letter names, so a token of any other length cannot match -- "January"
+    // fails. Checking the length first is what makes this safe.
+    if (token.size() != 3) {
+      return std::nullopt;
+    }
+    constexpr std::string_view kNames[] = {"jan", "feb", "mar", "apr", "may", "jun",
+                                           "jul", "aug", "sep", "oct", "nov", "dec"};
+    char lowered[3] = {};
+    for (std::size_t i = 0; i < 3; ++i) {
+      const char c = token[i];
+      lowered[i] = (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+    }
+    const std::string_view key{lowered, 3};
+    for (std::size_t i = 0; i < 12; ++i) {
+      if (key == kNames[i]) {
+        return static_cast<int>(i) + 1;
+      }
+    }
+    return std::nullopt;
+  };
+
+  // A non-negative integer, or nullopt. Upstream reaches this through
+  // JpmcdsSscanf, which overflows a signed long on a long digit run -- see
+  // UPSTREAM-38's second observation. Bounded here.
+  const auto to_number = [](std::string_view token) -> std::optional<long> {
+    if (token.empty()) {
+      return std::nullopt;
+    }
+    long value = 0;
+    for (const char c : token) {
+      if (c < '0' || c > '9') {
+        return std::nullopt;
+      }
+      if (value > (100000000L - (c - '0')) / 10) {
+        return std::nullopt; // far beyond any year; upstream wraps
+      }
+      value = value * 10 + (c - '0');
+    }
+    return value;
+  };
+
+  if (text.find_first_of(kDelimiters) == std::string_view::npos) {
+    // The undelimited YYYYMMDD form, which upstream requires to be exactly
+    // eight characters.
+    if (text.size() != 8) {
+      return std::nullopt;
+    }
+    const std::optional<long> year = to_number(text.substr(0, 4));
+    const std::optional<long> month = to_number(text.substr(4, 2));
+    const std::optional<long> day = to_number(text.substr(6, 2));
+    // Upstream rejects a zero component because `atol` returns 0 both for
+    // "00" and for unparseable text, so it cannot tell them apart. The port
+    // can, but reproduces the refusal: a zero month or day is invalid anyway,
+    // and a zero YEAR is below the epoch and would be refused next.
+    if (!year || !month || !day || *year == 0 || *month == 0 || *day == 0) {
+      return std::nullopt;
+    }
+    return make_date(static_cast<int>(*year), static_cast<int>(*month), static_cast<int>(*day));
+  }
+
+  // The delimited forms. Upstream takes exactly three tokens and never asks
+  // whether more remain, so trailing text is ignored -- reproduced.
+  std::array<std::string_view, 3> tokens{};
+  std::size_t found = 0;
+  std::size_t pos = 0;
+  while (found < 3 && pos < text.size()) {
+    const std::size_t start = text.find_first_not_of(kDelimiters, pos);
+    if (start == std::string_view::npos) {
+      break;
+    }
+    std::size_t end = text.find_first_of(kDelimiters, start);
+    if (end == std::string_view::npos) {
+      end = text.size();
+    }
+    tokens[found++] = text.substr(start, end - start);
+    pos = end;
+  }
+  if (found < 3) {
+    return std::nullopt;
+  }
+
+  long month = 0;
+  long day = 0;
+  bool first_was_a_name = false;
+  if (const std::optional<long> n = to_number(tokens[0])) {
+    month = *n;
+  } else if (const std::optional<int> name = to_month_name(tokens[0])) {
+    month = *name;
+    first_was_a_name = true;
+  } else {
+    return std::nullopt;
+  }
+
+  if (const std::optional<long> n = to_number(tokens[1])) {
+    day = *n;
+  } else {
+    // The DD-Mth-YYYY form: what was read as the month was really the day.
+    // Upstream's `isMonth` guard refuses two names.
+    day = month;
+    const std::optional<int> name = to_month_name(tokens[1]);
+    if (first_was_a_name || !name) {
+      return std::nullopt;
+    }
+    month = *name;
+  }
+
+  // DELIBERATE DIFFERENCE, UPSTREAM-39. The year is read with a bare `atol`,
+  // whose "0" return is indistinguishable from a parsed zero, and which stops
+  // at the first non-digit instead of reporting one. Upstream therefore
+  // ACCEPTS "03/15/aaaa" as 2000-03-15 (0 is below CROSSOVER_YEAR, so it is
+  // promoted) and "03/15/2024XX" as 2024-03-15. The month and day fields
+  // three lines above it do detect an unparseable token -- that is what makes
+  // this an internal inconsistency rather than a convention, and what lets
+  // the port refuse instead of reproduce. See the register.
+  const std::optional<long> parsed_year = to_number(tokens[2]);
+  if (!parsed_year) {
+    return std::nullopt;
+  }
+  long year = *parsed_year;
+  // Years from 100 to 1600 are refused, which is what keeps the +1900 branch
+  // below from ever seeing a three-digit value.
+  if (year > 99 && year < static_cast<long>(static_cast<int>(kMinYear))) {
+    return std::nullopt;
+  }
+  if (year < 60) {
+    year += 2000; // CROSSOVER_YEAR
+  } else if (year < static_cast<long>(static_cast<int>(kMinYear))) {
+    year += 1900;
+  }
+  return make_date(static_cast<int>(year), static_cast<int>(month), static_cast<int>(day));
 }
 
 // ---------------------------------------------------------------------------

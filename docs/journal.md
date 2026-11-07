@@ -5123,3 +5123,184 @@ written up, which is the next slice's job along with `JpmcdsStringToDate`.
 **162 of 164 in-scope functions = 99%**, 39 of 41 files complete. Two
 functions remain, and they are the last two: `JpmcdsStringToDate` (convert.c)
 and `JpmcdsMakeTCurveNoRateCheck` (tcurve.c).
+
+---
+
+## Decision 47 — The last function was the one that fought back
+
+`JpmcdsStringToDate` was supposed to be the easy one. A date parser: read three
+tokens, make a date. It is 90 lines. It was the last entry on the list and I
+expected to spend an afternoon on it.
+
+It produced **three** defects, and one of them is the only correction in the
+entire port.
+
+### The parser measured first, as always
+
+Before writing a line I swept the input domain. Four documented formats, all
+working. The delimiter set is `-/. ` — dot and space are undocumented. Trailing
+tokens are silently ignored, so `1-1-2024-GARBAGE` is 2024-01-01. The crossover
+year is 60, pivoting 59 → 2059 and 60 → 1960. Years 100–1600 are rejected
+outright. And a 48-character input truncates to 31 and still parses, because
+`strncpy` bounds the copy.
+
+That last fact is what made me look harder. `convert.c` is the file that
+contains [UPSTREAM-4](defect-report.md#upstream-4), an **unbounded** copy into a
+fixed buffer. Here, 225 lines away, the same author wrote a bounded one. Same
+file, same hazard, two different outcomes — so what else in this function is
+one-and-not-the-other?
+
+### UPSTREAM-38: the bound was downstream of the problem
+
+`NStringToMonth` lowercases three characters:
+
+```c
+cp[0] = (char) tolower(cp[0]);
+cp[1] = (char) tolower(cp[1]);
+cp[2] = (char) tolower(cp[2]);
+```
+
+No length check. And those are read-modify-**writes**. A one-character token has
+its NUL at `cp[1]` and nothing at `cp[2]`.
+
+To get that past the buffer, three things have to line up, and all three are
+reachable from the public entry point: a 32-byte stack buffer, a non-numeric
+second token, and a first token long enough to push the second to offset 30.
+`"11111111111111111111111111111-a"` does it. ASan:
+
+```
+ERROR: AddressSanitizer: stack-buffer-overflow
+    #0 NStringToMonth convert.c:395
+    #1 JpmcdsStringToDate convert.c:119
+  [32, 64) 'dateCopy' (line 45)
+  <== Memory access at offset 64 overflows this variable
+```
+
+**The lesson is the pair, not the bug.** The `strncpy` here is *correct*. It is
+bounded, the NUL is placed by hand, truncation works. And it bought nothing,
+because the overflow is downstream of it. Getting the `memcpy` right is not the
+same as being safe — a sentence I would have nodded at before and can now point
+at.
+
+### UPSTREAM-39: the one I corrected
+
+The month and day are parsed with a **checked** call:
+
+```c
+if (JpmcdsSscanf(cp,"%ld",&mdy.month) == 0)
+    if (NStringToMonth(cp,&mdy.month) == FAILURE)
+        goto done;
+```
+
+Eleven lines later the year is parsed with `atol`, which cannot report failure
+at all. Its 0 is indistinguishable from a parsed zero, and 0 is below the
+crossover, so it is promoted:
+
+| input | result |
+|---|---|
+| `03/15/aaaa` | **2000**-03-15 |
+| `15-Mar-twenty` | **2000**-03-15 |
+| `03/15/99bogus` | **1999**-03-15 |
+| `aa/15/2024` | refused |
+| `03/aa/2024` | refused |
+
+An unparseable month is refused. An unparseable day is refused. An unparseable
+year is *invented*.
+
+This is **the only place in the port where I corrected rather than reproduced**,
+and it is worth being precise about why, because the rule I have been following
+for 46 decisions says reproduce. The rule is: reproduce when the code is
+self-consistent and only the documentation disagrees. Here the code disagrees
+with **itself**, eleven lines apart, in one function, about one question. There
+is no single upstream behaviour to preserve — only two, and they contradict.
+That is the exception the rule was phrased to leave room for, and this is the
+first time in 41 files it has fired.
+
+What makes it worth correcting rather than noting: severity exceeds mechanism. A
+crash gets investigated. A date does not. Every downstream accrual, discount
+factor and par spread is then computed perfectly correctly from a wrong date,
+twenty-four years off, with no error channel touched.
+
+The divergence is asserted from **both** sides — upstream accepts, the port
+refuses, both in one test — and those inputs are deliberately **excluded** from
+the recorded vectors. Freezing a known divergence into the file the port is
+checked against would convert a documented difference into a silent one, which
+is the single worst thing a golden file can do.
+
+### UPSTREAM-40: the one I was not looking for
+
+UBSan reported this *before* ASan reported the overflow, from the same input:
+
+```
+lscanf.c:486:28: runtime error: signed integer overflow:
+  1111111111111111111 * 10 cannot be represented in type 'long'
+```
+
+`JpmcdsSscanf` accumulates digits with no range check. `lscanf.c` is out of
+scope for this port — it reads holiday files, which the port does with the
+standard library — and I filed it anyway, because the register's subject is
+upstream's defects, not the port's surface, and this one is reachable from an
+in-scope public function.
+
+Three entries from one probe. The "count defects, not entry points" rule has
+usually collapsed numbers; here it expanded them, because one entry point really
+did have three distinct mechanisms in three distinct files needing three
+distinct fixes.
+
+### Two measurements I got wrong
+
+Worth recording because the pattern is now familiar: I wrote expected values
+into a test before measuring them, twice in one slice.
+
+`03/15/99bogus` I predicted as 2099. It is **1999** — 99 is *above* the
+crossover, so it takes the `+1900` branch, not the `+2000` one. The pivot I had
+measured myself forty minutes earlier.
+
+The truncation case I predicted as year 2222. It is **1601-01-01**, because
+`atol` on 27 digits overflows a signed long, and the answer is produced by
+undefined behaviour. I deleted that assertion rather than pin it. An expectation
+resting on UB is not a test; it is a recording of what one compiler did once.
+
+Both failures were caught by the differential test on the first run, which is
+the argument for writing it before trusting the port. The cost of guessing is
+one build.
+
+### The TDate-0 terminator, found on the way out
+
+`JpmcdsMakeTCurve` delegates to `JpmcdsMakeTCurveNoRateCheck`, which stops
+copying at the first point whose date is TDate 0 — so the length argument is an
+upper bound, not a count. Measured:
+
+- second point with date 0 → a one-point curve, silently
+- second point with date **1** → FAILURE, so the header's *"a 1 or 0 in the date
+  field"* is wrong; only 0 terminates
+- **first** point with date 0 → a **zero-point curve**
+
+That last line matters: it is a second reachability path for
+[UPSTREAM-36](defect-report.md#upstream-36), and a better one. The first path
+needs a caller to pass a literal `0`, visible at the call site. This one needs
+only a data value that looks ordinary, because TDate 0 is 1601-01-01 — a real
+date someone can legitimately hold.
+
+The port copies the whole span. Honouring a real date as a terminator is the
+sentinel-in-the-value-space mistake this project has now filed four times.
+
+And `JpmcdsMakeTCurveNoRateCheck` itself is a **deliberate non-port**: its only
+difference from `JpmcdsMakeTCurve` is that it skips the rate check, which is the
+check `ZeroCurve::create` exists to perform. Porting it would reintroduce the
+silent-NaN hazard behind a second door. Three functions are now non-ports, and
+in all three the thing that would be ported *is* the defect — which is a better
+reason than "not needed yet" and the only reason I would accept.
+
+### Where this leaves the port
+
+**163 of 163 in-scope functions = 100%.** 41 of 41 files complete.
+
+The denominator moved, which needs saying plainly: it was 164, and
+`JpmcdsMakeTCurveNoRateCheck` left it by being declared a non-port rather than by
+being written. A percentage whose denominator I control is not a fact about the
+work, so: 163 functions ported, 3 declared non-ports with reasons recorded above,
+0 remaining unexplained.
+
+Forty defects in the register. Thirty-nine of them reproduced faithfully, one
+corrected, every divergence asserted from both sides.

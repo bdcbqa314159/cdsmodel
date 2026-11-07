@@ -67,6 +67,8 @@ STRUCTURAL = {
 NON_PORTS = {
     "JpmcdsHolidayLoadFromDisk": "reads a holiday file into a process-wide cache",
     "JpmcdsStringToDayCountConv": "string parsing deferred with the other parsers",
+    "JpmcdsMakeTCurveNoRateCheck": "its whole purpose is to SKIP the rate check "
+                                   "ZeroCurve::create exists to perform",
 }
 
 

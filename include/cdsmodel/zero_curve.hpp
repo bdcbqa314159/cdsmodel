@@ -96,6 +96,28 @@ public:
   /// basis and day count that the rate conversion actually supports --
   /// continuous or 1 to 365 periods per year, with ACT/365F or ACT/360.
   /// Upstream reports those last two per call, deep inside a hot loop.
+  ///
+  /// DELIBERATE DIFFERENCE -- the TDate 0 terminator. `JpmcdsMakeTCurve`
+  /// delegates to `JpmcdsMakeTCurveNoRateCheck`, which stops copying at the
+  /// first point whose date is TDate 0, so the array length argument is an
+  /// upper bound rather than a count. Measured:
+  ///
+  ///   - a second point with date 0  -> a one-point curve, silently
+  ///   - a second point with date 1  -> FAILURE, so the header's "a 1 or 0
+  ///     in the date field" is wrong; only 0 terminates
+  ///   - the FIRST point with date 0 -> a ZERO-point curve, which is the
+  ///     empty curve UPSTREAM-36 needs a caller to reach
+  ///
+  /// This port takes a `span` and copies all of it. TDate 0 is 1601-01-01, a
+  /// real date a caller may legitimately hold, so honouring it as a
+  /// terminator would silently truncate a valid curve -- the sentinel-in-the-
+  /// value-space mistake this file already documents twice. A caller that
+  /// wants a shorter curve passes a shorter span.
+  ///
+  /// `JpmcdsMakeTCurveNoRateCheck` itself is a deliberate NON-PORT. Its only
+  /// difference from `JpmcdsMakeTCurve` is that it skips the rate check, and
+  /// that check is what `create` exists to perform -- porting it would
+  /// reintroduce the silent-NaN hazard described above behind a second door.
   [[nodiscard]] static std::optional<ZeroCurve>
   create(Date base_date, std::span<const RatePoint> points, double basis, DayCount day_count) {
     if (points.empty()) {

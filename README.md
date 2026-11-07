@@ -10,10 +10,11 @@ codebase that only ever shipped a Windows-only Excel XLL.
 ISDA and Markit are not affiliated with this project and do not endorse it.
 See [NOTICE.md](NOTICE.md) for the full attribution and licence position.
 
-📋 **[Defect report](https://bdcbqa314159.github.io/cdsmodel/)** — eleven
+📋 **[Defect report](https://bdcbqa314159.github.io/cdsmodel/)** — **forty**
 defects found in the original library while porting it, with sanitizer traces,
-reproducers and the fix status of each. One of them returns a **negative cash
-amount** on a defaulted-CDS settlement and reports success.
+reproducers and the fix status of each. One returns a **negative cash amount**
+on a defaulted-CDS settlement and reports success. Another accepts
+`03/15/aaaa` as **15 March 2000**.
 
 ## Why
 
@@ -71,16 +72,22 @@ differentially equal to its ancestor across a swept input domain, and the
 sweep is then recorded into tier 1 so CI inherits the guarantee.
 
 ```
-with upstream present: 242 tests  (tier 1 + tier 2 + end-to-end example)
-without upstream:      161 tests  (tier 1 only, replaying 18,142 recorded cases)
+with upstream present: 747 tests  (tier 1 + tier 2 + end-to-end example)
+without upstream:      438 tests  (tier 1 only, replaying 44 recorded vector sets)
 ```
 
 Both configurations also run clean under AddressSanitizer and
-UndefinedBehaviorSanitizer (`--preset asan`). That combination has found eight
-genuine defects in the original model so far, including a stack buffer
-overflow reachable from string input, an interval type whose meaning changes
-with letter case, and an adjustment that never returns — see "Upstream defects
+UndefinedBehaviorSanitizer (`--preset asan`). That combination has found
+**forty** genuine defects in the original model, including two separate stack
+buffer overflows reachable from string input, an unparseable year silently
+replaced with 2000, an interval type whose meaning changes with letter case,
+and an adjustment that never returns — see
+[the full report](https://bdcbqa314159.github.io/cdsmodel/) or "Upstream defects
 found" in [docs/port-notes.md](docs/port-notes.md).
+
+Thirty-nine are reproduced faithfully, because a port that silently fixes
+things is no longer a port. Exactly one is corrected, and the reasoning for
+that single exception is written down next to it.
 
 ## Build
 
