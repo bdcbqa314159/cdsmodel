@@ -4935,3 +4935,115 @@ tally for the session is now five, which is high enough to stop being a
 curiosity: **when I write down a number I have not computed, it is wrong about
 a third of the time.** The tests now carry the computation next to the
 assertion.
+
+## Decision 45 — Four functions I thought were missing, and one typo that wasn't
+
+This slice was meant to be a quiet sweep over the date-list stragglers. Two
+of the four were already ported, one of my "typo" theories was wrong, and the
+most useful thing found was about the port rather than upstream.
+
+### The doubled prefix is upstream's
+
+`date_list.hpp` claimed `JpmcdsJpmcdsDateListAddDates` and
+`JpmcdsJpmcdsDateListTruncate`. I saw the doubled `Jpmcds` and assumed my own
+typo — which would have explained neatly why `JpmcdsDateListAddDates` was
+reported unported.
+
+It is not a typo. **All three doubled-prefix names are real exported symbols:**
+
+```
+_JpmcdsJpmcdsDateListAddDates
+_JpmcdsJpmcdsDateListTruncate
+_JpmcdsJpmcdsZCPresentValueCFL
+```
+
+A renaming pass ran twice over `dtlist.c` and once over `cxdatelist.c`, and
+the result shipped. `cash_flow_bootstrap.hpp` already said so about the third
+one — *"the doubled prefix is in the..."* — which I had written months ago and
+forgotten.
+
+So upstream exports and **publicly declares two of each operation**:
+
+```
+dtlist.h:92      JpmcdsJpmcdsDateListAddDates(dl, n, dates, allowDuplicates)
+cxdatelist.h:45  JpmcdsDateListAddDates      (dl, n, dates)
+```
+
+And they are not copies. The four-parameter version takes a flag; the
+three-parameter one is that flag set FALSE. Measured on `{100,200,300}` plus
+`{200,400}`:
+
+```
+doubled, allowDuplicates TRUE : 100 200 200 300 400
+doubled, allowDuplicates FALSE: 100 200 300 400
+single (no such parameter)    : 100 200 300 400
+```
+
+So the port's one `add_dates` covers both, and `allow_duplicates = false` IS
+the cxdatelist entry point. The same holds for the two truncates and for
+`JpmcdsDatesFromCurve` / `JpmcdsNewDateListFromTCurve`. **`cxdatelist.c` is a
+partial re-implementation of `dtlist.c` under slightly different names**, and a
+caller choosing by autocomplete gets whichever.
+
+### Nothing was implemented, so the tests are the whole slice
+
+Five functions were claimed against code that already existed. A claim without
+a test is an assertion, so the substance here is a differential suite that
+earns them: the two upstream adds compared against each other over a swept
+domain, a test that the flag ON makes them **differ** (otherwise the
+equivalence claim would be vacuous), and both curve-date extractors against
+`ZeroCurve::dates()`.
+
+The count went 155 → 160 of 164, and 98% is now a number about claims rather
+than about code.
+
+### The audit flag caught my own fresh writing
+
+I documented the three vanished functions in prose — *"`JpmcdsExtendDateList`
+grows a list in place..."* — without the word `Replaces`. The
+mentioned-but-not-claimed flag I added one slice ago fired on all three
+immediately:
+
+```
+  dtlist       6/8    685 lines
+    *** MENTIONED but not claimed -- check before porting: JpmcdsExtendDateList, JpmcdsNewDateListFromDates
+```
+
+That is the tool working on the author of the tool, within a day of its being
+written, on text written after the lesson that motivated it. Which is the
+argument for gates over discipline in one line.
+
+### The finding that is about the port
+
+`JpmcdsExtendDateList` grows a list and leaves the new slots at TDate 0 —
+1601-01-01, a real date rather than an obviously-unset one. The familiar
+theme, so I wrote a test asserting that `std::vector<Date>::resize` inherits
+the same property and that the port therefore matches.
+
+**It does not.** `Date` is `std::chrono::sys_days`, so a default-constructed
+one is the **UNIX** epoch: 1970-01-01, which is 134,774 days after the ISDA
+epoch. The two implementations disagree about what an unset date is, and
+neither value is invalid — upstream's reads as 1601-01-01 and the port's as
+1970-01-01, and a contract could plausibly carry either.
+
+That reaches well beyond `resize`. The port's aggregates — `CouponDates`,
+`FeePayment`, `SwapDate` — all default-initialise their `Date` members, so
+**1970-01-01 is the port's silent "unset" everywhere.** Every constructor sets
+every field, which is why nothing has ever depended on it. But I had carried an
+unexamined belief that the port's unset date was the epoch, and it is not, and
+that belief could have become load-bearing in any slice where a default
+mattered.
+
+Seventh prediction corrected by measurement this session. The first six were
+about upstream or about test arithmetic; this one was about my own code, which
+is the more alarming direction.
+
+### Where this leaves the port
+
+**160 of 164 in-scope functions = 98%**, 37 of 41 files complete. Four
+functions remain:
+
+* `JpmcdsCdsFeeLegFlows` (cds.c) — the deferral whose reason expired;
+* `JpmcdsFeeLegFlows` (feeleg.c) — almost certainly the same story;
+* `JpmcdsStringToDate` (convert.c) — the last of the string parsers;
+* `JpmcdsMakeTCurveNoRateCheck` (tcurve.c).
