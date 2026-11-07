@@ -32,6 +32,7 @@
 // way and for the same measured reason: the port rejects a non-finite result
 // rather than a proxy threshold. See the defect report.
 
+#include <cdsmodel/cash_flow_list.hpp>
 #include <cdsmodel/contingent_leg.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/day_count.hpp>
@@ -138,6 +139,38 @@ struct FeeLeg {
                 day_count,
                 accrual_pay,
                 observe_start_of_day};
+}
+
+/// The non-contingent cash flows of a fee leg -- what the protection buyer
+/// pays if there is no default. Replaces `JpmcdsFeeLegFlows`.
+///
+/// One flow per period: `yearFraction(accrual_start, accrual_end) *
+/// coupon_rate * notional`, dated at the period's pay date. No discounting and
+/// no survival probability, which is what makes these "non-contingent" -- they
+/// are the schedule, not a price.
+///
+/// This was deferred for most of the project behind a note in cds.hpp saying
+/// it "needs cashflow.c, which is layer 7 and not on the pricing path". The
+/// dependency claim was true when written and stopped being true once
+/// cashflow.c was ported, and nothing noticed for several slices --
+/// `port_progress.py`'s mentioned-but-not-claimed check is what eventually
+/// surfaced it. A deferral with an expired reason reads exactly like a live
+/// one.
+///
+/// Upstream dereferences `fl->nbDates` with no NULL check, which the port's
+/// reference makes moot.
+[[nodiscard]] inline std::optional<std::vector<CashFlow>> fee_leg_flows(const FeeLeg &leg) {
+  std::vector<CashFlow> flows;
+  flows.reserve(leg.payments.size());
+  for (const FeePayment &payment : leg.payments) {
+    const std::optional<double> year_frac =
+        year_fraction(payment.accrual_start, payment.accrual_end, leg.day_count);
+    if (!year_frac) {
+      return std::nullopt;
+    }
+    flows.push_back(CashFlow{payment.pay, *year_frac * leg.coupon_rate * leg.notional});
+  }
+  return flows;
 }
 
 /// Present value of the accrual owed if default lands inside `[start, end]`.
