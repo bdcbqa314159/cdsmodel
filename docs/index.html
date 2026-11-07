@@ -1771,6 +1771,40 @@ rate=-100  df1=inf           df2=inf           fwd=<span class="hit">nan</span> 
       since UPSTREAM-15 settled that it is a value.
     </p>
 
+
+    <h3>A second site: JpmcdsForwardFromZCurve</h3>
+    <p>
+      The same defect is reachable from <code>zr2fwd.c</code>, where there is
+      <strong>no guard at all</strong>:
+    </p>
+<pre><code>forwardDiscount = endDiscount/startDiscount;
+
+if (JpmcdsDiscountToRate(forwardDiscount, startDate, endDate,
+                      dayCountConv, basis, rate) == FAILURE)</code></pre>
+    <p>
+      Strictly less protection than <code>JpmcdsZCFwdDiscountFactor</code>,
+      where at least <code>if (discount1 &lt;= 0.0)</code> is tested — badly
+      (<a href="#u18">UPSTREAM-18</a>), but tested. Measured, continuous basis
+      over 30 years:
+    </p>
+<pre><code>rate   disc(start)     disc(end)       fwd disc   rc        forward rate
+0.03   0.406302        0.394294        0.970446   SUCCESS   0.0304545
+24     1.20094e-313    4.94066e-324    4.11e-11   SUCCESS   2.43073e+10
+25     0               0               <span class="hit">nan</span>        SUCCESS   <span class="hit">nan</span>
+-24    inf             inf             <span class="hit">nan</span>        SUCCESS   <span class="hit">nan</span></code></pre>
+    <p>
+      Both ends of the range produce a NaN rate reported as success:
+      <code>0/0</code> where the factors underflow, <code>inf/inf</code> where
+      they overflow.
+    </p>
+    <p>
+      Recorded here rather than as a separate entry. Same mechanism, same
+      consequence, and the fix was the same one line in
+      <code>discount_to_rate</code> — the port needed no new work to be immune
+      at this site. A separate number would make the register count entry
+      points rather than defects.
+    </p>
+
     <div class="tests">
       <span>Reproduce:</span> ./build/debug/defect_evidence u19
     </div>

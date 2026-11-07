@@ -18,6 +18,7 @@
 #include <cdsmodel/cash_flow_list.hpp>
 #include <cdsmodel/cash_flow_schedule.hpp>
 #include <cdsmodel/cds.hpp>
+#include <cdsmodel/curve_rates.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_interval.hpp>
 #include <cdsmodel/date_schedule.hpp>
@@ -67,6 +68,7 @@ extern "C" {
 #include "yearfrac.h"
 #include "zcprvt.h"
 #include "zcswdate.h"
+#include "zr2fwd.h"
 
 // Exported from the library but declared in no public header.
 int JpmcdsLinInterpLongPoint1Discontinuous(long *x, int xskip, int N, double *f, int fskip,
@@ -1076,7 +1078,50 @@ void u19() {
               "discount factor is not a rate no matter who asks. The guard is written\n"
               "as isfinite, so it means what it was for, and the tier-1 property is\n"
               "the general form -- across every basis, day count and rate in the\n"
-              "sweep, no evaluation returns NaN. Infinity is still permitted.\n");
+              "sweep, no evaluation returns NaN. Infinity is still permitted.\n\n");
+
+  std::printf("=== A SECOND SITE: JpmcdsForwardFromZCurve (zr2fwd.c) ===\n\n"
+              "The same defect is reachable with NO guard at all:\n\n"
+              "    forwardDiscount = endDiscount/startDiscount;\n"
+              "    JpmcdsDiscountToRate(forwardDiscount, ...)\n\n"
+              "which is strictly less protection than JpmcdsZCFwdDiscountFactor, where\n"
+              "at least `if (discount1 <= 0.0)` is tested -- badly, but tested.\n\n");
+
+  std::printf("  %-8s %-15s %-15s %-11s %-8s %s\n", "rate", "disc(start)", "disc(end)", "fwd disc",
+              "rc", "forward rate");
+  const TDate fwd_base = JpmcdsDate(2024, 1, 1);
+  const TDate fwd_start = JpmcdsDate(2054, 1, 1);
+  const TDate fwd_end = JpmcdsDate(2055, 1, 1);
+  for (const double rate : {0.03, 24.0, 25.0, -24.0}) {
+    TDate curve_dates[2] = {fwd_start, fwd_end};
+    double curve_rates[2] = {rate, rate};
+    TCurve *zc = JpmcdsMakeTCurve(fwd_base, curve_dates, curve_rates, 2, 5000.0, JPMCDS_ACT_365F);
+    if (zc == nullptr) {
+      continue;
+    }
+    JpmcdsBSearchCheckOrder(TRUE);
+    double at_start = 0.0;
+    double at_end = 0.0;
+    double forward = 0.0;
+    JpmcdsDiscountDate(fwd_start, zc, JPMCDS_FLAT_FORWARDS, &at_start);
+    JpmcdsDiscountDate(fwd_end, zc, JPMCDS_FLAT_FORWARDS, &at_end);
+    const int rc = JpmcdsForwardFromZCurve(zc, JPMCDS_FLAT_FORWARDS, fwd_start, fwd_end,
+                                           JPMCDS_ACT_365F, JPMCDS_SIMPLE_BASIS, &forward);
+    JpmcdsBSearchCheckOrder(TRUE);
+    std::printf("  %-8g %-15g %-15g %-11g %-8s %-14g %s\n", rate, at_start, at_end,
+                at_start != 0.0 ? at_end / at_start : at_end / at_start,
+                rc == SUCCESS ? "SUCCESS" : "FAILURE", forward,
+                (rc == SUCCESS && std::isnan(forward)) ? "<- NaN as SUCCESS" : "");
+    JpmcdsFreeTCurve(zc);
+  }
+
+  std::printf("\nBoth ends of the range produce a NaN: 0/0 where the factors underflow\n"
+              "and inf/inf where they overflow. The port refuses both, because\n"
+              "discount_to_rate rejects a non-finite discount factor -- the same one\n"
+              "line, and no new guard at the new site.\n\n"
+              "Recorded as a second site rather than a 29th defect. Same mechanism,\n"
+              "same consequence, same fix; a separate number would make the register\n"
+              "count entry points rather than defects.\n");
 }
 
 void u20() {
