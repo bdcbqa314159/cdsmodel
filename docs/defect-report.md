@@ -3019,3 +3019,103 @@ others. The rule is:
 Where one check *is* a precondition for a later one, it has to return — and
 then it stops being an accumulating validator for that input, which is the
 honest trade. Upstream wanted both properties and got neither.
+
+## UPSTREAM-35 — `toupper` on a plain `char`, which C does not permit
+
+**Location:** `lib/src/zerocurve.c`, `JpmcdsBuildIRZeroCurve`.
+**Severity:** Low. Undefined behaviour with no consequence demonstrated, and
+invisible to the sanitizers — but one of the best-known traps in C, with a
+one-token fix.
+
+### Mechanism
+
+The top-level curve builder sorts its benchmark list by a one-letter code:
+
+```c
+#define JpmcdsSWAPNAME   'S'
+#define JpmcdsMONEYNAME  'M'
+...
+    char    instr;
+...
+    instr = toupper(instrNames[i]);
+    if (instr != JpmcdsMONEYNAME && instr != JpmcdsSWAPNAME)
+    {
+        JpmcdsErrMsg("%s: unknown instrument type (%c)."
+                  " Only (M)oney market or (S)wap is allowed.\n",
+                  routine, instrNames[i]);
+        goto done;
+    }
+```
+
+`instrNames` is a `char *`. C §7.4 requires the argument to `toupper` to be
+"representable as an `unsigned char`" or to equal `EOF`. On every platform this
+port builds on, plain `char` is **signed**, so a byte with the high bit set
+arrives as a negative number that is neither.
+
+Measured:
+
+| byte | as `char` | permitted by C? |
+|---|---|---|
+| 0x41 | 65 | yes |
+| 0x4D (`'M'`) | 77 | yes |
+| 0x53 (`'S'`) | 83 | yes |
+| 0x7F | 127 | yes |
+| 0x80 | −128 | **no — undefined behaviour** |
+| 0xE9 | −23 | **no — undefined behaviour** |
+| 0xFF | −1 | yes |
+
+Note the last row. `0xFF` as a signed `char` is `-1`, which **equals `EOF`** —
+so of the 128 high-bit bytes, exactly one is legal, by collision. That is the
+kind of accident that lets this class of bug survive review: the obvious test
+case is the last byte, and the last byte is fine.
+
+### Reachability and consequence
+
+The call happens *before* the instrument check rejects the character, so the
+undefined behaviour is already done by the time the function reports a problem.
+Measured: `JpmcdsBuildIRZeroCurve` with an instrument code of `0xE9` returns
+NULL — correctly — having passed −23 to `toupper` on the way.
+
+No consequence is demonstrated, and the reasons are worth separating:
+
+- the instrument check rejects the character immediately afterwards, so nothing
+  downstream sees a wrong value;
+- the C library this links against pads its character tables for exactly this
+  mistake, by long-standing convention rather than by requirement;
+- **UBSan has no check for it.** Neither does ASan. So this is the second entry
+  in this register that is undefined behaviour the harness cannot see, after
+  UPSTREAM-31 — and unlike UPSTREAM-31, which needed cross-translation-unit
+  reasoning to even identify, this one is a textbook item.
+
+There is a second, independent reason not to write it this way, which has
+nothing to do with signedness: `toupper` consults the locale. Under a locale
+where `'s'` does not uppercase to `'S'`, the parse changes. A function deciding
+whether a benchmark is a swap should not depend on `LC_CTYPE`.
+
+Reproduce with `defect_evidence u35`. There is no `--unsafe` mode: the
+behaviour is undefined but not dangerous on this platform, and running it is
+how the table above was produced.
+
+### In the port
+
+**Cannot occur**, twice over.
+
+`instrument_kind_from_code` compares the four characters directly:
+
+```cpp
+switch (code) {
+case 'M': case 'm': return InstrumentKind::MoneyMarket;
+case 'S': case 's': return InstrumentKind::Swap;
+default:            return std::nullopt;
+}
+```
+
+No `toupper`, so no argument contract to violate and no locale to consult. And
+`InstrumentKind` is an enum, so an `InstrumentQuote` cannot carry an unparsed
+letter at all — the parse happens once, at the boundary, and what crosses it is
+a value.
+
+A tier-1 test walks all 256 byte values and requires exactly four to be
+accepted. That is the test upstream's version could not have: with `toupper` in
+the path, 128 of those 256 inputs are undefined behaviour and the test would be
+asserting things about a program with no defined meaning.

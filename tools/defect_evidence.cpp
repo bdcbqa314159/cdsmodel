@@ -30,6 +30,7 @@
 #include <cdsmodel/defaulted.hpp>
 #include <cdsmodel/interp_curve.hpp>
 #include <cdsmodel/interpolation.hpp>
+#include <cdsmodel/ir_zero_curve.hpp>
 #include <cdsmodel/stream_cash_flows.hpp>
 #include <cdsmodel/stub.hpp>
 #include <cdsmodel/swap_bootstrap.hpp>
@@ -38,6 +39,7 @@
 #include <cdsmodel/version.hpp>
 #include <cdsmodel/zero_curve_builder.hpp>
 
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -76,6 +78,7 @@ extern "C" {
 #include "yearfrac.h"
 #include "zcprvt.h"
 #include "zcswdate.h"
+#include "zerocurve.h"
 #include "zr2fwd.h"
 
 // Exported from the library but declared in no public header.
@@ -2441,6 +2444,77 @@ void u34(bool unsafe) {
   JpmcdsFreeTCurve(c);
 }
 
+void u35() {
+  heading("UPSTREAM-35", "toupper on a plain char, which C does not permit");
+  std::printf("zerocurve.c sorts its benchmark list by a one-letter code:\n\n"
+              "    #define JpmcdsSWAPNAME   'S'\n"
+              "    #define JpmcdsMONEYNAME  'M'\n"
+              "    ...\n"
+              "    char    instr;\n"
+              "    ...\n"
+              "    instr = toupper(instrNames[i]);\n"
+              "    if (instr != JpmcdsMONEYNAME && instr != JpmcdsSWAPNAME)\n\n"
+              "`instrNames` is a `char *`, and C requires toupper's argument to be\n"
+              "representable as `unsigned char` or to equal EOF. A byte with the high\n"
+              "bit set is neither, on any platform where `char` is signed.\n\n");
+
+  std::printf("  %-44s %s\n", "char is signed here",
+              static_cast<char>(-1) < 0 ? "YES" : "no -- this defect does not arise");
+  std::printf("  %-44s %d\n", "(char)0xE9 reaches toupper as",
+              static_cast<int>(static_cast<char>(0xE9)));
+  std::printf("  %-44s %d\n", "the one negative value C permits (EOF)", EOF);
+
+  std::printf("\n  every byte, and what the argument would be:\n\n");
+  std::printf("    %-12s %-12s %s\n", "byte", "as char", "permitted by C?");
+  for (const int byte : {0x41, 0x4D, 0x53, 0x7F, 0x80, 0xE9, 0xFF}) {
+    const char as_char = static_cast<char>(byte);
+    const int arg = static_cast<int>(as_char);
+    std::printf("    0x%02X         %-12d %s\n", byte, arg,
+                (arg >= 0 && arg <= 255) || arg == EOF ? "yes" : "NO -- undefined behaviour");
+  }
+
+  std::printf("\n  Note 0xFF. As a signed char it is -1, which EQUALS EOF -- so of the\n"
+              "  128 high-bit bytes, exactly one is legal, by collision. That is the\n"
+              "  kind of accident that makes this class of bug survive review.\n");
+
+  std::printf("\nREACHABILITY. The call is made before the instrument check rejects\n"
+              "the character, so the undefined behaviour happens first:\n\n");
+
+  const TDate value_date = JpmcdsDate(2024, 1, 15);
+  TDate dates[2] = {JpmcdsDate(2024, 4, 15), JpmcdsDate(2026, 1, 15)};
+  double rates[2] = {0.023, 0.028};
+  char names[2] = {'M', static_cast<char>(0xE9)};
+  TCurve *out =
+      JpmcdsBuildIRZeroCurve(value_date, names, dates, rates, 2, JPMCDS_ACT_360, 2, 2,
+                             JPMCDS_ACT_360, JPMCDS_ACT_360, JPMCDS_BAD_DAY_NONE, (char *)"NONE");
+  std::printf("  JpmcdsBuildIRZeroCurve with instrument code 0x%02X -> %s\n", 0xE9,
+              out == nullptr ? "FAILURE (rejected, after the UB)" : "a curve");
+  JpmcdsFreeTCurve(out);
+
+  char lower[2] = {'m', 's'};
+  TCurve *lc =
+      JpmcdsBuildIRZeroCurve(value_date, lower, dates, rates, 2, JPMCDS_ACT_360, 2, 2,
+                             JPMCDS_ACT_360, JPMCDS_ACT_360, JPMCDS_BAD_DAY_NONE, (char *)"NONE");
+  std::printf("  and lowercase \"ms\" -> %s, which is why toupper is there at all\n",
+              lc == nullptr ? "FAILURE" : "a curve");
+  JpmcdsFreeTCurve(lc);
+
+  std::printf("\nCONSEQUENCE: none demonstrated. The instrument check rejects the\n"
+              "character immediately, and the C library this links against happens to\n"
+              "pad its table for exactly this mistake. UBSan has no check for it. So\n"
+              "like UPSTREAM-31 this is undefined behaviour the harness cannot see --\n"
+              "and unlike UPSTREAM-31 it is one of the best-known traps in C, with a\n"
+              "one-token fix: toupper((unsigned char)instrNames[i]).\n\n"
+              "There is a second reason not to use toupper here, independent of the\n"
+              "signedness: it consults the locale. Under a locale where 's' does not\n"
+              "uppercase to 'S', the parse changes.\n\n"
+              "IN THE PORT: cannot occur. `instrument_kind_from_code` compares the four\n"
+              "characters directly -- no toupper, so no argument contract to violate\n"
+              "and no locale to consult -- and `InstrumentKind` is an enum, so a quote\n"
+              "cannot carry an unparsed letter at all. A tier-1 test walks all 256\n"
+              "bytes and requires exactly four to be accepted.\n");
+}
+
 int main(int argc, char **argv) {
   JpmcdsErrMsgOff();
   bool unsafe = false;
@@ -2562,6 +2636,9 @@ int main(int argc, char **argv) {
   }
   if (want("u34")) {
     u34(unsafe);
+  }
+  if (want("u35")) {
+    u35();
   }
   return 0;
 }

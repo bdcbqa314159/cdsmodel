@@ -501,6 +501,12 @@
           <td><span class="chip">Reproduced; signature fixed</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u35">UPSTREAM-35</a></td>
+          <td><code>toupper</code> on a plain <code>char</code> &mdash; undefined for 127 of the 128 high-bit bytes, and <strong>legal for the 128th by collision with EOF</strong></td>
+          <td><span class="chip low">Low &middot; UB, no consequence shown</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u34">UPSTREAM-34</a></td>
           <td>A validator that <strong>reports a NULL pointer and then dereferences it</strong> &mdash; because it accumulates failures, and one check guards another</td>
           <td><span class="chip mid">Medium &middot; null dereference</span></td>
@@ -2669,6 +2675,98 @@ after one extrapolation: same call               -&gt; <span class="hit">SUCCESS
 
     <div class="tests">
       <span>Reproduce:</span> ./build/debug/defect_evidence u28
+    </div>
+  </section>
+
+  <!-- ============ U35 ============ -->
+  <section class="record sev-low" id="u35">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-35</span>
+      <h2><code>toupper</code> on a plain <code>char</code>, which C does not permit</h2>
+    </div>
+    <div class="chips">
+      <span class="chip low">Low &middot; undefined behaviour, no consequence demonstrated</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">zerocurve.c &mdash; JpmcdsBuildIRZeroCurve</p>
+
+    <h3>Mechanism</h3>
+<pre><code>#define JpmcdsSWAPNAME   'S'
+#define JpmcdsMONEYNAME  'M'
+...
+    char    instr;
+...
+    instr = <span class="hit">toupper(instrNames[i])</span>;
+    if (instr != JpmcdsMONEYNAME &amp;&amp; instr != JpmcdsSWAPNAME)</code></pre>
+    <p>
+      <code>instrNames</code> is a <code>char *</code>. C &sect;7.4 requires
+      <code>toupper</code>'s argument to be "representable as an
+      <code>unsigned char</code>" or to equal <code>EOF</code>. On every
+      platform this port builds on, plain <code>char</code> is
+      <strong>signed</strong>, so a byte with the high bit set arrives as a
+      negative number that is neither.
+    </p>
+    <table class="data">
+      <thead><tr><th>byte</th><th>as <code>char</code></th><th>permitted by C?</th></tr></thead>
+      <tbody>
+        <tr><td>0x4D (<code>'M'</code>)</td><td>77</td><td>yes</td></tr>
+        <tr><td>0x7F</td><td>127</td><td>yes</td></tr>
+        <tr><td>0x80</td><td>&minus;128</td><td><strong>no &mdash; undefined behaviour</strong></td></tr>
+        <tr><td>0xE9</td><td>&minus;23</td><td><strong>no &mdash; undefined behaviour</strong></td></tr>
+        <tr><td>0xFF</td><td>&minus;1</td><td>yes</td></tr>
+      </tbody>
+    </table>
+    <p>
+      Note the last row. <code>0xFF</code> as a signed <code>char</code> is
+      <code>-1</code>, which <strong>equals <code>EOF</code></strong> &mdash; so
+      of the 128 high-bit bytes, exactly one is legal, by collision. That is the
+      kind of accident that lets this class of bug survive review: the obvious
+      test case is the last byte, and the last byte is fine.
+    </p>
+
+    <h3>Reachability and consequence</h3>
+    <p>
+      The call happens <em>before</em> the instrument check rejects the
+      character, so the undefined behaviour is already done by the time the
+      function reports a problem. No consequence is demonstrated, and the
+      reasons are worth separating:
+    </p>
+    <ul>
+      <li>the instrument check rejects the character immediately afterwards, so nothing downstream sees a wrong value;</li>
+      <li>the C library this links against pads its character tables for exactly this mistake, by long-standing convention rather than by requirement;</li>
+      <li><strong>UBSan has no check for it.</strong> Neither does ASan. This is the second entry in this register that is undefined behaviour the harness cannot see, after UPSTREAM-31 &mdash; and unlike that one, which needed cross-translation-unit reasoning even to identify, this is a textbook item.</li>
+    </ul>
+    <p>
+      There is a second, independent reason not to write it this way, with
+      nothing to do with signedness: <code>toupper</code> consults the locale.
+      Under a locale where <code>'s'</code> does not uppercase to
+      <code>'S'</code>, the parse changes. A function deciding whether a
+      benchmark is a swap should not depend on <code>LC_CTYPE</code>.
+    </p>
+
+    <h3>In the port</h3>
+    <p><strong>Cannot occur</strong>, twice over.</p>
+<pre><code>switch (code) {
+case 'M': case 'm': return InstrumentKind::MoneyMarket;
+case 'S': case 's': return InstrumentKind::Swap;
+default:            return std::nullopt;
+}</code></pre>
+    <p>
+      No <code>toupper</code>, so no argument contract to violate and no locale
+      to consult. And <code>InstrumentKind</code> is an enum, so an
+      <code>InstrumentQuote</code> cannot carry an unparsed letter at all
+      &mdash; the parse happens once, at the boundary, and what crosses it is a
+      value.
+    </p>
+    <p>
+      A tier-1 test walks all 256 byte values and requires exactly four to be
+      accepted. That is the test upstream's version could not have: with
+      <code>toupper</code> in the path, 128 of those inputs are undefined
+      behaviour and the test would be asserting things about a program with no
+      defined meaning.
+    </p>
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u35
     </div>
   </section>
 
