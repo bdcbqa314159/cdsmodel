@@ -170,6 +170,7 @@ if(CDSMODEL_BUILD_TESTS)
                  tests/ir_zero_curve_test.cpp
                  tests/curve_linear_interp_test.cpp
                  tests/match_range_test.cpp
+                 tests/cx_test.cpp
                  tests/adversarial_test.cpp)
   target_link_libraries(cdsmodel_tests PRIVATE cdsmodel GTest::gtest_main)
   target_include_directories(cdsmodel_tests PRIVATE tests)
@@ -221,7 +222,8 @@ if(CDSMODEL_BUILD_TESTS)
                    tests/curve_instruments_differential_test.cpp
                    tests/ir_zero_curve_differential_test.cpp
                    tests/curve_linear_interp_differential_test.cpp
-                   tests/match_range_differential_test.cpp)
+                   tests/match_range_differential_test.cpp
+                   tests/cx_differential_test.cpp)
     target_link_libraries(cdsmodel_differential_tests
                           PRIVATE cdsmodel cds_reference GTest::gtest_main)
     target_include_directories(cdsmodel_differential_tests PRIVATE tests)
@@ -239,7 +241,7 @@ if(CDSMODEL_BUILD_TESTS)
                  interp_curve curve_discount curve_rates coupon_schedule
                  stream_cash_flows swap_bootstrap_flows swap_bootstrap
                  curve_instruments ir_zero_curve curve_linear_interp
-                 match_range)
+                 match_range cx)
       add_executable(gen_${gen}_golden tools/gen_${gen}_golden.cpp)
       target_link_libraries(gen_${gen}_golden PRIVATE cdsmodel cds_reference)
       target_include_directories(gen_${gen}_golden PRIVATE tests)

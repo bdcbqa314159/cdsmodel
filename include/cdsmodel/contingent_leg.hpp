@@ -1,7 +1,8 @@
 #pragma once
 
-// Port of upstream contingentleg.c -- the protection leg of a CDS, and the
-// first module in this project that computes a PRICE.
+// Port of upstream contingentleg.c + cx.c -- the protection leg of a CDS,
+// and the first module in this project that computes a PRICE. cx.c supplies
+// the constructor; contingentleg.c the pricing.
 //
 // The integral is
 //
@@ -25,6 +26,7 @@
 #include <cdsmodel/zero_curve.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <optional>
 #include <vector>
@@ -62,6 +64,40 @@ struct ContingentLeg {
   /// compared. `cds_differential_test` compares composed prices and found it.
   bool protect_start = true;
 };
+
+/// Build a protection leg. Replaces `JpmcdsContingentLegMake` (cx.c).
+///
+/// `protect_start` shifts the stored start date back by one day, because
+/// `start` means "protection begins at the END of this day" -- the convention
+/// the struct comment above records, and the reason that offset appears in two
+/// upstream files without being a duplicate.
+///
+/// Upstream validates with `REQUIRE (p->endDate > p->startDate)` AFTER the
+/// shift, which has a consequence worth stating and testing: `protect_start`
+/// decides whether a ZERO-LENGTH leg is accepted. With it, the stored start is
+/// `start - 1` and `end == start` passes; without it, the same input is
+/// refused. Measured on both sides, and reproduced -- it is not an accident of
+/// ordering but the right answer, since protecting on the start date makes a
+/// single-day contract meaningful.
+///
+/// One difference, and it is the type's rather than a decision: upstream's
+/// shift is plain `TDate` arithmetic with no lower bound, so
+/// `JpmcdsContingentLegMake(0, ...)` with `protectStart` stores a start date of
+/// **-1** -- a negative TDate, which no valid date is. Measured. `Date` is a
+/// `std::chrono::sys_days`, so subtracting a day from the epoch is simply an
+/// earlier date rather than an invalid one, and there is no sentinel to
+/// collide with. The port therefore has nothing to refuse here and does not
+/// pretend otherwise.
+[[nodiscard]] inline std::optional<ContingentLeg> make_contingent_leg(Date start, Date end,
+                                                                      double notional,
+                                                                      ProtectionPayment pay,
+                                                                      bool protect_start) {
+  const Date stored_start = protect_start ? start - std::chrono::days{1} : start;
+  if (!(end > stored_start)) {
+    return std::nullopt; // upstream's REQUIRE, applied to the shifted date
+  }
+  return ContingentLeg{stored_start, end, notional, pay, protect_start};
+}
 
 namespace detail {
 

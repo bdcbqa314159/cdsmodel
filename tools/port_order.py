@@ -50,7 +50,8 @@ STRUCTURAL = {
     "JpmcdsCopyDateList", "JpmcdsZCFree", "JpmcdsZCMake", "JpmcdsSwapDatesFree",
     "JpmcdsSwapDatesNewEmpty", "JpmcdsFreeHoliday", "JpmcdsHolidayListDelete",
     "JpmcdsFreeCouponDateList", "JpmcdsNewEmptyCouponDateList",
-    "JpmcdsNewEmptyTStreamFixed", "JpmcdsNewEmptyTStreamFloat", "JpmcdsFreeTStreamFixed", "JpmcdsFreeTStreamFloat",
+    "JpmcdsNewEmptyTStreamFixed", "JpmcdsNewEmptyTStreamFloat",
+    "JpmcdsFeeLegMakeEmpty", "JpmcdsFeeLegFree", "JpmcdsFreeTStreamFixed", "JpmcdsFreeTStreamFloat",
     # error reporting
     "JpmcdsErrMsg", "JpmcdsErrMsgFailure", "JpmcdsFormatDate",
     "JpmcdsFormatDayCountConv", "JpmcdsFormatDateInterval",

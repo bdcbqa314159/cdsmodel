@@ -4698,3 +4698,115 @@ tooling now checks both directions.
 ### Where this leaves the project
 
 One leaf left: `cx.c`, 230 lines.
+
+## Decision 43 — The gate I built last slice found a bug in the slice before it
+
+`cx.c` is 230 lines and four functions: the constructors for the two CDS legs.
+It is the last file in the port that had not been started, and it closed out
+with two findings — one about upstream, one about a function I had already
+merged.
+
+### The gate earned itself on first use
+
+I added `verify.py claims` last slice, after discovering I had ported
+`JpmcdsBinarySearchLong` twice. The first time I ran it on new work it failed:
+
+```
+FAIL: the same upstream function is claimed by more than one header
+  JpmcdsContingentLegMake: cds.hpp, contingent_leg.hpp
+```
+
+Part of that was a false positive of my own making. `cds.hpp` said *"Replaces
+`JpmcdsCdsContingentLegMake`, which delegates to `JpmcdsContingentLegMake` in
+cx.c"*, and the gate cannot tell a claim from a prose mention inside the same
+sentence. Fixed by writing the provenance precisely — the mention moved to its
+own sentence. A gate that forces precise claim text is doing its job, not
+misbehaving.
+
+**But underneath it was a real bug.** `cds_contingent_leg` in `cds.hpp` applied
+the one-day `protect_start` shift itself, duplicating what `cx.c`'s constructor
+does — and **omitted the `REQUIRE (endDate > startDate)` that comes with it.**
+So the port accepted a zero-length leg with `protect_start == false`, where
+upstream refuses it. Merged, green, and wrong.
+
+The fix was to delegate to `make_contingent_leg`, which meant
+`cds_contingent_leg` had to return `std::optional` and propagate — five call
+sites, two of them in headers. All 707 tests passed afterwards.
+
+Three things worth noting about how that was found. It was not found by a test:
+the differential suite fed both sides a pre-built leg, so construction was
+never compared — the same blind spot the `ContingentLeg` comment already
+records from an earlier slice. It was not found by reading. It was found by a
+gate about *provenance text*, which has no opinion about correctness at all.
+**The gate detected a duplicated claim, and the duplicated claim was a symptom
+of duplicated logic, and the duplicated logic had drifted.** That chain is
+worth remembering: duplicate provenance is a smell for duplicate behaviour.
+
+### The function that exists, works, and cannot be called
+
+`JpmcdsFeeLegMake` copies three caller-supplied arrays into a fee leg. It is:
+
+* defined in `cx.c` with **external linkage**, so it occupies the symbol table;
+* declared in **no header** — `cx.h` declares `JpmcdsFeeLegMakeEmpty` and
+  `JpmcdsFeeLegFree` and skips this one;
+* called from **nowhere**. It appears exactly twice in the entire source tree:
+  its own definition and its own `routine[]` string.
+
+So the only constructor that builds a fee leg safely is unreachable without
+hand-writing its prototype. The library's actual method is
+`JpmcdsFeeLegMakeEmpty(n)` — which hands back three zeroed parallel arrays —
+followed by poking them directly, which `cds.c` does at line 192.
+
+That also settled a defect I had started writing up. `JpmcdsFeeLegMake` copies
+each array only `if (nbDates > 0 && array != NULL)` and otherwise stores NULL,
+while `nbDates` keeps whatever was passed. So `(3, NULL, ends, pays)` returns
+SUCCESS with a count of three and a NULL array, and `JpmcdsFeeLegPV` reads
+`accStartDates[0]` whenever `nbDates > 1`. A negative count is stored as given.
+All measured.
+
+**Not filed.** The register's rule is that reachability bounds severity, and a
+function with no declaration anywhere is the floor of that scale — a caller
+would have to guess the signature to reach it. Recording the reasoning matters
+more than a 38th number: the next person to read `cx.c` will find the same
+inconsistency and should find the argument too. The differential test reaches
+it through a hand-written prototype, which is the only way anyone could.
+
+### The validation order that is not an accident
+
+`JpmcdsContingentLegMake` applies the `protectStart` shift and *then* checks
+`endDate > startDate`. So the flag decides whether a zero-length leg is legal:
+with it the stored start is `start - 1` and `end == start` passes; without it
+the same input is refused.
+
+That looks like a bug caused by ordering and is not one. Protecting on the
+start date makes a single-day contract meaningful, so the asymmetry is correct.
+Reproduced, and pinned by an exact count rather than a threshold: over the same
+grid, 60 spans are accepted with `protect_start` and 48 without, and the
+difference of 12 is precisely the zero-length cases. A port that validated
+*before* shifting would pass every recorded case except those.
+
+### Two thresholds I wrote without computing them
+
+Second time this session. In `match_range` I asserted `compared > 2000` against
+a domain whose exhaustive size was 750. Here I asserted `unshifted > 50` where
+the true count is 48 — and the true count is not an arbitrary number, it is
+`4 anchors x 3 notionals x 4 accepted offsets`, which I could have worked out
+in ten seconds.
+
+Both times the test failed, I looked, and the code was fine. That is the
+failure mode of a lazy threshold: it does not hide a bug, it manufactures a
+false alarm and costs the time to dismiss it. Worse, a threshold set too LOW
+hides a sweep that stopped early, which is the mistake that actually matters.
+Where a count is computable, assert the count.
+
+### Where this leaves the port
+
+**Every in-scope file is now started, and 31 of 42 are function-complete.**
+149 of 171 in-scope functions = 87%, 63% of lines in complete files.
+
+The remaining 22 functions are stragglers across 11 already-claimed files, and
+they are not a dependency chain: four year helpers in `ldate`, three list
+operations in `dtlist`, two in `cxdatelist`, the three string parsers
+(deliberately held together because UPSTREAM-4 lives in that family), the five
+holiday-cache functions that are recorded non-ports, and five one-offs. A
+cleanup sweep rather than a path.

@@ -176,8 +176,8 @@ TEST(Cds, ProtectStartShiftsTheProtectionLegBackOneDay) {
   // contract start, because the stored date means "protection from end of day".
   const Date start = d(2024, 3, 20);
   const Date end = d(2029, 6, 20);
-  const cdsmodel::ContingentLeg with = cdsmodel::cds_contingent_leg(start, end, 1.0, true);
-  const cdsmodel::ContingentLeg without = cdsmodel::cds_contingent_leg(start, end, 1.0, false);
+  const cdsmodel::ContingentLeg with = *cdsmodel::cds_contingent_leg(start, end, 1.0, true);
+  const cdsmodel::ContingentLeg without = *cdsmodel::cds_contingent_leg(start, end, 1.0, false);
   EXPECT_EQ(with.start, start - std::chrono::days{1});
   EXPECT_EQ(without.start, start);
   EXPECT_EQ(with.end, end);
