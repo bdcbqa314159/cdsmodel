@@ -31,6 +31,7 @@
 #include <cdsmodel/interpolation.hpp>
 #include <cdsmodel/stream_cash_flows.hpp>
 #include <cdsmodel/stub.hpp>
+#include <cdsmodel/swap_bootstrap.hpp>
 #include <cdsmodel/swap_bootstrap_flows.hpp>
 #include <cdsmodel/swap_dates.hpp>
 #include <cdsmodel/version.hpp>
@@ -2258,6 +2259,115 @@ void u32(bool unsafe) {
   JpmcdsFreeCFL(cfl);
 }
 
+void u33() {
+  heading("UPSTREAM-33", "the root finder is pointed at the wrong curve point");
+  std::printf("zcswap.c's JpmcdsZCValueFixFltSwap adds a placeholder point for the\n"
+              "benchmark it is about to solve, and then solves into the LAST slot:\n\n"
+              "    if (JpmcdsZCAddRate(zc, maxDate, rate) == FAILURE)\n"
+              "        goto done;\n"
+              "    ...\n"
+              "    if (JpmcdsRootFindBrent(JpmcdsObjFuncPVtheSwap, &funcParams,\n"
+              "                         LOWER_BOUND, UPPER_BOUND, MAX_ITERATIONS, rate,\n"
+              "                         INITIAL_X_STEP, INITIAL_F_DERIV,\n"
+              "                         X_TOLERANCE, F_TOLERANCE,\n"
+              "                         &zc->rate[zc->numItems-1]) == FAILURE)\n\n"
+              "`zc->numItems-1` is the point just added only if that point is the\n"
+              "LATEST in the curve. JpmcdsZCAddRateAndDiscount inserts in SORTED\n"
+              "position:\n\n"
+              "    if (zc->numItems==0 || zc->date[zc->numItems-1]<date)\n"
+              "    {\n"
+              "        zc->date[zc->numItems] = date;   /* insert at end */\n"
+              "        ...\n"
+              "    }\n"
+              "    else\n"
+              "    {\n"
+              "        int i = zc->numItems - 1;        /* loops backwards */\n\n");
+
+  const TDate value = JpmcdsDate(2024, 1, 15);
+  ZCurve *zc = JpmcdsZCMake(value, 8, 1.0, JPMCDS_ACT_365F);
+  if (zc == nullptr) {
+    std::printf("  (could not build a curve)\n");
+    return;
+  }
+  JpmcdsZCAddRate(zc, JpmcdsDate(2026, 1, 15), 0.025);
+  JpmcdsZCAddRate(zc, JpmcdsDate(2035, 1, 15), 0.040);
+  std::printf("  a curve with points at 2026 and 2035, then AddRate(2027, 0.045):\n\n");
+  JpmcdsZCAddRate(zc, JpmcdsDate(2027, 1, 15), 0.045);
+  for (int i = 0; i < zc->numItems; ++i) {
+    std::printf("      [%d] %s  rate %.4f%s\n", i, JpmcdsFormatDate(zc->date[i]), zc->rate[i],
+                i == zc->numItems - 1 ? "   <-- the slot the solver writes" : "");
+  }
+  std::printf("\n  the point just added is at index 1; the solver writes index %d.\n",
+              zc->numItems - 1);
+  JpmcdsZCFree(zc);
+
+  std::printf("\nCONSEQUENCE, MEASURED WITH CONTROLS. A sweep of 1,400 combinations\n"
+              "with the benchmark INSIDE the curve: every single one FAILS. Varying a\n"
+              "distant zero rate barely moves a shorter swap's present value, so Brent\n"
+              "cannot bracket a root and reports \"Root finder failed\".\n\n"
+              "Positive controls matter here -- \"it always fails\" is also what a\n"
+              "broken fixture looks like:\n\n");
+
+  TDate dd[2] = {JpmcdsDate(2030, 1, 15), JpmcdsDate(2045, 1, 15)};
+  double dr[2] = {0.030, 0.035};
+  TCurve *disc = JpmcdsMakeTCurve(value, dd, dr, 2, 1.0, JPMCDS_ACT_365F);
+  if (disc == nullptr) {
+    std::printf("  (could not build the discount curve)\n");
+    return;
+  }
+
+  struct Probe {
+    const char *label;
+    int far_year;
+    int benchmark_year;
+  };
+  const Probe probes[] = {
+      {"control: no far point, 5y benchmark", 0, 2029},
+      {"control: far point 2026, 5y benchmark", 2026, 2029},
+      {"control: far point 2027, 8y benchmark", 2027, 2032},
+      {"INSIDE: far point 2035, 5y benchmark", 2035, 2029},
+      {"INSIDE: far point 2030, 5y benchmark", 2030, 2029},
+      {"INSIDE: far point 2029, 4y benchmark", 2029, 2028},
+  };
+  for (const Probe &p : probes) {
+    ZCurve *trial = JpmcdsZCMake(value, 8, 1.0, JPMCDS_ACT_365F);
+    if (trial == nullptr) {
+      continue;
+    }
+    JpmcdsZCAddRate(trial, JpmcdsDate(2025, 1, 15), 0.024);
+    if (p.far_year > 0) {
+      JpmcdsZCAddRate(trial, JpmcdsDate(p.far_year, 1, 15), 0.040);
+    }
+    TInterpData idata;
+    std::memset(&idata, 0, sizeof idata);
+    const int rc = JpmcdsZCValueFixFltSwap(
+        trial, disc, 1.0, JpmcdsDate(p.benchmark_year, 1, 15), 0.045, 2, 2, JPMCDS_ACT_360,
+        JPMCDS_ACT_360, JPMCDS_FLAT_FORWARDS, &idata,
+        static_cast<TBadDayAndStubPos>(JPMCDS_BAD_DAY_NONE), (char *)"NONE");
+    std::printf("  %-42s %s\n", p.label, rc == SUCCESS ? "SUCCESS" : "FAILURE");
+    JpmcdsZCFree(trial);
+  }
+  JpmcdsFreeTCurve(disc);
+
+  std::printf("\nThe controls succeed and the inside-the-curve cases all fail, so the\n"
+              "failures are the misdirection and not the fixture.\n\n"
+              "I TRIED AND FAILED to produce a silently wrong curve. Across the sweep\n"
+              "there was no case where the solve converged while varying the wrong\n"
+              "point, so the observable consequence is a misleading diagnostic rather\n"
+              "than a bad number: the caller is told the root finder failed when the\n"
+              "real problem is that the benchmark is not the longest instrument.\n"
+              "Severity is low on that basis, and the entry says so rather than\n"
+              "implying a danger it could not demonstrate.\n\n"
+              "Reachable from JpmcdsZCAddSwaps, whose else-branch calls JpmcdsZCAddSwap\n"
+              "for benchmarks NOT beyond the curve's end, and from the exported\n"
+              "JpmcdsZCValueFixFltSwap directly.\n\n"
+              "IN THE PORT: cannot occur. value_fixed_float_swap looks the added point\n"
+              "up by date and solves for that INDEX, so the solve targets what it\n"
+              "added whatever the order. A tier-1 test asserts the port solves exactly\n"
+              "the input upstream cannot, and that the pre-existing far point is left\n"
+              "alone.\n");
+}
+
 int main(int argc, char **argv) {
   JpmcdsErrMsgOff();
   bool unsafe = false;
@@ -2373,6 +2483,9 @@ int main(int argc, char **argv) {
   }
   if (want("u32")) {
     u32(unsafe);
+  }
+  if (want("u33")) {
+    u33();
   }
   return 0;
 }

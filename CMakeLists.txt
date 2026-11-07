@@ -165,6 +165,7 @@ if(CDSMODEL_BUILD_TESTS)
                  tests/float_rate_test.cpp
                  tests/stream_cash_flows_test.cpp
                  tests/swap_bootstrap_flows_test.cpp
+                 tests/swap_bootstrap_test.cpp
                  tests/adversarial_test.cpp)
   target_link_libraries(cdsmodel_tests PRIVATE cdsmodel GTest::gtest_main)
   target_include_directories(cdsmodel_tests PRIVATE tests)
@@ -211,7 +212,8 @@ if(CDSMODEL_BUILD_TESTS)
                    tests/coupon_schedule_differential_test.cpp
                    tests/float_rate_differential_test.cpp
                    tests/stream_cash_flows_differential_test.cpp
-                   tests/swap_bootstrap_flows_differential_test.cpp)
+                   tests/swap_bootstrap_flows_differential_test.cpp
+                   tests/swap_bootstrap_differential_test.cpp)
     target_link_libraries(cdsmodel_differential_tests
                           PRIVATE cdsmodel cds_reference GTest::gtest_main)
     target_include_directories(cdsmodel_differential_tests PRIVATE tests)
@@ -227,7 +229,7 @@ if(CDSMODEL_BUILD_TESTS)
                  cash_flow_bootstrap date_schedule stub
                  cash_flow_schedule bad_day_map swap_dates
                  interp_curve curve_discount curve_rates coupon_schedule
-                 stream_cash_flows swap_bootstrap_flows)
+                 stream_cash_flows swap_bootstrap_flows swap_bootstrap)
       add_executable(gen_${gen}_golden tools/gen_${gen}_golden.cpp)
       target_link_libraries(gen_${gen}_golden PRIVATE cdsmodel cds_reference)
       target_include_directories(gen_${gen}_golden PRIVATE tests)

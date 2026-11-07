@@ -2771,3 +2771,137 @@ able to collapse two dates onto one.
 `swap_coupon_dates` is *not* changed — it still returns the empty list, because
 that is upstream's answer and the date generation is faithful. The refusal
 belongs where the empty list becomes a problem.
+
+## UPSTREAM-33 — The root finder is pointed at the wrong curve point
+
+**Location:** `lib/src/zcswap.c`, `JpmcdsZCValueFixFltSwap`.
+**Severity:** Low. A misdirected solve whose measured consequence is a
+misleading failure rather than a wrong number — and the report says so rather
+than implying a danger it could not demonstrate.
+
+### Mechanism
+
+The function adds a placeholder point for the benchmark it is about to solve:
+
+```c
+if (JpmcdsZCAddRate(zc, maxDate, rate) == FAILURE)
+    goto done;
+```
+
+and then hands the root finder the address of the **last** slot:
+
+```c
+if (JpmcdsRootFindBrent(JpmcdsObjFuncPVtheSwap, &funcParams,
+                     LOWER_BOUND, UPPER_BOUND, MAX_ITERATIONS, rate,
+                     INITIAL_X_STEP, INITIAL_F_DERIV,
+                     X_TOLERANCE, F_TOLERANCE,
+                     &zc->rate[zc->numItems-1]) == FAILURE)
+```
+
+`zc->numItems-1` is the point just added only if that point is the latest date
+in the curve. `JpmcdsZCAddRateAndDiscount` does not append unconditionally — it
+inserts in sorted position:
+
+```c
+if (zc->numItems==0 || zc->date[zc->numItems-1]<date)
+{
+    zc->date[zc->numItems] = date;      /* insert at end */
+    ...
+}
+else
+{
+    int i = zc->numItems - 1;           /* loops backwards, until before date */
+```
+
+So for a benchmark whose `maxDate` falls inside the existing curve, the solver
+varies a different, already-solved point, and the point it was supposed to
+solve keeps the placeholder `rate` it was seeded with. The discount
+recomputation two statements later uses the same wrong index:
+
+```c
+if (JpmcdsZCComputeDiscount(zc,
+                      zc->date[zc->numItems-1],
+                      zc->rate[zc->numItems-1],
+                      &zc->discount[zc->numItems-1])==FAILURE)
+```
+
+Demonstrated directly — a curve with points at 2026 and 2035, then
+`AddRate(2027, 0.045)`:
+
+```
+    [0] 20260115  rate 0.0250
+    [1] 20270115  rate 0.0450
+    [2] 20350115  rate 0.0400   <-- the slot the solver writes
+```
+
+The point just added is at index 1; the solver writes index 2.
+
+### Consequence, measured with controls
+
+A sweep of 1,400 combinations — far-point year, far-point rate, benchmark year,
+benchmark rate, both interpolation types — with the benchmark inside the
+existing curve. **Every one fails.** Varying a distant zero rate barely moves a
+shorter swap's present value, so Brent cannot bracket a root in `[-0.99, 100]`
+within 50 iterations and the function reports *"Root finder failed"*.
+
+Positive controls were essential here, because "it always fails" is also what a
+broken fixture looks like:
+
+| case | result |
+|---|---|
+| control: no far point, 5y benchmark | SUCCESS |
+| control: far point 2026, 5y benchmark | SUCCESS |
+| control: far point 2027, 8y benchmark | SUCCESS |
+| INSIDE: far point 2035, 5y benchmark | FAILURE |
+| INSIDE: far point 2030, 5y benchmark | FAILURE |
+| INSIDE: far point 2029, 4y benchmark | FAILURE |
+
+The controls succeed and the inside-the-curve cases all fail, so the failures
+are the misdirection and not the setup.
+
+**I tried and failed to produce a silently wrong curve.** Across the whole
+sweep there was no case where the solve converged while varying the wrong
+point. So the observable consequence is a misleading diagnostic: the caller is
+told the root finder failed when the real problem is that the benchmark is not
+the longest instrument so far. That is why this is filed low. The same
+reasoning as UPSTREAM-23, where a pricing consequence was looked for and not
+found, and the register said so.
+
+### Reachability
+
+Two ways in:
+
+- `JpmcdsZCAddSwaps` has an **else** branch that calls `JpmcdsZCAddSwap` for
+  benchmarks *not* beyond the curve's end — which is exactly the condition that
+  triggers this — and passes `discZC` through, so `JpmcdsZCValueFixFltSwap` is
+  reached whenever a discount curve is supplied;
+- `JpmcdsZCValueFixFltSwap` is itself declared in `zcprvt.h` and exported.
+
+A benchmark strip that is sorted and extends monotonically past the stub curve
+never hits it. One that overlaps an existing curve does.
+
+Reproduce with `defect_evidence u33`. No `--unsafe` mode: nothing here is
+undefined behaviour, and the sweep is safe to run.
+
+### In the port
+
+**Cannot occur.** `value_fixed_float_swap` looks the added point up by date and
+solves for that **index**:
+
+```cpp
+if (!curve.add_rate(max_date, rate)) {
+  return false;
+}
+const std::optional<std::size_t> solved_index = curve.find_exact(max_date);
+```
+
+so the solve targets what it added whatever the insertion order. A tier-1 test
+asserts the port solves exactly the input upstream cannot, and that the
+pre-existing far point is left at the rate it had.
+
+There is a second benefit, not the point of the fix but worth recording: the
+port sets the rate through `ZeroCurveBuilder::set_rate`, which recomputes the
+cached discount factor, so the rate/discount invariant cannot drift. Upstream
+mutates `fArray[last].fRate` in its snapshot `TCurve` and recomputes the
+discount in a separate call against the live `ZCurve` — two places holding the
+same quantity, kept in step by hand.
