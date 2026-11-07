@@ -501,6 +501,12 @@
           <td><span class="chip">Reproduced; signature fixed</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u37">UPSTREAM-37</a></td>
+          <td>A NULL guard on <strong>one path out of four</strong> &mdash; the guarded path teaches the caller NULL is fine, and three others punish them for believing it</td>
+          <td><span class="chip mid">Medium &middot; store through NULL</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u36">UPSTREAM-36</a></td>
           <td>The <strong>fourth</strong> unguarded <code>fArray[fNumItems-1]</code> &mdash; at four occurrences it is an idiom the codebase trusts, not four accidents</td>
           <td><span class="chip mid">Medium &middot; null-derived read</span></td>
@@ -2681,6 +2687,140 @@ after one extrapolation: same call               -&gt; <span class="hit">SUCCESS
 
     <div class="tests">
       <span>Reproduce:</span> ./build/debug/defect_evidence u28
+    </div>
+  </section>
+
+  <!-- ============ U37 ============ -->
+  <section class="record sev-mid" id="u37">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-37</span>
+      <h2>A NULL guard on one path out of four</h2>
+    </div>
+    <div class="chips">
+      <span class="chip mid">Medium &middot; store through NULL on three of four exit paths</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">cxbsearch.c:84 &mdash; JpmcdsBinarySearchLong</p>
+
+    <h3>Mechanism</h3>
+    <p>
+      The function returns three values through pointers, and its main path
+      treats two of them as <strong>optional</strong>:
+    </p>
+<pre><code><span class="hit">if (loBound != NULL)</span>
+{
+    while (lo &gt;= 0 &amp;&amp; ELEMENT(lo) &gt;= xDesired)
+        --lo;
+    ...
+}
+
+<span class="hit">if (hiBound != NULL)</span>
+{
+    ...
+}</code></pre>
+    <p>
+      That guard <em>is</em> the documentation. Nothing in the header says NULL
+      is acceptable; the code saying <code>if (loBound != NULL)</code> is the
+      only statement on the subject, and it says yes. Measured: an in-range
+      search with NULL for both optional outputs returns SUCCESS and fills
+      <code>exact</code> correctly.
+    </p>
+    <p>
+      The function then has three early returns that write through the same
+      pointers with no guard at all:
+    </p>
+<pre><code>if (xDesired &lt; ELEMENT(0))
+{
+    *exact   = -1;
+    <span class="hit">*loBound = -1;</span>
+    <span class="hit">*hiBound = 0;</span>
+    return SUCCESS;
+}
+else if (xDesired &gt; ELEMENT(arraySize-1))   <span class="c">/* same, unguarded */</span>
+...
+if (arraySize == 1)                         <span class="c">/* same, unguarded */</span></code></pre>
+<pre><code>cxbsearch.c:84:9: runtime error: <span class="hit">store to null pointer of type 'long'</span>
+ERROR: AddressSanitizer: SEGV on unknown address 0x000000000000
+SUMMARY: AddressSanitizer: SEGV cxbsearch.c:84 in JpmcdsBinarySearchLong</code></pre>
+
+    <h3>Why this one is worse than a missing check</h3>
+    <p>
+      Most of this register is missing checks. This is an
+      <strong>inconsistent</strong> one, forty lines apart in a single
+      function, and the distinction matters.
+    </p>
+    <p>
+      A missing check is a precondition: it can be documented, and a caller who
+      violates it has made a mistake. A check on one path and not another is an
+      <em>invitation the code does not honour</em> &mdash; the guarded path
+      teaches the caller that NULL is fine, and three other paths punish them
+      for believing it. The caller did nothing wrong, and there is no document
+      they could have read that would have saved them, because the only
+      statement about NULL in the whole function is the one that says it is
+      allowed.
+    </p>
+
+    <h3>Reachability</h3>
+    <p>
+      Both in-library callers pass non-NULL for all three outputs
+      &mdash; cxzerocurve.c:103 and feeleg.c:569, each searching for today's
+      date. So this is reachable only through the public header, which is also
+      the only place anyone would read the guard and conclude NULL was allowed.
+      That is the fourth time in this register that the externally-reachable
+      surface is the unvalidated one, after
+      <a href="#u25">UPSTREAM-25</a>, <a href="#u30">30</a> and
+      <a href="#u36">36</a>.
+    </p>
+
+    <h3>In the port</h3>
+    <p><strong>Cannot occur.</strong> <code>match_range</code> returns a value:</p>
+<pre><code>struct MatchRange {
+  std::size_t first = 0;
+  std::size_t count = 0;
+};</code></pre>
+    <p>
+      No output pointers, so nothing to guard on any path and nowhere for the
+      inconsistency to live.
+    </p>
+    <p>
+      The collapse from three outputs to one range is not cosmetic. Upstream
+      documents the relationship between its three values &mdash;
+      <em>"hiBound-loBound-1 should give the number of exact matches in all
+      cases, and everything in the range [loBound+1, hiBound-1] inclusive
+      should be an exact match"</em> &mdash; and that invariant <em>is</em> the
+      answer. Returning it makes the arithmetic a tautology instead of a
+      promise each caller re-derives, and the sentinels go with it:
+      <code>loBound == -1</code> and <code>hiBound == arraySize</code> are not
+      "absent", they are one position past each end and load-bearing for the
+      subtraction.
+    </p>
+
+    <h3>Two more things measured here, neither filed</h3>
+    <p>
+      <strong>The parameter comment is wrong.</strong> It says
+      <code>hiBound</code> is <code>-1</code> when no greater value exists; the
+      function comment twenty lines above says <code>arraySize</code>, and the
+      code says <code>arraySize</code>. Measured: seeking 99 in
+      <code>{10,20,20,30,40}</code> gives <code>hiBound == 5</code>. Two
+      comments in one file contradicting each other, with the code agreeing
+      with one.
+    </p>
+    <p>
+      <strong>The order check never fires.</strong> There is a branch reporting
+      <em>"x array not in increasing order"</em>, reached when the
+      <code>arraySize + 1</code> iteration cap expires. I wrote a test
+      asserting at least one unsorted array would be refused by it. The test
+      <strong>failed</strong>: across an exhaustive sweep of every unsorted
+      array of length 2 to 4 over the alphabet 0..3, not one was refused. The
+      cap is roughly exponentially generous &mdash; a runaway backstop, not a
+      detector. Disorder produces a confident wrong answer, which is exactly
+      what the function's own documentation promises, so the branch is dead code
+      rather than a broken check. Recorded because it reads like a safety net
+      and is not one.
+    </p>
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u37
+      &nbsp;&middot;&nbsp; trace: ./build/asan/defect_evidence u37 --unsafe
     </div>
   </section>
 

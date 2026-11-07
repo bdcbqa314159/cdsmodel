@@ -21,6 +21,7 @@
 
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/match_range.hpp>
 #include <cdsmodel/rate_conversion.hpp>
 
 #include <algorithm>
@@ -182,21 +183,24 @@ public:
   /// points, the first point's rate before the curve starts, and
   /// extrapolation along the last segment beyond its end.
   [[nodiscard]] double zero_rate(Date date) const noexcept {
-    const Search s = search(date);
-    if (s.exact >= 0) {
-      return rate_cc(static_cast<std::size_t>(s.exact));
+    // Never nullopt: `create` guarantees a non-empty, strictly increasing
+    // point list, which are exactly match_range's two refusal conditions.
+    const MatchRange found = *match_range(date, std::span<const RatePoint>{points_},
+                                          [](const RatePoint &point) { return point.date; });
+    if (!found.empty()) {
+      return rate_cc(found.first);
     }
-    if (s.lo < 0) {
+    if (found.first == 0) {
       return rate_cc(0); // before the curve: flat at the first rate
     }
-    if (static_cast<std::size_t>(s.hi) >= points_.size()) {
+    if (found.first >= points_.size()) {
       if (points_.size() == 1) {
         return rate_cc(0);
       }
       // Beyond the curve: extrapolate along the last segment.
       return interp_rate(date, points_.size() - 2, points_.size() - 1);
     }
-    return interp_rate(date, static_cast<std::size_t>(s.lo), static_cast<std::size_t>(s.hi));
+    return interp_rate(date, found.first - 1, found.first);
   }
 
   /// Discount factor from the base date to `date`. Replaces `JpmcdsZeroPrice`.
@@ -223,53 +227,23 @@ private:
   ZeroCurve(Date base_date, std::vector<RatePoint> points, double basis, DayCount day_count)
       : base_date_{base_date}, points_{std::move(points)}, basis_{basis}, day_count_{day_count} {}
 
-  struct Search {
-    long exact; ///< index of an equal value, or -1
-    long lo;    ///< index of the last value strictly less, or -1
-    long hi;    ///< index of the first value strictly greater, or size
-  };
-
-  /// Replaces `JpmcdsBinarySearchLong`, which is a different function from the
-  /// bracketing search in bsearch.hpp: it also reports an exact match, and
-  /// its bounds are strict rather than surrounding.
-  [[nodiscard]] Search search(Date date) const noexcept {
-    const long n = static_cast<long>(points_.size());
-    if (date < points_.front().date) {
-      return {-1, -1, 0};
-    }
-    if (date > points_.back().date) {
-      return {-1, n - 1, n};
-    }
-    if (n == 1) {
-      return {0, -1, n}; // the only remaining possibility is an exact match
-    }
-
-    const auto at = [this](long i) { return points_[static_cast<std::size_t>(i)].date; };
-    long lo = 0;
-    long hi = n - 2;
-    long mid = 0;
-    for (long guard = n + 1; guard > 0; --guard) {
-      mid = (hi + lo) / 2;
-      if (date < at(mid)) {
-        hi = mid - 1;
-      } else if (date > at(mid + 1)) {
-        lo = mid + 1;
-      } else {
-        break;
-      }
-    }
-
-    lo = mid;
-    hi = mid + 1;
-    const long exact = at(lo) == date ? lo : (at(hi) == date ? hi : -1);
-    while (lo >= 0 && at(lo) >= date) {
-      --lo;
-    }
-    while (hi < n && at(hi) <= date) {
-      ++hi;
-    }
-    return {exact, lo >= 0 ? lo : -1, hi < n ? hi : n};
-  }
+  /// `JpmcdsBinarySearchLong` is NOT ported here, though an earlier version of
+  /// this header did port it -- as a `search` member returning upstream's
+  /// three-value {exact, lo, hi} struct. It had no caller and no test, and it
+  /// duplicated the general port in match_range.hpp, which was written later
+  /// and is swept exhaustively.
+  ///
+  /// Deleted rather than kept, for two reasons. One implementation of a
+  /// function is the point of a port. And the shape it returned -- three
+  /// values tied together by a documented subtraction, with `-1` and `size`
+  /// as sentinels -- is precisely the shape UPSTREAM-37 lives in; keeping it
+  /// in a public interface would have preserved the hazard the port exists to
+  /// remove.
+  ///
+  /// When `cxzerocurve.c`'s remaining functions are ported they will need to
+  /// search a curve's dates, which are not contiguous in `points_`. That is a
+  /// projection, and the overload for it belongs in match_range.hpp when there
+  /// is a caller to shape it -- the same note bsearch.hpp carries.
 
   /// The stored rate at `idx`, converted to continuously compounded ACT/365F.
   /// Replaces `zcRateCC` composed with `JpmcdsConvertCompoundRate`.

@@ -26,7 +26,7 @@ ROOT = pathlib.Path(__file__).parent.resolve()
 # Calibrated to the CI case -- tier 1 only, no oracle present -- because that
 # is the binding one. A local run with the oracle executes strictly more.
 # Bump it when a module lands; never lower it to make a red run green.
-TEST_FLOOR_WITHOUT_ORACLE = 417
+TEST_FLOOR_WITHOUT_ORACLE = 422
 
 
 def fail(msg: str) -> None:
@@ -91,6 +91,46 @@ def gate_provenance() -> None:
             + "\n  ".join(missing)
         )
     ok(f"all {len(headers) - len(exempt & {h.name for h in headers})} ported headers name their source")
+
+
+def gate_claims() -> None:
+    """No upstream function may be claimed by two headers.
+
+    The provenance gate above catches a function nobody claims. This catches
+    the opposite, and it cost a slice to learn the difference: `cxbsearch.c`'s
+    JpmcdsBinarySearchLong was ported twice -- once as an uncalled `search`
+    member on ZeroCurve, months earlier, and once as `match_range` -- and
+    port_progress.py reported 100% either way, because it counts a function as
+    done when ANY header claims it.
+
+    A duplicate claim means two implementations of one function, which is the
+    one thing a port exists to prevent. It is also invisible to every other
+    gate: both compile, both pass their own tests, and the provenance audit is
+    satisfied twice over.
+    """
+    headers = sorted((ROOT / "include" / "cdsmodel").glob("*.hpp"))
+    claims: dict[str, list[str]] = {}
+    for h in headers:
+        text = h.read_text(encoding="utf-8")
+        for clause in re.findall(
+            r"(?:Replaces|Equivalent to)\b(.{0,400}?)(?:\.\s|\.$)", text, re.S
+        ):
+            for name in re.findall(r"Jpmcds\w+", clause):
+                claims.setdefault(name, [])
+                if h.name not in claims[name]:
+                    claims[name].append(h.name)
+
+    if not claims:
+        fail("no provenance claims found at all, which cannot be right")
+
+    duplicates = {n: v for n, v in claims.items() if len(v) > 1}
+    if duplicates:
+        fail(
+            "the same upstream function is claimed by more than one header, "
+            "which means it was ported twice:\n  "
+            + "\n  ".join(f"{n}: {', '.join(v)}" for n, v in sorted(duplicates.items()))
+        )
+    ok(f"{len(claims)} claimed upstream functions, none claimed twice")
 
 
 def gate_golden_generated() -> None:
@@ -288,6 +328,7 @@ def gate_tests(preset: str) -> None:
 GATES = {
     "upstream-absent": gate_upstream_absent,
     "provenance": gate_provenance,
+    "claims": gate_claims,
     "golden": gate_golden_generated,
     "reports": gate_reports,
     "upstream-unmodified": gate_upstream_unmodified,

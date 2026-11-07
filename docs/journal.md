@@ -4508,3 +4508,193 @@ offer.
 ### Where this leaves the project
 
 Two leaves left: `cxbsearch` (180 lines) and `cx` (230).
+
+## Decision 42 — An invitation the code does not honour, and a test that was wrong
+
+`cxbsearch.c` is 180 lines and one function: find a value in a sorted array and
+report the whole run of equal elements. Second-to-last leaf.
+
+### UPSTREAM-37, which is a different shape from the rest
+
+The main path treats two of its three output pointers as optional:
+
+```c
+if (loBound != NULL) { ... }
+if (hiBound != NULL) { ... }
+```
+
+Nothing in the header says NULL is acceptable. **That guard is the only
+statement on the subject, and it says yes.** Three early-return paths then
+write through the same pointers with no guard, so a value outside the array —
+or an array of one element — stores through NULL.
+
+Almost everything else in this register is a *missing* check. This is an
+*inconsistent* one, forty lines apart in a single function, and I think that is
+worse. A missing check is a precondition: it can be documented, and a caller
+who violates it has made a mistake. A check on one path and not another is an
+invitation the code does not honour. The guarded path teaches the caller NULL
+is fine; three others punish them for believing it. **The caller did nothing
+wrong, and there is no document they could have read that would have saved
+them.**
+
+Reachable only through the public header, since both in-library callers pass
+all three. That is the fourth time the externally-reachable surface is the
+unvalidated one, after UPSTREAM-25, 30 and 36.
+
+### Three outputs become one range, and the invariant becomes a tautology
+
+Upstream documents how its three values relate:
+
+> `hiBound-loBound-1` should give the number of exact matches in all cases, and
+> everything in the range `[loBound+1, hiBound-1]` inclusive should be an exact
+> match.
+
+That invariant *is* the answer. So the port returns `MatchRange{first, count}`
+and the arithmetic stops being a promise each caller re-derives. The sentinels
+go with it: `loBound == -1` and `hiBound == arraySize` are not "absent" values,
+they are one position past each end and load-bearing for the subtraction, which
+a half-open range expresses without signalling anything.
+
+And the defect evaporates as a side effect. There are no output pointers, so
+there is nothing to guard on any path.
+
+### `exact` is "A value", and the article is load-bearing
+
+Upstream documents `exact` as *"the index of A value which is equal"*. I
+suspected the indefinite article was doing real work, traced the code, and then
+**measured it rather than trusting the trace**:
+
+```
+{10,10,20,30} seek 10  ->  exact == 1, while the first match is 0
+```
+
+The code picks whichever of the two bracketing indices matches, which need not
+be the first of a run. So the differential test asserts upstream's `exact` lies
+*within* the port's range rather than equalling its start — comparing them
+directly would be asserting something upstream never promised, and would have
+failed on exactly one shape out of the hundreds swept.
+
+### The test I wrote that was simply wrong
+
+There is a branch reporting *"x array not in increasing order"*, reached when
+the `arraySize + 1` iteration cap expires. I wrote a test asserting that at
+least one unsorted array would be refused by it.
+
+**It failed. Not one was refused** — across an exhaustive sweep of every
+unsorted array of length 2 to 4 over the alphabet 0..3. The cap is
+`arraySize + 1` iterations on a halving search, which is roughly exponentially
+generous: a runaway backstop, not a detector.
+
+So disorder produces a confident wrong answer. Which is exactly what the
+function's own documentation says it will — *"the output is undefined. No
+checks are performed on the order of xArray"* — so the branch is dead code
+rather than a broken check, and the documentation is honest where the code
+merely looks careful. Not filed; recorded, because the branch reads like a
+safety net and is not one.
+
+That is the third time this session a claim of mine has been corrected by
+measuring it instead of reasoning about it, and the second time the correction
+came from a *test I wrote to confirm my own belief*. The pattern is clear
+enough to state: when I write a test whose purpose is to confirm something I
+already believe, I should expect it to fail about a third of the time.
+
+### Exhaustive, because it was affordable
+
+The domain here is small enough to enumerate: every non-decreasing array of
+length 1 to 5 over a four-symbol alphabet, against every sought value in and
+around it. 125 arrays, 750 recorded cases, and the tier-2 sweep goes further —
+461 arrays over five symbols, 3,227 comparisons.
+
+So this is one of the few modules where "the port agrees with upstream" can be
+said with no qualifier about which inputs were tried. Where a domain is small
+enough to enumerate, enumerating it beats choosing representatives, and the
+cost here was nil. The tier-1 replay asserts the exact case count rather than a
+floor, because "exhaustive over this domain" is a claim worth pinning — a
+threshold like `> 2000` would have silently accepted a sweep that stopped
+early, which is precisely the mistake I made on the first attempt (I asserted
+`> 2000` against a domain whose true size was 750).
+
+### One cosmetic defect, deliberately not filed
+
+```c
+JpmcdsErrMsg("%s: x array not in increasing order.n", routine);
+```
+
+`.n` for `.\n`. The log line never ends. Not filed: this register is for
+things that change an answer or touch memory, and a missing newline does
+neither. Written down anyway, because a reader comparing the two files will
+notice it and should find the reason for its absence rather than infer one.
+
+### I ported the same function twice, and every gate said fine
+
+This is the real finding of the slice, and it is about the project rather than
+about upstream.
+
+After writing `match_range.hpp`, `port_progress.py` showed the function count
+unchanged at 148 while the completed-file count went up. That should be
+impossible — a newly ported function has to move the total — so I went looking,
+and found `JpmcdsBinarySearchLong` already claimed by `zero_curve.hpp`, as a
+`search` member returning upstream's three-value `{exact, lo, hi}` struct.
+Written months earlier, for `cxzerocurve.c`.
+
+**Two implementations of one function, and nothing noticed.** Both compiled.
+Both passed their own tests. The provenance gate was satisfied twice over,
+because it asks "does every header name its source?" and both did.
+`port_progress.py` reported 100% either way, because it counts a function as
+done when *any* header claims it. The duplicate was invisible to every
+instrument the project has.
+
+It was caught by an arithmetic oddity in a progress report — a number that did
+not move when it should have. That is luck, not method.
+
+### The fix, and the gate
+
+`ZeroCurve::search` had no external caller and no test of its own; it was used
+only inside `zero_rate`. So it was the one to delete, and the general port in
+`match_range.hpp` — swept exhaustively — is the one to keep.
+
+Deleting it had a second benefit I did not expect. The shape it returned was
+three values tied together by a documented subtraction, with `-1` and `size` as
+sentinels: **precisely the shape UPSTREAM-37 lives in.** Keeping it would have
+preserved, inside the port's own public interface, the hazard the port exists
+to remove.
+
+Rewiring `zero_rate` through `match_range` needed the projection overload
+`bsearch.hpp` promised four slices ago and I had declined to write
+speculatively — a curve's dates are not contiguous in `points_`. Now there is a
+caller, so it is no longer speculative, and it replaces upstream's byte `skip`
+stride with a function of the element, which a caller cannot get wrong by
+passing the size of the wrong type.
+
+All 707 tests passed after the rewiring. `zero_rate` is the curve's core and
+heavily covered, so that is real evidence rather than silence.
+
+Then the systemic part: `verify.py claims`, which fails if any upstream
+function is named by two headers. The existing provenance gate catches a
+function nobody claims; this catches the opposite. I proved it fires by
+planting a duplicate claim in `date.hpp` and watching it exit 1.
+
+And I managed, while adding the gate that detects duplicates, to insert its
+dispatch-table entry twice. Which is funny, and also the point: the class of
+mistake is not rare or exotic, it is what happens whenever a fact has to be
+maintained in two places by hand.
+
+### The score on provenance gaps
+
+Three times now a provenance omission has cost real work:
+
+* Decision 30 — four functions ported but unclaimed, so the audit reported gaps
+  that were not gaps;
+* Decision 34 — the same again, which is what made it a class rather than an
+  incident;
+* this slice — a function claimed twice, so the audit reported completeness
+  that was not completeness.
+
+The first two were over-reporting of work remaining. This one was
+under-reporting, and it is the worse direction: over-reporting costs a minute
+of checking, while under-reporting cost a whole module written for nothing. The
+tooling now checks both directions.
+
+### Where this leaves the project
+
+One leaf left: `cx.c`, 230 lines.
