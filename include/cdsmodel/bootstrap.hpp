@@ -146,8 +146,11 @@ clean_spread_curve(Date today, const ZeroCurve &discount, Date start, Date stepi
   for (std::size_t i = 0; i < selected.size(); ++i) {
     const double guess = selected[i].coupon_rate / (1.0 - recovery);
 
-    const ContingentLeg protection =
+    const std::optional<ContingentLeg> protection =
         cds_contingent_leg(std::max(today, start), selected[i].end, 1.0, terms.protect_start);
+    if (!protection) {
+      return std::nullopt;
+    }
 
     terms.end = selected[i].end;
     terms.coupon_rate = selected[i].coupon_rate;
@@ -167,7 +170,7 @@ clean_spread_curve(Date today, const ZeroCurve &discount, Date start, Date stepi
         return std::nullopt;
       }
       const std::optional<double> pv_protection =
-          contingent_leg_pv(protection, today, cash_settle, stepin, discount, *curve, recovery);
+          contingent_leg_pv(*protection, today, cash_settle, stepin, discount, *curve, recovery);
       if (!pv_protection) {
         return std::nullopt;
       }

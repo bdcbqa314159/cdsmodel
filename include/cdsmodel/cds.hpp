@@ -62,8 +62,15 @@ struct Cds {
   bool protect_start = true;
 };
 
-/// The protection leg of a vanilla CDS. Replaces `JpmcdsCdsContingentLegMake`,
-/// which delegates to `JpmcdsContingentLegMake` in cx.c.
+/// The protection leg of a vanilla CDS. Replaces `JpmcdsCdsContingentLegMake`.
+///
+/// Upstream delegates to `JpmcdsContingentLegMake` in cx.c, which is ported as
+/// `make_contingent_leg` in contingent_leg.hpp -- and this function now
+/// delegates to it in the same way, rather than repeating the one-day shift.
+/// The earlier revision repeated it AND omitted the accompanying
+/// `REQUIRE (endDate > startDate)`, so a zero-length leg with
+/// `protect_start == false` was accepted here and refused by upstream.
+/// `verify.py claims` found the duplication; the missing check came with it.
 ///
 /// The one-day shift matters and is easy to miss, because it lives in a
 /// different file from the PV routine that compensates for it.
@@ -77,10 +84,9 @@ struct Cds {
 /// Omitting this shift costs exactly one day of protection, which on a
 /// five-year contract is a relative price error around 2e-5 -- small enough to
 /// look like rounding and far too large to be rounding.
-[[nodiscard]] inline ContingentLeg cds_contingent_leg(Date start, Date end, double notional,
-                                                      bool protect_start) {
-  const Date stored = protect_start ? start - std::chrono::days{1} : start;
-  return ContingentLeg{stored, end, notional, ProtectionPayment::AtDefault, protect_start};
+[[nodiscard]] inline std::optional<ContingentLeg>
+cds_contingent_leg(Date start, Date end, double notional, bool protect_start) {
+  return make_contingent_leg(start, end, notional, ProtectionPayment::AtDefault, protect_start);
 }
 
 /// PV of the protection leg. Replaces `JpmcdsCdsContingentLegPV`.
@@ -94,8 +100,11 @@ struct Cds {
 cds_contingent_leg_pv(Date today, Date value_date, Date start, Date end, double notional,
                       const ZeroCurve &discount, const ZeroCurve &spread, double recovery,
                       bool protect_start) {
-  const ContingentLeg leg = cds_contingent_leg(start, end, notional, protect_start);
-  return contingent_leg_pv(leg, today, value_date, /*stepin_date=*/start, discount, spread,
+  const std::optional<ContingentLeg> leg = cds_contingent_leg(start, end, notional, protect_start);
+  if (!leg) {
+    return std::nullopt; // upstream's JpmcdsCdsContingentLegMake returns NULL
+  }
+  return contingent_leg_pv(*leg, today, value_date, /*stepin_date=*/start, discount, spread,
                            recovery);
 }
 

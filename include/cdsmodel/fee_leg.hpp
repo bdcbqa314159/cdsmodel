@@ -1,8 +1,9 @@
 #pragma once
 
-// Port of upstream feeleg.c -- the premium leg of a CDS: the coupons the
-// protection buyer pays, plus the part-period accrual owed if default
-// interrupts a coupon period.
+// Port of upstream feeleg.c + cx.c -- the premium leg of a CDS: the coupons
+// the protection buyer pays, plus the part-period accrual owed if default
+// interrupts a coupon period. cx.c supplies the constructors; feeleg.c the
+// pricing.
 //
 // Two things make this the most intricate module in the slice.
 //
@@ -57,6 +58,8 @@ struct FeePayment {
   Date accrual_start;
   Date accrual_end;
   Date pay;
+
+  friend constexpr bool operator==(const FeePayment &, const FeePayment &) = default;
 };
 
 /// The premium leg.
@@ -72,6 +75,70 @@ struct FeeLeg {
   /// survival is computed at end of day.
   bool observe_start_of_day = true;
 };
+
+// ## cx.c's three TFeeLeg functions, and why none of them survives
+//
+// `JpmcdsFeeLegMake`, `JpmcdsFeeLegMakeEmpty` and `JpmcdsFeeLegFree` are all
+// replaced by `std::vector<FeePayment>` and aggregate initialisation. The
+// interesting part is what each one was for.
+//
+// `JpmcdsFeeLegMakeEmpty(n)` allocates three uninitialised arrays of length n
+// and returns the leg for the caller to fill in. That is the ONLY declared way
+// to build a fee leg, and `cds.c:166` uses it, then writes
+// `fl->accStartDates[i] = ...` by hand at line 192. A constructor that hands
+// back three empty parallel arrays for the caller to populate is not a
+// constructor; it is an allocation with a type attached.
+//
+// `JpmcdsFeeLegMake` is the one that would have done the job properly --
+// copying three caller-supplied arrays. It is:
+//
+//   * defined in cx.c with EXTERNAL LINKAGE, so it occupies the symbol table;
+//   * declared in NO header -- cx.h declares `MakeEmpty` and `Free` and skips
+//     it;
+//   * called from NOWHERE. It appears exactly twice in the whole source tree:
+//     its own definition and its own `routine[]` string.
+//
+// So the safe constructor exists, works, and is unreachable without
+// hand-writing its prototype. The library's actual way to build a fee leg is
+// to allocate empty and poke the parallel arrays.
+//
+// That also settles a defect I had started writing up. `JpmcdsFeeLegMake`
+// copies each array only `if (p->nbDates > 0 && accStartDates != NULL)` and
+// otherwise stores NULL, while `nbDates` keeps whatever was passed -- so
+// `JpmcdsFeeLegMake(3, NULL, ends, pays, ...)` returns SUCCESS with a count of
+// 3 and a NULL array, and `JpmcdsFeeLegPV` reads `fl->accStartDates[0]`
+// whenever `nbDates > 1`. Measured, and a real inconsistency.
+//
+// NOT FILED, because it is not reachable: no header declares the function, so
+// a caller cannot invoke it without guessing its signature. The register's rule
+// is that reachability bounds severity -- and a function with no declaration
+// anywhere is the floor of that scale. Recorded here instead, because the next
+// person to read cx.c will find the same thing and should find the reasoning
+// too.
+//
+// `FeeLeg` makes the shape unrepresentable in any case: one
+// `std::vector<FeePayment>` cannot have a length that disagrees with itself.
+
+/// Build a premium leg. Replaces `JpmcdsFeeLegMake` -- which upstream exports
+/// and never declares -- and `JpmcdsFeeLegMakeEmpty`, whose job was to hand
+/// back three empty arrays.
+///
+/// Upstream validates NOTHING here: not the count, not the array pointers, not
+/// the day count convention, not the notional. The port validates nothing
+/// either, because there is nothing left to validate -- the vector's length is
+/// its own, `DayCount` is an enum, and `AccrualPayment` is an enum. An empty
+/// leg is permitted on both sides; `fee_leg_pv` takes its multi-period path
+/// only when there is more than one payment, exactly as upstream does.
+[[nodiscard]] inline FeeLeg make_fee_leg(std::span<const FeePayment> payments, double notional,
+                                         double coupon_rate, DayCount day_count,
+                                         AccrualPayment accrual_pay, bool observe_start_of_day) {
+  return FeeLeg{std::vector<FeePayment>{payments.begin(), payments.end()},
+                notional,
+                coupon_rate,
+                day_count,
+                accrual_pay,
+                observe_start_of_day};
+}
 
 /// Present value of the accrual owed if default lands inside `[start, end]`.
 ///
