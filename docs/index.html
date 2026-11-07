@@ -501,6 +501,12 @@
           <td><span class="chip">Reproduced; signature fixed</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u34">UPSTREAM-34</a></td>
+          <td>A validator that <strong>reports a NULL pointer and then dereferences it</strong> &mdash; because it accumulates failures, and one check guards another</td>
+          <td><span class="chip mid">Medium &middot; null dereference</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u33">UPSTREAM-33</a></td>
           <td>The root finder is handed <strong>the last curve slot, not the one it just added</strong> &mdash; and the curve inserts in sorted order, not at the end</td>
           <td><span class="chip low">Low &middot; misleading failure</span></td>
@@ -2663,6 +2669,120 @@ after one extrapolation: same call               -&gt; <span class="hit">SUCCESS
 
     <div class="tests">
       <span>Reproduce:</span> ./build/debug/defect_evidence u28
+    </div>
+  </section>
+
+  <!-- ============ U34 ============ -->
+  <section class="record sev-mid" id="u34">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-34</span>
+      <h2>A validator that reports a NULL pointer and then dereferences it</h2>
+    </div>
+    <div class="chips">
+      <span class="chip mid">Medium &middot; null dereference inside the code that detected the null</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">gtozc.c:345 &amp; gtozc.c:464 &mdash; two validators, one mechanism</p>
+
+    <h3>Mechanism</h3>
+    <p>
+      Both static validators in gtozc.c <strong>accumulate</strong> failures
+      rather than returning at the first one:
+    </p>
+<pre><code>int   status = SUCCESS;     <span class="c">/* Until proven a failure */</span>
+
+if(zeroCurve == NULL)
+{
+    JpmcdsErrMsg("%s: ZeroCurve is NULL\n", routine);
+    <span class="hit">status = FAILURE;</span>            <span class="c">/* and no return */</span>
+}
+
+if (numRates &lt; 0) { ...; status = FAILURE; }
+if (JpmcdsDayCountValid(routine,dayCountConv)==FAILURE) { ...; status = FAILURE; }
+
+for (i=0 ;i&lt;numRates ;i++ )
+{
+   ...
+   if (dateArr[i] &lt;= <span class="hit">zeroCurve-&gt;fBaseDate</span>)</code></pre>
+    <p>
+      That style is <em>good design</em> &mdash; it reports every problem with
+      the input instead of only the earliest, and this report has praised the
+      same pattern elsewhere, in streamcf.c's
+      <code>CheckFixedStreamDetails</code>.
+    </p>
+    <p>
+      The defect is narrower than the style. <strong>One of the accumulated
+      checks is a precondition for a later one.</strong> The NULL test sets a
+      flag and carries on; the loop then reads through the pointer.
+    </p>
+
+    <h3>Two sites, one mechanism, one fix</h3>
+    <p>
+      <code>CheckZCSwapsInputs</code> has the identical shape and is worse
+      &mdash; its dereference is not inside a loop whose count could be zero:
+    </p>
+<pre><code>if(JpmcdsIsBusinessDay(<span class="hit">zeroCurve-&gt;fBaseDate</span>, holidayFile, &amp;isBusDay)==FAILURE)</code></pre>
+    <table class="data">
+      <thead><tr><th>site</th><th>function</th><th>the dereference</th></tr></thead>
+      <tbody>
+        <tr><td>gtozc.c:345</td><td><code>CheckZCCashInputs</code></td><td><code>dateArr[i] &lt;= zeroCurve-&gt;fBaseDate</code></td></tr>
+        <tr><td>gtozc.c:464</td><td><code>CheckZCSwapsInputs</code></td><td><code>JpmcdsIsBusinessDay(zeroCurve-&gt;fBaseDate, ...)</code></td></tr>
+      </tbody>
+    </table>
+    <p>
+      One edit &mdash; an early return once the curve is known NULL &mdash;
+      fixes both, so this is one defect at two sites rather than two defects:
+      the counting rule UPSTREAM-19 established.
+    </p>
+
+    <h3>What is and is not reachable</h3>
+    <p>A zero instrument count short-circuits before any validation runs:</p>
+<pre><code>if (numRates == 0)    <span class="c">/* nothing to add */</span>
+{
+   tcCash = JpmcdsCopyCurve (zeroCurve);
+   return tcCash;
+}</code></pre>
+    <p>
+      and <code>JpmcdsCopyCurve</code> tolerates a NULL, so
+      <code>JpmcdsZCCash(NULL, &hellip;, 0, &hellip;)</code> returns NULL
+      cleanly &mdash; measured. Any positive count reaches the validator, and
+      both sanitizers report it:
+    </p>
+<pre><code>gtozc.c:345:37: runtime error: <span class="hit">member access within null pointer
+                of type 'TCurve'</span>
+ERROR: AddressSanitizer: SEGV on unknown address <span class="hit">0x000000000010</span>
+SUMMARY: AddressSanitizer: SEGV gtozc.c:345 in CheckZCCashInputs</code></pre>
+    <p>
+      <code>0x10</code> is the offset of <code>fBaseDate</code> within
+      <code>TCurve</code>, read from a null base.
+    </p>
+
+    <h3>In the port</h3>
+    <p>
+      <strong>Cannot occur.</strong> Both functions take
+      <code>const ZeroCurve &amp;</code>, so the input does not exist &mdash;
+      the third defect in this register retired by a reference rather than a
+      check.
+    </p>
+    <p>
+      The useful lesson is <em>not</em> "return early", which would throw away
+      a good pattern. stream_cash_flows.hpp's <code>is_well_formed</code>
+      accumulates in exactly the same style and is safe, because every check it
+      performs is independent of the others. The rule is:
+    </p>
+    <p>
+      <strong>An accumulating validator is safe only when no check guards
+      another.</strong>
+    </p>
+    <p>
+      Where one check <em>is</em> a precondition for a later one, it has to
+      return &mdash; and then it stops being an accumulating validator for that
+      input, which is the honest trade. Upstream wanted both properties and got
+      neither.
+    </p>
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u34
+      &nbsp;&middot;&nbsp; trace: ./build/asan/defect_evidence u34 --unsafe
     </div>
   </section>
 

@@ -2905,3 +2905,117 @@ cached discount factor, so the rate/discount invariant cannot drift. Upstream
 mutates `fArray[last].fRate` in its snapshot `TCurve` and recomputes the
 discount in a separate call against the live `ZCurve` — two places holding the
 same quantity, kept in step by hand.
+
+## UPSTREAM-34 — A validator that reports a NULL pointer and then dereferences it
+
+**Location:** `lib/src/gtozc.c`, `CheckZCCashInputs` (line 345) and
+`CheckZCSwapsInputs` (line 464).
+**Severity:** Medium. A null dereference inside the code that detected the
+null.
+
+### Mechanism
+
+Both static validators in `gtozc.c` **accumulate** failures rather than
+returning at the first one:
+
+```c
+static int CheckZCCashInputs(...)
+{
+    int   status = SUCCESS;     /* Until proven a failure */
+
+    if(zeroCurve == NULL)
+    {
+        JpmcdsErrMsg("%s: ZeroCurve is NULL\n", routine);
+        status = FAILURE;
+    }
+
+    if (numRates < 0) { ...; status = FAILURE; }
+    if (JpmcdsDayCountValid(routine,dayCountConv)==FAILURE) { ...; status = FAILURE; }
+
+    for (i=0 ;i<numRates ;i++ )
+    {
+       ...
+       if (dateArr[i] <= zeroCurve->fBaseDate)
+```
+
+That style is *good design*. It reports every problem with the input instead of
+only the earliest, which is strictly more useful to a caller — and this report
+has praised the same pattern elsewhere, in `streamcf.c`'s
+`CheckFixedStreamDetails`.
+
+The defect is narrower than the style. **One of the accumulated checks is a
+precondition for a later one.** The NULL test sets a flag and carries on, and
+the loop then reads `zeroCurve->fBaseDate`.
+
+### Two sites, one mechanism, one fix
+
+`CheckZCSwapsInputs` has the identical shape, and is worse: its dereference is
+not inside a loop whose count could be zero.
+
+```c
+if(JpmcdsIsBusinessDay(zeroCurve->fBaseDate, holidayFile, &isBusDay)==FAILURE)
+```
+
+That runs whatever the instrument count is.
+
+| site | function | the dereference |
+|---|---|---|
+| gtozc.c:345 | `CheckZCCashInputs` | `dateArr[i] <= zeroCurve->fBaseDate` |
+| gtozc.c:464 | `CheckZCSwapsInputs` | `JpmcdsIsBusinessDay(zeroCurve->fBaseDate, ...)` |
+
+One edit — an early return once the curve is known to be NULL — fixes both. So
+this is one defect at two sites rather than two defects, the same counting rule
+UPSTREAM-19 established.
+
+### What is and is not reachable
+
+A zero instrument count short-circuits before any validation runs:
+
+```c
+if (numRates == 0)    /* nothing to add */
+{
+   tcCash = JpmcdsCopyCurve (zeroCurve);
+   return tcCash;
+}
+```
+
+and `JpmcdsCopyCurve` tolerates a NULL, so `JpmcdsZCCash(NULL, …, 0, …)`
+returns NULL cleanly. Measured. Any positive count reaches the validator.
+
+Under the asan preset, both sanitizers report it:
+
+```
+gtozc.c:345:37: runtime error: member access within null pointer
+                of type 'TCurve'
+ERROR: AddressSanitizer: SEGV on unknown address 0x000000000010
+SUMMARY: AddressSanitizer: SEGV gtozc.c:345 in CheckZCCashInputs
+
+gtozc.c:464:34: runtime error: member access within null pointer
+                of type 'TCurve'
+SUMMARY: AddressSanitizer: SEGV gtozc.c:464 in CheckZCSwapsInputs
+```
+
+Note the address: `0x10` is the offset of `fBaseDate` within `TCurve`, read
+from a null base.
+
+Reproduce with `defect_evidence u34`, and `defect_evidence u34 --unsafe` under
+the asan preset for the trace. Both live calls are also `DISABLED_` tests in
+the differential suite.
+
+### In the port
+
+**Cannot occur.** Both functions take `const ZeroCurve &`, so the input does
+not exist. This is the third defect in this register retired by a reference
+rather than a check — the others being the pointer-nullness assumptions in
+`cash_flow_bootstrap.hpp` and `curve_discount.hpp`.
+
+The useful lesson is not "return early", which would throw away a good
+pattern. `stream_cash_flows.hpp`'s `is_well_formed` accumulates in exactly the
+same style and is safe, because every check it performs is independent of the
+others. The rule is:
+
+> An accumulating validator is safe only when no check guards another.
+
+Where one check *is* a precondition for a later one, it has to return — and
+then it stops being an accumulating validator for that input, which is the
+honest trade. Upstream wanted both properties and got neither.

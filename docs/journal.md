@@ -4204,3 +4204,109 @@ feature was removed and its variables stayed — the same shape as `streamcf.c`.
 `gtozc` (494 lines) and `zerocurve` (135) are what remain on the main path,
 plus three independent leaves. The bootstrap works and proves itself: 96
 benchmark strips, both paths, every instrument back to par.
+
+## Decision 39 — A good pattern with one bad check in it
+
+`gtozc.c` is 494 lines and two exported functions — the layer a caller actually
+drives, with the bootstrap underneath. It produced one defect, and the
+interesting part is that the defect is *not* the thing that looks wrong.
+
+### The pattern I had already praised
+
+Both static validators in the file accumulate failures instead of returning at
+the first one:
+
+```c
+int status = SUCCESS;
+if (zeroCurve == NULL) { JpmcdsErrMsg(...); status = FAILURE; }
+if (numRates < 0)      { JpmcdsErrMsg(...); status = FAILURE; }
+...
+return status;
+```
+
+Three slices ago I wrote approvingly about exactly this shape in
+`streamcf.c`'s `CheckFixedStreamDetails` — it reports every problem with the
+input rather than only the earliest, which is strictly more useful to whoever
+has to fix the input.
+
+Here the same shape dereferences the NULL it just reported, because the loop
+that follows reads `zeroCurve->fBaseDate`. `CheckZCSwapsInputs` is worse: its
+dereference is `JpmcdsIsBusinessDay(zeroCurve->fBaseDate, ...)`, not inside a
+count-guarded loop, so it runs whatever the instrument count is.
+
+So the rule I needed was narrower than "return early", which would have thrown
+away a pattern that is right:
+
+> **An accumulating validator is safe only when no check guards another.**
+
+`is_well_formed` in `stream_cash_flows.hpp` accumulates safely because its
+checks are independent. These two do not, because the NULL test is a
+precondition for the dereference below it. Where a check *is* a precondition,
+it must return — and then it stops being an accumulating validator for that
+input. Upstream wanted both properties and got neither.
+
+One edit fixes both sites, so one register number. UPSTREAM-19's counting rule,
+applied for the third time.
+
+### The port retires it by having no pointer
+
+Both port functions take `const ZeroCurve &`. That is now the third defect in
+this register closed by a reference rather than a check, and I think that is
+the single highest-leverage change the port has made: a parameter that cannot
+be null needs no validation, no documentation of the precondition, and no
+discipline from the caller.
+
+### A property test that refuted its author
+
+I wrote a tier-1 property claiming every point of the input curve survives into
+the output — both entry points promise it, *"don't want to replace anything in
+the existing curve"* — and the recorded data said no.
+
+`JpmcdsZCAddPrefixCurve` copies the points BEFORE the cash curve's first date
+and `JpmcdsZCAddSuffixCurve` the ones AFTER its last. **Nothing copies the
+middle.** A caller's curve point that happens to fall inside the span of the
+cash quotes is silently discarded.
+
+That is upstream's behaviour, reproduced. The rewritten property asserts the
+real rule both ways — outside the range the point must survive, inside it must
+not — with a counter requiring at least one interior case, because a property
+that is only ever exercised on one side of its own boundary is half a test.
+
+This is the second time this session a property test has corrected me rather
+than the code. The par-reprice oracle in the previous slice did the same. Both
+times the recorded-vector comparison was perfectly happy, because it compares
+the port against itself and never asks whether the answer is right.
+
+### Two validators in one file disagreeing
+
+`CheckZCCashInputs` tests `dateArr[i-1] > dateArr[i]` — equal dates permitted.
+`CheckZCSwapsInputs` tests `dates[i+1] <= dates[i]` — equal dates rejected.
+Same file, same question, opposite answers. Both reproduced.
+
+The cash path's duplicates are refused later by the curve itself
+(`JpmcdsZCFindDateExact`), so the two paths agree on acceptance by accident
+rather than by rule — which is worth a test precisely because the accident
+could stop holding.
+
+### The dead inventory, continued
+
+`JpmcdsZCSwaps` takes `char fwdLength` — *"For fwd smoothing, length of
+fwds"* — which appears three times in the file: the static declaration, the
+definition, and the call that hands it to the validator. **None of the three
+reads it.** Forward smoothing was removed and the parameter stayed.
+
+It also declares `TInterpData *interpData = NULL` and
+`TBadDayList *badDayList = NULL`, assigns neither, passes both down, and calls
+`FREE(interpData)` on a pointer that is provably still NULL. That is the third
+always-NULL free in this port.
+
+I have stopped finding these interesting one at a time, and started finding the
+*count* interesting: four files in a row now — `fltrate`, `streamcf`,
+`zcswap`, `gtozc` — each carrying the parameters of a feature that was removed.
+The model shipped with the signatures of a larger library and the body of a
+smaller one.
+
+### Where this leaves the project
+
+`zerocurve.c` is 135 lines and the last file on the main path. After it the
+only in-scope work left is three independent leaves.
