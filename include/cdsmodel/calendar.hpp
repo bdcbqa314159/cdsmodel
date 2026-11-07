@@ -102,6 +102,12 @@ enum class Weekend : std::uint8_t {
 /// non-business days. A value, not a cache entry.
 class Calendar {
 public:
+  /// `JpmcdsHolidayLoadFromDisk` has no port and will not get one: it reads a
+  /// holiday file from a path and populates a process-wide cache. The port takes
+  /// calendars as values, so where they come from is the caller's decision --
+  /// a file, a database, a test fixture. Recorded as a deliberate non-port
+  /// rather than left as a gap in the provenance audit.
+
   /// A calendar with standard weekends and no holidays.
   ///
   /// This is upstream's built-in `"NONE"`, whose name is misleading: it means
@@ -156,7 +162,9 @@ public:
 
   /// Is this date in the holiday list?
   ///
-  /// Does NOT consider weekends, matching `JpmcdsHolidayListIsHoliday`. Note
+  /// Replaces `JpmcdsHolidayListIsHoliday`. Does NOT consider weekends, as
+  /// upstream does not either -- the two questions are separate and
+  /// `is_business_day` below composes them. Note
   /// that a holiday which fell on a weekend was dropped at construction, so
   /// this reports false for it.
   [[nodiscard]] bool is_holiday(Date d) const noexcept {

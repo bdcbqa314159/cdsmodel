@@ -3660,3 +3660,78 @@ That makes it an observation rather than a defect, and it belongs with
 consumer of `TFloatRate`. Porting a struct setter in isolation would mean
 guessing at a type whose users I have not read yet, which is the mistake the
 dependency script exists to prevent.
+
+## Decision 34 — The same false positive twice, so fix the class
+
+`schedule.c` is the largest remaining leaf and `port_order.py` said it was
+blocked by one function: `JpmcdsDateFromBusDaysOffset`. I went to port that
+function and found the port already had it.
+
+`JpmcdsDateFromBusDaysOffset` is nine lines: look a holiday file up in a
+process-wide cache, then call `JpmcdsHolidayListAddBusinessDays`. The port's
+`add_business_days(from, count, calendar)` is that second function with the
+calendar passed explicitly, and the cache lookup is the part the port
+deliberately does not have.
+
+So the blocker was a naming omission, which is exactly what happened in
+Decision 30 with four other functions. **Twice is a class, not an incident.**
+
+### The pattern, named once instead of chased per function
+
+`busday.c` publishes most of its work twice:
+
+```
+JpmcdsHolidayListAddBusinessDays(args, THolidayList *hl)
+JpmcdsDateFromBusDaysOffset(args, char *holidayFile)   -> cache lookup + the above
+```
+
+and the same for `DateToBusinessEOM`, `BusinessDay`, and `IsBusinessDay`. The
+port takes a `Calendar` by value, so **one port function replaces a pair** --
+and if only the list-taking name gets claimed, the audit reports a gap that is
+really a missing sentence.
+
+Auditing the file systematically rather than per-symbol took one command and
+found all four states at once:
+
+```
+JpmcdsDateFromBusDaysOffset          ABSENT
+JpmcdsDateToBusinessEOM              ABSENT
+JpmcdsHolidayListIsHoliday           mentioned only
+JpmcdsHolidayLoadFromDisk            mentioned only
+```
+
+The first two needed claims. The third was documented as *"matching
+`JpmcdsHolidayListIsHoliday`"* -- true, informative, and invisible to a tool
+looking for "Replaces". The fourth is a genuine non-port.
+
+`business_days.hpp` now carries a note listing the four pairs explicitly, so
+the next reader does not have to rediscover why one port function answers to
+two upstream names. That is the difference between fixing an instance and
+fixing a class: the note costs twelve lines and removes a category of false
+positive.
+
+### A non-port recorded as a decision
+
+`JpmcdsHolidayLoadFromDisk` reads a holiday file from a path and populates the
+cache. It will never be ported, and `calendar.hpp` now says so with the reason:
+the port takes calendars as values, so where they come from is the caller's
+choice -- a file, a database, a test fixture. The whole cache family
+(`FromCache`, `AddToCache`, `EmptyCache`, `Read`, `NewGeneral`) is now marked
+structural in the script for the same reason.
+
+That matters for the progress number as much as for the script. Those six
+functions were being counted as outstanding work, and they are not work at all
+-- they are a design decision made in the first slice that nobody had written
+down in a place a tool could read.
+
+### What it bought
+
+`schedule.c` is a leaf, `streamcf.c` is down from four blockers to two, and the
+function count moved 126 to 129 without a line of new behaviour. Three of those
+three were already written; only the claims were missing.
+
+Which is the uncomfortable part worth keeping: **an unstated claim and a
+missing port are indistinguishable from outside, and I have now been the person
+who could not tell them apart twice.** The provenance comments are not
+documentation of the port, they are its index, and an index with gaps sends you
+to write code that already exists.
