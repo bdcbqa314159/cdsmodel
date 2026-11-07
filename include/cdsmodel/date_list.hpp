@@ -1,6 +1,7 @@
 #pragma once
 
-// Port of upstream dtlist.c -- set operations on lists of dates.
+// Port of upstream dtlist.c + cxdatelist.c -- set operations on lists of
+// dates.
 //
 // Upstream's type is an owning struct with a count:
 //
@@ -84,7 +85,45 @@ namespace cdsmodel {
   return out;
 }
 
-/// Add dates to a list. Replaces `JpmcdsJpmcdsDateListAddDates`.
+/// Add dates to a list. Replaces `JpmcdsJpmcdsDateListAddDates` and
+/// `JpmcdsDateListAddDates`.
+///
+/// ## Upstream has TWO of these, and the doubled prefix is real
+///
+/// Not a typo in this comment -- a typo in upstream, and a durable one. A
+/// renaming pass ran twice over `dtlist.c` and once over `cxdatelist.c`, so
+/// the library exports and publicly declares both:
+///
+///     dtlist.h:92      JpmcdsJpmcdsDateListAddDates(dl, n, dates, allowDuplicates)
+///     cxdatelist.h:45  JpmcdsDateListAddDates      (dl, n, dates)
+///
+/// They are not copies. The four-parameter version takes an
+/// `allowDuplicates` flag; the three-parameter one always excludes
+/// duplicates, which is the flag set to FALSE. Measured on
+/// `{100,200,300}` plus `{200,400}`:
+///
+///     doubled, allowDuplicates TRUE : 100 200 200 300 400
+///     doubled, allowDuplicates FALSE: 100 200 300 400
+///     single (no such parameter)    : 100 200 300 400
+///
+/// So one function with the flag covers both, and `allow_duplicates = false`
+/// IS the cxdatelist entry point. `JpmcdsJpmcdsDateListTruncate` and
+/// `JpmcdsDateListTruncate` are the same story; so are
+/// `JpmcdsDatesFromCurve` and `JpmcdsNewDateListFromTCurve`. `cxdatelist.c`
+/// is a partial re-implementation of `dtlist.c` under slightly different
+/// names, and a caller choosing by autocomplete gets whichever.
+///
+/// Two differences in the three-parameter version, neither reproduced:
+///
+///   * it accepts `dl == NULL` and then copies the array VERBATIM, without
+///     the dedupe its own name promises. A span has no null state, so "no
+///     list" is an empty span and the merge runs normally.
+///   * it has a dead branch: `dl->fNumItems == 0 && numItems == 0` sits
+///     after `numItems <= 0`, which already caught it.
+///
+/// It also declares `TDateList tmp = {0, NULL};`, never assigns it, and calls
+/// `FREE(tmp.fArray)` on a provably-NULL pointer at the end -- the fourth
+/// always-NULL free in this port.
 ///
 /// Both inputs must be strictly increasing, as upstream documents.
 /// `allow_duplicates` keeps a date that is already present, matching
@@ -103,6 +142,28 @@ add_dates(std::span<const Date> dates, std::span<const Date> extra, bool allow_d
   }
   return out;
 }
+
+/// ## Four cxdatelist/dtlist functions with no port, because a vector is one
+///
+/// Replaces `JpmcdsNewDateListFromDates`. It allocates and copies, which is
+/// `std::vector<Date>{first, last}`.
+///
+/// Replaces `JpmcdsExtendDateList`. It grows a list in place and refuses to
+/// shrink it; `std::vector::resize` does the first and does not need the
+/// second, because there is no shared array to surprise another holder of.
+/// Worth noting what upstream leaves behind: the new slots come from
+/// `JpmcdsMallocSafe`, which memsets, so an extended list holds TDate 0 --
+/// 1601-01-01, a real date rather than an obviously-unset one.
+///
+/// Replaces `JpmcdsDateListAddDatesFreeOld`, which is `add_dates` plus
+/// `JpmcdsFreeDateList(dl)`. Note that it frees the caller's list even when
+/// the add FAILS, so a failed call loses the input and returns NULL -- which
+/// its own comment documents ("gets freed"). Returning a value makes the
+/// whole question disappear.
+///
+/// `JpmcdsNewDateListFromTCurve(curve)` is `ZeroCurve::dates()`, claimed
+/// there alongside `JpmcdsDatesFromCurve` for the reason given above.
+/// Upstream's version dereferences `curve->fNumItems` with no NULL check.
 
 /// Remove every date in `remove` from `dates`. Replaces
 /// `JpmcdsSubtractDateLists`. Inputs may be unsorted; the result is sorted

@@ -225,7 +225,8 @@ if(CDSMODEL_BUILD_TESTS)
                    tests/curve_linear_interp_differential_test.cpp
                    tests/match_range_differential_test.cpp
                    tests/cx_differential_test.cpp
-                   tests/ldate_year_differential_test.cpp)
+                   tests/ldate_year_differential_test.cpp
+                   tests/cxdatelist_differential_test.cpp)
     target_link_libraries(cdsmodel_differential_tests
                           PRIVATE cdsmodel cds_reference GTest::gtest_main)
     target_include_directories(cdsmodel_differential_tests PRIVATE tests)

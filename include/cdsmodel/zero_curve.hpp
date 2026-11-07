@@ -157,7 +157,15 @@ public:
     return std::min(base_date_, points_.front().date);
   }
 
-  /// The curve's dates without its rates. Replaces `JpmcdsDatesFromCurve`.
+  /// The curve's dates without its rates. Replaces `JpmcdsDatesFromCurve`
+  /// (tcurve.c) and `JpmcdsNewDateListFromTCurve` (datelist.c).
+  ///
+  /// Upstream has both: two public functions in two files extracting a
+  /// curve's dates, one returning a `TDate *` and the other a `TDateList *`.
+  /// The datelist version also dereferences `curve->fNumItems` with no NULL
+  /// check. See the note in date_list.hpp -- this is the third such pair, and
+  /// the pattern is that cxdatelist.c and parts of datelist.c re-implement
+  /// what dtlist.c and tcurve.c already do.
   ///
   /// Upstream allocates a fresh array and returns NULL both for an empty curve
   /// -- its comment says "no dates in curve is not an error" -- and for a
