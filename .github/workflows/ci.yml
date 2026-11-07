@@ -45,6 +45,12 @@ jobs:
       # original. Each header must name the 2009 file it answers to.
       - run: python verify.py provenance
 
+      # The opposite failure, and it cost a slice to learn the difference:
+      # cxbsearch.c's JpmcdsBinarySearchLong was ported TWICE, months apart,
+      # and every gate was satisfied -- port_progress counts a function as done
+      # when ANY header claims it, so 100% was reported either way.
+      - run: python verify.py claims
+
       # A hand-edited golden file is how a port's bug becomes the port's
       # specification. Vectors must be generated, and have a generator.
       - run: python verify.py golden

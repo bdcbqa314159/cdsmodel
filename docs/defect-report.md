@@ -3230,3 +3230,167 @@ the asan preset for the trace. The live call is also a `DISABLED_` test.
 **Cannot occur.** `ZeroCurve` is non-empty by construction, so
 `points().front()` and `points().back()` are total functions and the clamp has
 nothing to check.
+
+## UPSTREAM-37 — A NULL guard on one path out of four
+
+**Location:** `lib/src/cxbsearch.c:84`, `JpmcdsBinarySearchLong`.
+**Severity:** Medium. A store through NULL on three of the function's four
+exit paths, where the fourth guards against exactly that.
+
+### Mechanism
+
+The function returns three values through pointers, and its main path treats
+two of them as **optional**:
+
+```c
+if (loBound != NULL)
+{
+    while (lo >= 0 && ELEMENT(lo) >= xDesired)
+        --lo;
+
+    if (lo >= 0)
+        *loBound = lo;
+    else
+        *loBound = -1;
+}
+
+if (hiBound != NULL)
+{
+    ...
+}
+```
+
+That guard *is* the documentation. Nothing in the header says NULL is
+acceptable; the code saying `if (loBound != NULL)` is the only statement on the
+subject, and it says yes. Measured: an in-range search with NULL for both
+optional outputs returns SUCCESS and fills `exact` correctly.
+
+The function then has three early returns that write through the same pointers
+with no guard at all:
+
+```c
+if (xDesired < ELEMENT(0))
+{
+    *exact   = -1;
+    *loBound = -1;
+    *hiBound = 0;
+    return SUCCESS;
+}
+else if (xDesired > ELEMENT(arraySize-1))
+{
+    *exact   = -1;
+    *loBound = arraySize-1;
+    *hiBound = arraySize;
+    return SUCCESS;
+}
+
+/* arraySize of 1 we are done */
+if (arraySize == 1)
+{
+    assert (xDesired == ELEMENT(0));
+    *exact   = 0;
+    *loBound = -1;
+    *hiBound = arraySize;
+    return SUCCESS;
+}
+```
+
+So a sought value outside the array's range, or an array of one element, stores
+through NULL:
+
+```
+cxbsearch.c:84:9: runtime error: store to null pointer of type 'long'
+ERROR: AddressSanitizer: SEGV on unknown address 0x000000000000
+SUMMARY: AddressSanitizer: SEGV cxbsearch.c:84 in JpmcdsBinarySearchLong
+```
+
+### Why this one is worse than a missing check
+
+Most of this register is missing checks. This is an **inconsistent** one, forty
+lines apart in a single function, and the distinction matters.
+
+A missing check is a precondition. It can be documented, and a caller who
+violates it has made a mistake. A check on one path and not another is an
+*invitation the code does not honour*: the guarded path teaches the caller that
+NULL is fine, and three other paths then punish them for believing it. The
+caller did nothing wrong, and there is no document they could have read that
+would have saved them — the only statement about NULL in the whole function is
+the one that says it is allowed.
+
+### Reachability
+
+Both in-library callers pass non-NULL for all three outputs:
+
+- `cxzerocurve.c:103`, searching a curve's dates for today;
+- `feeleg.c:569`, searching a fee leg's accrual start dates for today.
+
+So this is reachable only through the public header — which is also the only
+place anyone would read the guard and conclude NULL was allowed. That is now
+the fourth time in this register that the externally-reachable surface is the
+unvalidated one (after UPSTREAM-25, 30 and 36).
+
+Reproduce with `defect_evidence u37`, and `defect_evidence u37 --unsafe` under
+the asan preset. Three `DISABLED_` tests cover the three unguarded paths.
+
+### In the port
+
+**Cannot occur.** `match_range` returns a value:
+
+```cpp
+struct MatchRange {
+  std::size_t first = 0;
+  std::size_t count = 0;
+};
+```
+
+There are no output pointers, so there is nothing to guard on any path, and the
+inconsistency has nowhere to live.
+
+The collapse from three outputs to one range is not cosmetic. Upstream
+documents the relationship between its three values:
+
+> The idea behind these return values is that `hiBound-loBound-1` should give
+> the number of exact matches in all cases, and that everything in the range
+> `[loBound+1, hiBound-1]` inclusive should be an exact match.
+
+That invariant *is* the answer, so returning it directly makes
+`hiBound - loBound - 1 == count` a tautology instead of a promise each caller
+re-derives. And the sentinels go with it: upstream's `loBound == -1` and
+`hiBound == arraySize` are not "absent" values, they are one position past each
+end and load-bearing for the subtraction, which a half-open range expresses
+without signalling anything.
+
+### Two more things measured here, neither filed
+
+**The parameter comment is wrong.** It says of `hiBound`:
+
+```c
+long   *hiBound)   /* (O) Index of first value strictly greater than xDesired,
+                      -1 if no such value exists. */
+```
+
+while the function comment twenty lines above says `arraySize for hiBound`, and
+the code says `arraySize`. Measured: seeking 99 in `{10,20,20,30,40}` gives
+`hiBound == 5`. Two comments in one file contradicting each other, with the
+code agreeing with one of them. Reproduced from the code, as the port's policy
+requires when documentation and a self-consistent implementation disagree.
+
+**The order check never fires.** There is a branch reporting *"x array not in
+increasing order"*, reached when the `arraySize + 1` iteration cap expires. I
+wrote a test asserting at least one unsorted array would be refused by it. The
+test **failed**: across an exhaustive sweep of every unsorted array of length 2
+to 4 over the alphabet 0..3, not one was refused. The cap is `arraySize + 1`
+iterations on a halving search, which is roughly exponentially generous — a
+runaway backstop, not a detector.
+
+Disorder therefore produces a confident wrong answer, which is exactly what the
+function's own documentation promises:
+
+> If the input array is not sorted in ascending order, then the output is
+> undefined. No checks are performed on the order of xArray — this would in
+> fact defeat the purpose of having a fast binary search if you are going to
+> slow it down by doing a linear check of the inputs.
+
+So the branch is dead code rather than a broken check, and the documentation is
+honest. Not filed. Recorded because the branch reads like a safety net and is
+not one.

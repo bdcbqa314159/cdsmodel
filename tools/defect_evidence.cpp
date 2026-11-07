@@ -32,6 +32,7 @@
 #include <cdsmodel/interp_curve.hpp>
 #include <cdsmodel/interpolation.hpp>
 #include <cdsmodel/ir_zero_curve.hpp>
+#include <cdsmodel/match_range.hpp>
 #include <cdsmodel/stream_cash_flows.hpp>
 #include <cdsmodel/stub.hpp>
 #include <cdsmodel/swap_bootstrap.hpp>
@@ -59,6 +60,7 @@ extern "C" {
 #include "contingentleg.h"
 #include "convert.h"
 #include "cx.h"
+#include "cxbsearch.h"
 #include "cxdatelist.h"
 #include "cxzerocurve.h"
 #include "date_sup.h"
@@ -2601,6 +2603,96 @@ void u36(bool unsafe) {
   JpmcdsFreeTCurve(empty);
 }
 
+void u37(bool unsafe) {
+  heading("UPSTREAM-37", "a NULL guard on one path out of four");
+  std::printf("cxbsearch.c's JpmcdsBinarySearchLong returns three values through\n"
+              "pointers, and its main path carefully treats two of them as OPTIONAL:\n\n"
+              "    if (loBound != NULL)\n"
+              "    {\n"
+              "        while (lo >= 0 && ELEMENT(lo) >= xDesired)\n"
+              "            --lo;\n"
+              "        ...\n"
+              "    }\n\n"
+              "    if (hiBound != NULL)\n"
+              "    {\n"
+              "        ...\n"
+              "    }\n\n"
+              "That guard IS the documentation -- it tells a caller NULL is a\n"
+              "supported argument. The function then has THREE early returns that\n"
+              "write through the same pointers with no guard at all:\n\n"
+              "    if (xDesired < ELEMENT(0))\n"
+              "    {\n"
+              "        *exact   = -1;\n"
+              "        *loBound = -1;       /* no guard */\n"
+              "        *hiBound = 0;        /* no guard */\n"
+              "        return SUCCESS;\n"
+              "    }\n"
+              "    else if (xDesired > ELEMENT(arraySize-1))  /* same, unguarded */\n"
+              "    ...\n"
+              "    if (arraySize == 1)                        /* same, unguarded */\n\n"
+              "So a value outside the array, or an array of one element, stores\n"
+              "through NULL.\n\n");
+
+  long xs[5] = {10, 20, 20, 30, 40};
+  long exact = -99;
+  long lo = -99;
+  long hi = -99;
+
+  std::printf("  the guarded path, with NULL for both optional outputs:\n");
+  const int in_range = JpmcdsBinarySearchLong(20, xs, sizeof(long), 5, &exact, nullptr, nullptr);
+  std::printf("    seek 20 (in range): %s, exact=%ld -- the guards worked\n",
+              in_range == SUCCESS ? "SUCCESS" : "FAILURE", exact);
+
+  std::printf("\n  and what the three unguarded paths would be asked for:\n");
+  JpmcdsBinarySearchLong(5, xs, sizeof(long), 5, &exact, &lo, &hi);
+  std::printf("    seek 5  (below):  exact=%ld lo=%ld hi=%ld\n", exact, lo, hi);
+  JpmcdsBinarySearchLong(99, xs, sizeof(long), 5, &exact, &lo, &hi);
+  std::printf("    seek 99 (above):  exact=%ld lo=%ld hi=%ld\n", exact, lo, hi);
+  long one[1] = {10};
+  JpmcdsBinarySearchLong(10, one, sizeof(long), 1, &exact, &lo, &hi);
+  std::printf("    seek 10 (size 1): exact=%ld lo=%ld hi=%ld\n", exact, lo, hi);
+
+  std::printf("\nThis is not a MISSING check, which is what the rest of this register\n"
+              "is full of. It is an INCONSISTENT one, forty lines apart in a single\n"
+              "function -- and that is worse. A missing check is a precondition a\n"
+              "caller can be told about. A check on one path and not another is an\n"
+              "invitation the code does not honour.\n\n"
+              "Both in-library callers -- cxzerocurve.c:103 and feeleg.c:569 -- pass\n"
+              "non-NULL for all three, so this is reachable only through the public\n"
+              "header. Which is also the only place anyone would read the guard and\n"
+              "conclude NULL was allowed.\n\n"
+              "Under the asan preset:\n\n"
+              "    cxbsearch.c:84:9: runtime error: store to null pointer of type 'long'\n"
+              "    ERROR: AddressSanitizer: SEGV on unknown address 0x000000000000\n\n"
+              "TWO MORE THINGS measured while porting this file, neither filed:\n\n"
+              "  * The parameter comment says hiBound is -1 when no greater value\n"
+              "    exists; the function comment 20 lines above says arraySize, and the\n"
+              "    code says arraySize. Measured: seeking 99 above gives hi=5, not -1.\n"
+              "    Two comments in one file contradicting each other, with the code\n"
+              "    agreeing with one of them.\n"
+              "  * The \"x array not in increasing order\" branch NEVER FIRED across an\n"
+              "    exhaustive sweep of every unsorted array of length 2 to 4 over\n"
+              "    0..3. The cap is arraySize+1 iterations on a halving search, so it\n"
+              "    is a runaway backstop rather than a detector. Disorder produces a\n"
+              "    confident wrong answer -- which is exactly what the function's own\n"
+              "    documentation says, so the branch is dead code rather than a\n"
+              "    broken check.\n\n"
+              "IN THE PORT: cannot occur. `match_range` RETURNS a range, so there are\n"
+              "no output pointers to guard on any path. The three values collapse into\n"
+              "one half-open range, which makes upstream's documented invariant\n"
+              "hiBound-loBound-1 == matches a tautology rather than a promise.\n\n");
+
+  if (!unsafe) {
+    std::printf("Pass --unsafe to take an unguarded path with NULL outputs.\n");
+    return;
+  }
+  std::printf("--unsafe given: seek 5 (below the array) with NULL outputs.\n"
+              "This process is about to die.\n");
+  std::fflush(stdout);
+  const int rc = JpmcdsBinarySearchLong(5, xs, sizeof(long), 5, &exact, nullptr, nullptr);
+  std::printf("  survived; rc=%d\n", rc);
+}
+
 int main(int argc, char **argv) {
   JpmcdsErrMsgOff();
   bool unsafe = false;
@@ -2728,6 +2820,9 @@ int main(int argc, char **argv) {
   }
   if (want("u36")) {
     u36(unsafe);
+  }
+  if (want("u37")) {
+    u37(unsafe);
   }
   return 0;
 }
