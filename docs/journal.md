@@ -3990,3 +3990,112 @@ Which is also where UPSTREAM-29 lands: `zcswap.c` reads
 and `streamcf.c` is the reason the float leg arrives unvalidated —
 `CheckFixedStreamDetails` calls the schedule validator and there is no
 `CheckFloatStreamDetails` at all.
+
+## Decision 37 — The guarded input and the one two statements later
+
+`zcswutil.c` is 169 lines and two functions, the last thing in the way of
+`zcswap.c`. It yielded one defect, and the shape of it is the point.
+
+`JpmcdsZCGetSwapCFL` opens by handling a degenerate input and *saying so*:
+
+```c
+/* Bizarre rate==0.0 case */
+if (rate==0.0)
+{
+    cfl = JpmcdsNewEmptyCFL(1);    /* simply cash flow of 1.0 at date */
+    ...
+    return cfl;
+}
+```
+
+Everything about that is considered. A zero-coupon swap benchmark really is one
+redemption of 1.0 at maturity. Even the `return cfl` rather than a jump to
+`done:` is right: `status` is still `FAILURE` there, so routing through the
+shared exit would free the list and return NULL. Someone sat with this.
+
+Two statements from the end of the same function:
+
+```c
+cfl->fArray[cfl->fNumItems-1].fAmount += 1.0;   /* add principal */
+```
+
+and with `matDate == valueDate` that is `NULL[-1].fAmount += 1.0`.
+
+### The chain, measured one link at a time
+
+I did not file it from the reading. Each link got a probe:
+
+```
+JpmcdsNewDateList(v, v, 6M)  -> 1 date
+JpmcdsNewPayDates(v, v, 6M)  -> 0            <-- the link that matters
+JpmcdsNewEmptyCFL(0)         -> fArray NULL
+```
+
+The middle one is the interesting link, and it is not an allocation accident:
+
+```c
+/* Now remove startDate, and move all dates back by one. */
+for (idx=0; idx < payDates->fNumItems-1; idx++)
+    payDates->fArray[idx] = payDates->fArray[idx+1];
+payDates->fNumItems--;
+```
+
+Excluding the value date from a list of *payment* dates is correct. The case
+where it is the only date is simply not considered — the count goes to zero and
+nothing downstream asks.
+
+Then both sanitizers fire, with diagnostics that are the same bug from two
+distances:
+
+```
+UBSan: applying non-zero offset 18446744073709551600 to null pointer
+ASan:  SEGV on unknown address 0xfffffffffffffff8
+```
+
+`18446744073709551600` is −16 unsigned, and `sizeof TCashFlow` is 16: one
+element backwards. `0xfffffffffffffff8` is −8, the offset of `.fAmount` inside
+that element — the address actually touched. One tool reports the pointer
+arithmetic, the other the dereference.
+
+### The contrast with last slice, which is the useful part
+
+UPSTREAM-31, one slice ago, was invisible to the entire harness: ASan blind by
+design, UBSan has no check, no MSan job, and single-file analysis could not see
+it because the fact it needed lived in another translation unit. I had to argue
+for it from reading and then measure the precondition by hand.
+
+UPSTREAM-32 is reported independently by two tools on the first run.
+
+Same codebase, one slice apart, and the tooling gradient between them is
+enormous. The lesson I want to keep is not "sanitizers are good" — it is that
+**a clean sanitizer run tells you about the shapes sanitizers model.** A null
+dereference is one of those shapes. An uninitialised stack read crossing a
+translation unit is not. Reading the code found both; only one of them would
+ever have shown up in CI.
+
+### The guard goes where the problem is, not where the cause is
+
+My first instinct was to refuse `maturity == value_date` in `swap_cash_flows`.
+That is the input test again — the mistake UPSTREAM-29 taught me two slices
+ago, where three hand-picked probes agreed and a weekend span reached the same
+place with `start < maturity`.
+
+Here the same reasoning applies for a fresh reason. Between the date generation
+and the flow construction, two things run: the business-day adjustment and the
+substitution table. `fix_bad_dates` is documented — by me, three slices back —
+as able to collapse two dates onto one. So the empty list is not only
+reachable from the degenerate input. Guard the outcome.
+
+The matching decision is what I did *not* change. `swap_coupon_dates` still
+returns the empty list, because that is upstream's answer and the date
+generation is faithful. Only the function that would write through it refuses.
+Putting the guard in the date generator would have been tidier and would have
+made the port disagree with upstream about a date list.
+
+### Where this leaves the bootstrap
+
+`zcswap.c` is next, and it is now unblocked. It is also where both of the last
+three slices' findings land: UPSTREAM-29's zero-period schedule and
+UPSTREAM-32's empty pay-date list are reached by the *same input* — a benchmark
+maturing on the curve's value date — through two different call sites in that
+one file, which compares `matDate` against `zc->valueDate` nowhere at all.

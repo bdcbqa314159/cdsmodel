@@ -31,6 +31,7 @@
 #include <cdsmodel/interpolation.hpp>
 #include <cdsmodel/stream_cash_flows.hpp>
 #include <cdsmodel/stub.hpp>
+#include <cdsmodel/swap_bootstrap_flows.hpp>
 #include <cdsmodel/swap_dates.hpp>
 #include <cdsmodel/version.hpp>
 #include <cdsmodel/zero_curve_builder.hpp>
@@ -2169,6 +2170,94 @@ void u31() {
               "failure path has no output to write and the shape is unavailable.\n");
 }
 
+void u32(bool unsafe) {
+  heading("UPSTREAM-32", "the bizarre rate got a guard; the bizarre maturity did not");
+  std::printf("zcswutil.c's JpmcdsZCGetSwapCFL opens by special-casing a degenerate\n"
+              "INPUT, and says so:\n\n"
+              "    /* Bizarre rate==0.0 case */\n"
+              "    if (rate==0.0)\n"
+              "    {\n"
+              "        cfl = JpmcdsNewEmptyCFL(1);    /* simply cash flow of 1.0 at date */\n"
+              "        ...\n"
+              "        return cfl;\n"
+              "    }\n\n"
+              "The other degenerate input gets nothing. With maturity == valueDate the\n"
+              "chain runs:\n\n"
+              "    JpmcdsNewDateList(v, v, 6M)       -> ONE date\n"
+              "    JpmcdsNewPayDates(v, v, 6M)       -> ZERO  (it drops the first element\n"
+              "                                                and decrements the count)\n"
+              "    JpmcdsNewEmptyCFL(0)              -> fNumItems 0, fArray NULL\n"
+              "    the coupon loop                   -> does not run\n"
+              "    cfl->fArray[cfl->fNumItems-1].fAmount += 1.0;   /* add principal */\n\n"
+              "which is NULL[-1].fAmount += 1.0 -- a read-modify-WRITE through a\n"
+              "null-derived pointer, not merely a read as in UPSTREAM-21.\n\n");
+
+  TDateInterval iv;
+  JpmcdsMakeDateInterval(6, 'M', &iv);
+  const TDate same = JpmcdsDate(2024, 1, 15);
+
+  std::printf("  %-34s %-14s %s\n", "span", "NewDateList", "NewPayDates");
+  struct Probe {
+    const char *label;
+    TDate from;
+    TDate to;
+  };
+  const Probe probes[] = {
+      {"2024-01-15 -> 2029-01-15", JpmcdsDate(2024, 1, 15), JpmcdsDate(2029, 1, 15)},
+      {"2024-01-15 -> 2024-07-15", JpmcdsDate(2024, 1, 15), JpmcdsDate(2024, 7, 15)},
+      {"2024-01-15 -> 2024-01-15", same, same},
+  };
+  for (const Probe &p : probes) {
+    TDateList *raw = JpmcdsNewDateList(p.from, p.to, &iv, TRUE);
+    TDateList *pay = JpmcdsNewPayDates(p.from, p.to, &iv, TRUE);
+    std::printf("  %-34s %-14d %d%s\n", p.label, raw != nullptr ? raw->fNumItems : -1,
+                pay != nullptr ? pay->fNumItems : -1,
+                (pay != nullptr && pay->fNumItems == 0) ? "   <-- empty" : "");
+    JpmcdsFreeDateList(raw);
+    JpmcdsFreeDateList(pay);
+  }
+
+  TCashFlowList *empty = JpmcdsNewEmptyCFL(0);
+  if (empty != nullptr) {
+    std::printf("\n  JpmcdsNewEmptyCFL(0): fNumItems %d, fArray %s\n", empty->fNumItems,
+                empty->fArray == nullptr ? "NULL" : "non-null");
+    JpmcdsFreeCFL(empty);
+  }
+
+  std::printf("\nREACHABILITY. zcswap.c:475 calls it with zc->valueDate and matDate,\n"
+              "and there is NO comparison between those two anywhere in that file. So\n"
+              "a swap benchmark maturing on the curve's own value date is enough --\n"
+              "the same trigger as UPSTREAM-29, reaching a different defect.\n\n"
+              "Note which input is protected. The zero-RATE path is handled, commented,\n"
+              "and returns early -- and its early `return cfl` rather than a jump to\n"
+              "`done:` is load bearing, because `status` is still FAILURE there and the\n"
+              "shared exit would free the list and return NULL. Someone thought\n"
+              "carefully about that path. The degenerate MATURITY two statements later\n"
+              "is unguarded.\n\n"
+              "Both sanitizers catch it, with different diagnostics:\n\n"
+              "    UBSan: applying non-zero offset 18446744073709551600 to null pointer\n"
+              "             zcswutil.c:96\n"
+              "    ASan:  SEGV on unknown address 0xfffffffffffffff8\n"
+              "             JpmcdsZCGetSwapCFL zcswutil.c:96\n\n"
+              "18446744073709551600 is -16, one TCashFlow; 0xfffffffffffffff8 is -8, the\n"
+              "offset of .fAmount inside fArray[-1].\n\n"
+              "IN THE PORT: cannot occur. swap_cash_flows refuses an empty coupon-date\n"
+              "list, guarding on the OUTCOME rather than on maturity == value_date --\n"
+              "the lesson UPSTREAM-29 taught, since substitution and bad-day adjustment\n"
+              "can also empty a list.\n\n");
+
+  if (!unsafe) {
+    std::printf("Pass --unsafe to perform the write. It dereferences NULL.\n");
+    return;
+  }
+  std::printf("--unsafe given: calling it now. This process is about to die.\n");
+  std::fflush(stdout);
+  TCashFlowList *cfl = JpmcdsZCGetSwapCFL(same, same, TRUE, 0.04, &iv, JPMCDS_ACT_360, nullptr,
+                                          JPMCDS_BAD_DAY_NONE, (char *)"NONE");
+  std::printf("  survived; returned %s\n", cfl != nullptr ? "non-NULL" : "NULL");
+  JpmcdsFreeCFL(cfl);
+}
+
 int main(int argc, char **argv) {
   JpmcdsErrMsgOff();
   bool unsafe = false;
@@ -2281,6 +2370,9 @@ int main(int argc, char **argv) {
   }
   if (want("u31")) {
     u31();
+  }
+  if (want("u32")) {
+    u32(unsafe);
   }
   return 0;
 }
