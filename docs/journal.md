@@ -4417,3 +4417,94 @@ flows, the Brent solve and the curve container together.
 
 Three independent leaves remain in scope: `linterpc` (93 lines), `cxbsearch`
 (180) and `cx` (230).
+
+## Decision 41 — Four occurrences make an idiom, not four accidents
+
+`linterpc.c` is 93 lines and one function: re-express a zero curve on dates the
+caller chooses. It is the smallest file left and it produced the most useful
+observation in a while, because of where it falls in the sequence rather than
+anything about the file itself.
+
+### The fourth one
+
+```c
+modDates[idx] = MIN(desiredDates->fArray[idx],
+                    oldCurve->fArray[oldCurve->fNumItems-1].fDate);
+modDates[idx] = MAX(modDates[idx],
+                    oldCurve->fArray[0].fDate);
+```
+
+`JpmcdsNewTCurve` accepts a count of zero — only a negative one is refused —
+and leaves `fArray` NULL. So both lines read through NULL, and `zerocurve.c`
+builds exactly such a curve as its first act.
+
+That is now four:
+
+| entry | file | shape |
+|---|---|---|
+| UPSTREAM-21 | `zcall.c` | read, `NULL[-1]`, SIGSEGV |
+| UPSTREAM-29 | `schedule.c` | the zero-period list that enables one |
+| UPSTREAM-32 | `zcswutil.c` | read-modify-**write**, `NULL[-1]` |
+| UPSTREAM-36 | `linterpc.c` | read, `NULL[-1]` *and* `NULL[0]` |
+
+I filed the first three as individual findings, which they are. The fourth is
+what makes them a *result*: four sites, four files, and in every case the
+author knew their own count was positive while that knowledge lived nowhere a
+compiler or a later reader could check. **This is what the absence of a
+non-empty container type costs, billed four times.**
+
+### The accounting I want to be honest about
+
+The tempting way to write this up is "the port fixed four defects". It did not.
+It made one type non-empty, in the `zero_curve` slice, long before three of the
+four were found. Nothing was anticipated; a decision made for clarity turned
+out to be load-bearing three times afterwards.
+
+And it was not free. One slice ago, in `zerocurve`, the bill arrived: the
+library's own top-level entry point starts from a zero-point curve, which the
+port's type forbids, so I had to add two overloads taking a value date instead
+of a curve.
+
+**Four defects retired for two overloads.** That is the best trade in this
+register, and stating it as a trade rather than as a free win is the only way
+the number means anything. A reader who takes "make it non-empty" as costless
+advice will be surprised at exactly the moment I was.
+
+### A property that catches a plausible wrong port
+
+The clamp here is subtler than it looks. It applies to the date the
+interpolation is *performed* at; the date *stored* in the new curve is the one
+the caller asked for. So a date past the old curve's end comes back carrying
+the final rate **at its own date** — a flat extension, not an extrapolation.
+
+A port that clamped both would produce entirely plausible rates on slightly
+wrong dates, and the recorded-rate comparison would pass for every case where
+the requested dates happen to lie inside the curve. So the tier-1 property
+asserts the stored dates are exactly the requested ones, and the generator
+includes two sets that fall wholly outside the curve so the clamp is actually
+exercised. I kept the two date vectors separate in the implementation for the
+same reason: conflating them has to be a visible edit, not a one-character
+slip.
+
+### Two more entries in the dead-parameter ledger
+
+```c
+void *interpData                    /* (I) Interpolation data-not used */
+```
+
+Third annotated dead parameter, second annotated at the *declaration* rather
+than at a call site. Five files now.
+
+And `JpmcdsLinInterpCurve` has **no caller inside the library at all** — it
+appears once as `TCurveInterpFunc JpmcdsLinInterpCurve;` in `interp.h`, which
+is a declaration against a function-pointer typedef, not a call. That is the
+third exported-but-uncalled function in this register, after
+`JpmcdsGenerateUnadjDates` and `JpmcdsZCValueFixFltSwap`, and the correlation
+is getting hard to ignore: **the functions nothing inside the library calls are
+the functions nothing inside the library validates.** An external caller gets
+the least-tested surface, which is the opposite of what a published API should
+offer.
+
+### Where this leaves the project
+
+Two leaves left: `cxbsearch` (180 lines) and `cx` (230).
