@@ -4099,3 +4099,108 @@ three slices' findings land: UPSTREAM-29's zero-period schedule and
 UPSTREAM-32's empty pay-date list are reached by the *same input* — a benchmark
 maturing on the curve's value date — through two different call sites in that
 one file, which compares `matDate` against `zc->valueDate` nowhere at all.
+
+## Decision 38 — The bootstrap, and an oracle a tolerance cannot express
+
+`zcswap.c` is the module every slice since the start has been clearing the way
+for: adding swap benchmarks to a zero curve, with a Brent solve per instrument.
+940 lines, two exported functions and three statics.
+
+### Five earlier findings converge here, and porting it retires them
+
+This is the file where most of the register's reachability arguments end up:
+
+| finding | site in zcswap.c |
+|---|---|
+| UPSTREAM-21/22 | `JpmcdsZCAddCashFlowList` on the par-float path |
+| UPSTREAM-23 | `JpmcdsZCAddCFLPoints`, called on both paths |
+| UPSTREAM-29 | lines 724, 743, 744 — `floatDL->fArray[floatDL->fNumItems-1]` |
+| UPSTREAM-32 | line 475 — `JpmcdsZCGetSwapCFL(zc->valueDate, matDate, ...)` |
+
+The last two share one trigger — a benchmark maturing on the curve's own value
+date — and `zcswap.c` compares `matDate` against `zc->valueDate` **nowhere**.
+Three slices of work, two separate memory defects, one input.
+
+Both are unreachable in the port, and not because this module guards against
+them: the functions they live in refuse to produce the degenerate value at all.
+That is the argument for pushing guards down to where the invariant lives
+rather than up to where the caller is.
+
+### UPSTREAM-33, and why positive controls were the whole test
+
+The solve writes into `&zc->rate[zc->numItems-1]` — the point just added, *if*
+that point is last. `JpmcdsZCAddRateAndDiscount` inserts in sorted position.
+So for a benchmark inside an existing curve the solver varies an
+already-solved point and leaves the new one at its placeholder.
+
+My first sweep: 1,400 combinations, **all 1,400 failed.** I nearly wrote that
+up as "upstream refuses, low severity" and moved on.
+
+That would have been worthless, because *a broken fixture fails 1,400 times
+too.* My very first single probe had also failed, for a reason I never
+diagnosed. So before believing the sweep I added positive controls: the same
+call with the benchmark **beyond** the curve's end. Those succeed. Only then
+did the failures mean anything.
+
+This is the same hole as the differential test two dozen decisions ago that
+reported zero differing cases because I had swept two inputs together. The fix
+then was `EXPECT_GT(differing, 0)`. The fix here is a control arm. **A sweep
+without a positive control measures the fixture, not the code.**
+
+And the honest ending: I tried and failed to produce a silently wrong curve.
+Varying a distant zero rate barely moves a shorter swap's PV, so Brent never
+converges on the wrong point — it just gives up. The consequence is a
+misleading *"Root finder failed"* where the real problem is the benchmark's
+position. Filed low, and the entry says plainly what it could not demonstrate.
+
+### The oracle that caught what the vectors could not
+
+The recorded rates here are **roots**. They are bounded by the solver's
+stopping criterion — `|f| <= 1e-11`, no x criterion, 50 iterations — not by
+rounding. Two implementations taking different Brent step sequences can land on
+different points of the same flat region, so demanding 1e-12 agreement would be
+demanding they iterate identically. The tolerance is 1e-7 on a rate, the
+loosest in the tree.
+
+Which makes the recorded numbers a weak check, so the replay also asserts the
+property the solve **exists** to establish: every benchmark must re-price to
+par off the curve built from it. That is an oracle, not a tolerance. It would
+catch a port that reproduced every recorded rate and still built a curve that
+prices nothing.
+
+It immediately earned its place by failing — on strip 1 and only strip 1, the
+off-cycle benchmarks, all four of them, at every frequency. On-cycle passed
+completely. That pattern is a fingerprint: I had hardcoded `stub_at_end = true`
+in the test while `add_swaps` derives it from `is_end_stub` for off-cycle
+maturities. A test bug, not a port bug — but a test bug the recorded-rate
+comparison had no way to notice, because it compared the port against itself
+via the vectors and never asked whether the answer was *right*.
+
+With the stub position derived the way the bootstrap derives it, all 96 cases
+re-price to par within 1e-10.
+
+### What the port changed, and one thing it deliberately did not
+
+`X_TOLERANCE = DBL_MAX` looked like a bug for about a minute. Brent's
+acceptance test is a **conjunction** — `|f| <= fTol && |dx| <= xTol` — so
+DBL_MAX is an idiom meaning "judge convergence on f alone". Checking the
+direction of that `&&` before filing saved an embarrassment.
+
+Better: it switches off a quirk I recorded in `root_find.hpp` several slices
+ago, where the initial guess is accepted if `|y0| <= fTol` **and** the guess
+lies within `x_tolerance` of either bound — proximity to a bound standing in
+for a convergence test that cannot run on the first iterate. With DBL_MAX that
+disjunction is always true and acceptance reduces to `|y0| <= fTol`, which is
+the sensible rule. The one caller in the library that sets this parameter sets
+it to the value that neutralises the quirk. Documented then, resolved now.
+
+Three dead locals in `JpmcdsZCAddSwaps`: `newDates` ("Swap dates w/
+synthetics") never read and never even freed, `newRates` freed at `done:` while
+provably still NULL, `useFastZC` set once and never read. A synthetic-swap
+feature was removed and its variables stayed — the same shape as `streamcf.c`.
+
+### Where this leaves the project
+
+`gtozc` (494 lines) and `zerocurve` (135) are what remain on the main path,
+plus three independent leaves. The bootstrap works and proves itself: 96
+benchmark strips, both paths, every instrument back to par.

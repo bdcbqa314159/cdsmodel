@@ -501,6 +501,12 @@
           <td><span class="chip">Reproduced; signature fixed</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u33">UPSTREAM-33</a></td>
+          <td>The root finder is handed <strong>the last curve slot, not the one it just added</strong> &mdash; and the curve inserts in sorted order, not at the end</td>
+          <td><span class="chip low">Low &middot; misleading failure</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u32">UPSTREAM-32</a></td>
           <td>The <strong>bizarre rate got a guard; the bizarre maturity did not</strong> &mdash; a read-modify-write through <code>NULL[-1]</code>, two statements after the careful bit</td>
           <td><span class="chip mid">Medium &middot; null write</span></td>
@@ -2657,6 +2663,123 @@ after one extrapolation: same call               -&gt; <span class="hit">SUCCESS
 
     <div class="tests">
       <span>Reproduce:</span> ./build/debug/defect_evidence u28
+    </div>
+  </section>
+
+  <!-- ============ U33 ============ -->
+  <section class="record sev-low" id="u33">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-33</span>
+      <h2>The root finder is pointed at the wrong curve point</h2>
+    </div>
+    <div class="chips">
+      <span class="chip low">Low &middot; misleading failure, no wrong number demonstrated</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">zcswap.c &mdash; JpmcdsZCValueFixFltSwap</p>
+
+    <h3>Mechanism</h3>
+    <p>The function adds a placeholder point for the benchmark it is about to solve:</p>
+<pre><code>if (JpmcdsZCAddRate(zc, maxDate, rate) == FAILURE)
+    goto done;</code></pre>
+    <p>and then hands the root finder the address of the <strong>last</strong> slot:</p>
+<pre><code>if (JpmcdsRootFindBrent(JpmcdsObjFuncPVtheSwap, &amp;funcParams,
+                     LOWER_BOUND, UPPER_BOUND, MAX_ITERATIONS, rate,
+                     INITIAL_X_STEP, INITIAL_F_DERIV,
+                     X_TOLERANCE, F_TOLERANCE,
+                     <span class="hit">&amp;zc-&gt;rate[zc-&gt;numItems-1]</span>) == FAILURE)</code></pre>
+    <p>
+      That is the point just added only if it is the latest date in the curve.
+      <code>JpmcdsZCAddRateAndDiscount</code> does not append unconditionally
+      &mdash; it inserts in sorted position:
+    </p>
+<pre><code>if (zc-&gt;numItems==0 || zc-&gt;date[zc-&gt;numItems-1]&lt;date)
+{
+    zc-&gt;date[zc-&gt;numItems] = date;      <span class="c">/* insert at end */</span>
+    ...
+}
+<span class="hit">else</span>
+{
+    int i = zc-&gt;numItems - 1;           <span class="c">/* loops backwards, until before date */</span></code></pre>
+    <p>
+      So for a benchmark whose <code>maxDate</code> falls inside the existing
+      curve, the solver varies a different, already-solved point, and the point
+      it was supposed to solve keeps its placeholder. Demonstrated &mdash; a
+      curve with points at 2026 and 2035, then
+      <code>AddRate(2027, 0.045)</code>:
+    </p>
+<pre><code>    [0] 20260115  rate 0.0250
+    [1] 20270115  rate 0.0450
+    [2] 20350115  rate 0.0400   <span class="hit">&lt;-- the slot the solver writes</span></code></pre>
+
+    <h3>Consequence, measured with controls</h3>
+    <p>
+      A sweep of 1,400 combinations with the benchmark inside the existing
+      curve: <strong>every one fails.</strong> Varying a distant zero rate
+      barely moves a shorter swap's present value, so Brent cannot bracket a
+      root and the function reports <em>"Root finder failed"</em>.
+    </p>
+    <p>
+      Positive controls were essential, because "it always fails" is also what
+      a broken fixture looks like:
+    </p>
+    <table class="data">
+      <thead><tr><th>case</th><th>result</th></tr></thead>
+      <tbody>
+        <tr><td>control: no far point, 5y benchmark</td><td>SUCCESS</td></tr>
+        <tr><td>control: far point 2026, 5y benchmark</td><td>SUCCESS</td></tr>
+        <tr><td>control: far point 2027, 8y benchmark</td><td>SUCCESS</td></tr>
+        <tr><td>INSIDE: far point 2035, 5y benchmark</td><td>FAILURE</td></tr>
+        <tr><td>INSIDE: far point 2030, 5y benchmark</td><td>FAILURE</td></tr>
+        <tr><td>INSIDE: far point 2029, 4y benchmark</td><td>FAILURE</td></tr>
+      </tbody>
+    </table>
+    <p>
+      <strong>I tried and failed to produce a silently wrong curve.</strong>
+      Across the whole sweep there was no case where the solve converged while
+      varying the wrong point. The observable consequence is a misleading
+      diagnostic: the caller is told the root finder failed when the real
+      problem is that the benchmark is not the longest instrument so far. That
+      is why this is filed low &mdash; the same reasoning as UPSTREAM-23, where
+      a pricing consequence was looked for and not found, and the register said
+      so.
+    </p>
+
+    <h3>Reachability</h3>
+    <p>
+      <code>JpmcdsZCAddSwaps</code> has an <strong>else</strong> branch that
+      calls <code>JpmcdsZCAddSwap</code> for benchmarks <em>not</em> beyond the
+      curve's end &mdash; exactly the triggering condition &mdash; and passes
+      <code>discZC</code> through. <code>JpmcdsZCValueFixFltSwap</code> is also
+      exported in its own right. A benchmark strip that extends monotonically
+      past the stub curve never hits it; one that overlaps an existing curve
+      does.
+    </p>
+
+    <h3>In the port</h3>
+    <p>
+      <strong>Cannot occur.</strong> The added point is looked up by date and
+      solved for by <strong>index</strong>:
+    </p>
+<pre><code>if (!curve.add_rate(max_date, rate)) {
+  return false;
+}
+const std::optional&lt;std::size_t&gt; solved_index = curve.find_exact(max_date);</code></pre>
+    <p>
+      so the solve targets what it added whatever the insertion order. A tier-1
+      test asserts the port solves exactly the input upstream cannot, and that
+      the pre-existing far point keeps the rate it had.
+    </p>
+    <p>
+      A second benefit, not the point of the fix: the port sets the rate through
+      <code>ZeroCurveBuilder::set_rate</code>, which recomputes the cached
+      discount factor, so the rate/discount invariant cannot drift. Upstream
+      mutates <code>fArray[last].fRate</code> in its snapshot and recomputes the
+      discount in a separate call against the live curve &mdash; two places
+      holding the same quantity, kept in step by hand.
+    </p>
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u33
     </div>
   </section>
 
