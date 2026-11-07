@@ -20,6 +20,7 @@
 #include <cdsmodel/cds.hpp>
 #include <cdsmodel/coupon_schedule.hpp>
 #include <cdsmodel/curve_instruments.hpp>
+#include <cdsmodel/curve_linear_interp.hpp>
 #include <cdsmodel/curve_rates.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_interval.hpp>
@@ -2515,6 +2516,91 @@ void u35() {
               "bytes and requires exactly four to be accepted.\n");
 }
 
+void u36(bool unsafe) {
+  heading("UPSTREAM-36", "the fourth unguarded fArray[fNumItems-1] in this register");
+  std::printf("linterpc.c's JpmcdsLinInterpCurve clamps each requested date into the\n"
+              "old curve's range, to avoid extrapolating:\n\n"
+              "    for (idx = 0; idx < desiredDates->fNumItems; idx++)\n"
+              "    {\n"
+              "        modDates[idx] = MIN(desiredDates->fArray[idx],\n"
+              "                            oldCurve->fArray[oldCurve->fNumItems-1].fDate);\n"
+              "        modDates[idx] = MAX(modDates[idx],\n"
+              "                            oldCurve->fArray[0].fDate);\n"
+              "        ...\n\n"
+              "Neither end is guarded. JpmcdsNewTCurve accepts a count of ZERO -- only\n"
+              "a negative one is refused -- and leaves fArray NULL:\n\n"
+              "    if (numPts > 0)\n"
+              "    {\n"
+              "        tc->fArray = NEW_ARRAY(TRatePt, numPts);\n"
+              "        ...\n"
+              "    }\n"
+              "    else\n"
+              "    {\n"
+              "        tc->fArray = NULL;\n"
+              "    }\n\n"
+              "so the two lines become NULL[-1] and NULL[0]. And such a curve is not a\n"
+              "hypothetical shape: zerocurve.c builds one as its FIRST act --\n"
+              "JpmcdsNewTCurve(valueDate, 0, 1.0, JPMCDS_ACT_365F).\n\n");
+
+  const TDate base = JpmcdsDate(2024, 1, 15);
+  TCurve *empty = JpmcdsNewTCurve(base, 0, 1.0, JPMCDS_ACT_365F);
+  std::printf("  %-42s %s\n", "JpmcdsNewTCurve(base, 0, ...)",
+              empty != nullptr ? "created" : "refused");
+  if (empty != nullptr) {
+    std::printf("  %-42s %d\n", "  fNumItems", empty->fNumItems);
+    std::printf("  %-42s %s\n", "  fArray", empty->fArray == nullptr ? "NULL" : "non-null");
+  }
+  TCurve *negative = JpmcdsNewTCurve(base, -1, 1.0, JPMCDS_ACT_365F);
+  std::printf("  %-42s %s   <- only this is refused\n", "JpmcdsNewTCurve(base, -1, ...)",
+              negative != nullptr ? "created" : "refused");
+  JpmcdsFreeTCurve(negative);
+
+  std::printf("\nTHE PATTERN, which is the point of this entry. At four occurrences\n"
+              "`fArray[fNumItems-1]` without a guard stops being four accidents:\n\n"
+              "    UPSTREAM-21   cash_flow list    read,  NULL[-1]   SIGSEGV\n"
+              "    UPSTREAM-29   coupon schedule   the zero-period list that enables one\n"
+              "    UPSTREAM-32   swap bootstrap    read-modify-WRITE, NULL[-1]\n"
+              "    UPSTREAM-36   curve interp      read,  NULL[-1] and NULL[0]\n\n"
+              "Four different authors in four different files reached for the same\n"
+              "idiom, each knowing their own count was positive, and none of them said\n"
+              "so anywhere a compiler or a reader could check. That is what a missing\n"
+              "non-empty type costs, repeated four times.\n\n"
+              "Under the asan preset:\n\n"
+              "    linterpc.c:65:25: runtime error: applying non-zero offset\n"
+              "                      18446744073709551600 to null pointer\n"
+              "    ERROR: AddressSanitizer: SEGV on unknown address 0xfffffffffffffff0\n"
+              "    SUMMARY: AddressSanitizer: SEGV linterpc.c:65 in JpmcdsLinInterpCurve\n\n"
+              "18446744073709551600 is -16, one TRatePt backwards.\n\n"
+              "REACHABILITY. JpmcdsLinInterpCurve has no caller inside the library at\n"
+              "all -- it appears once outside its own file, as\n"
+              "`TCurveInterpFunc JpmcdsLinInterpCurve;` in interp.h, which is a\n"
+              "declaration against a function-pointer typedef and not a call. Same\n"
+              "situation as JpmcdsGenerateUnadjDates (UPSTREAM-30): an exported\n"
+              "function whose only possible callers are external, which is exactly who\n"
+              "gets no argument checking.\n\n"
+              "IN THE PORT: cannot occur. ZeroCurve is non-empty by construction, so\n"
+              "points().front() and points().back() are total.\n\n");
+
+  if (!unsafe) {
+    std::printf("Pass --unsafe to perform the read. It dereferences NULL.\n");
+    JpmcdsFreeTCurve(empty);
+    return;
+  }
+  if (empty == nullptr) {
+    std::printf("  (no zero-point curve to pass)\n");
+    return;
+  }
+  std::printf("--unsafe given: calling it now. This process is about to die.\n");
+  std::fflush(stdout);
+  TDate wanted[2] = {JpmcdsDate(2025, 1, 15), JpmcdsDate(2026, 1, 15)};
+  TDateList *dl = JpmcdsNewDateListFromDates(wanted, 2);
+  TCurve *out = JpmcdsLinInterpCurve(dl, empty, nullptr);
+  std::printf("  survived; returned %s\n", out != nullptr ? "a curve" : "NULL");
+  JpmcdsFreeTCurve(out);
+  JpmcdsFreeDateList(dl);
+  JpmcdsFreeTCurve(empty);
+}
+
 int main(int argc, char **argv) {
   JpmcdsErrMsgOff();
   bool unsafe = false;
@@ -2639,6 +2725,9 @@ int main(int argc, char **argv) {
   }
   if (want("u35")) {
     u35();
+  }
+  if (want("u36")) {
+    u36(unsafe);
   }
   return 0;
 }

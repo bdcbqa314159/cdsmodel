@@ -3119,3 +3119,114 @@ A tier-1 test walks all 256 byte values and requires exactly four to be
 accepted. That is the test upstream's version could not have: with `toupper` in
 the path, 128 of those 256 inputs are undefined behaviour and the test would be
 asserting things about a program with no defined meaning.
+
+## UPSTREAM-36 — The fourth unguarded `fArray[fNumItems-1]`
+
+**Location:** `lib/src/linterpc.c:65`, `JpmcdsLinInterpCurve`.
+**Severity:** Medium. A null-derived read at a public entry point with no
+in-library caller.
+
+### Mechanism
+
+The function clamps each requested date into the old curve's range, to avoid
+extrapolating — the intent is right and the comment says so:
+
+```c
+/* Make sure that we don't extrapolate. Before the first date
+ * in oldCurve, we just use the first rate in oldCurve. After
+ * the last date in oldCurve, we just use the last rate in oldCurve.
+ */
+for (idx = 0; idx < desiredDates->fNumItems; idx++)
+{
+    modDates[idx] = MIN(desiredDates->fArray[idx],
+                        oldCurve->fArray[oldCurve->fNumItems-1].fDate);
+    modDates[idx] = MAX(modDates[idx],
+                        oldCurve->fArray[0].fDate);
+```
+
+Neither end is guarded, and `JpmcdsNewTCurve` accepts a count of **zero** —
+only a negative one is refused:
+
+```c
+if (numPts < 0)
+{
+    JpmcdsErrMsg ("%s: Attempt to create curve with %d points.\n", ...);
+    goto done;
+}
+...
+if (numPts > 0)
+{
+    tc->fArray = NEW_ARRAY(TRatePt, numPts);
+    ...
+}
+else
+{
+    tc->fArray = NULL;
+}
+```
+
+So with a zero-point curve the two lines are `NULL[-1]` and `NULL[0]`.
+Measured:
+
+```
+linterpc.c:65:25: runtime error: applying non-zero offset
+                  18446744073709551600 to null pointer
+ERROR: AddressSanitizer: SEGV on unknown address 0xfffffffffffffff0
+SUMMARY: AddressSanitizer: SEGV linterpc.c:65 in JpmcdsLinInterpCurve
+```
+
+`18446744073709551600` is `-16`, one `TRatePt` backwards.
+
+A zero-point curve is not a hypothetical shape. `zerocurve.c` builds one as its
+**first act**:
+
+```c
+zcurveIni = JpmcdsNewTCurve(valueDate, 0, (double) 1L, JPMCDS_ACT_365F);
+```
+
+### The pattern, which is the point of this entry
+
+At four occurrences, `fArray[fNumItems-1]` without a guard stops being four
+accidents:
+
+| entry | file | shape |
+|---|---|---|
+| UPSTREAM-21 | `zcall.c` | read, `NULL[-1]`, measured SIGSEGV |
+| UPSTREAM-29 | `schedule.c` | the zero-period list that enables one |
+| UPSTREAM-32 | `zcswutil.c` | read-modify-**write**, `NULL[-1]` |
+| UPSTREAM-36 | `linterpc.c` | read, `NULL[-1]` *and* `NULL[0]` |
+
+Four different sites in four different files reached for the same idiom. In
+each one the author knew their own count was positive — and in each one that
+knowledge lived nowhere a compiler or a later reader could check it. That is
+what the absence of a non-empty container type costs, billed four times.
+
+It is worth being precise about what the port did and did not do here. It did
+not add four guards. It made one type non-empty, in the `zero_curve` slice,
+long before three of these four were found — and the cost of that decision
+showed up exactly once, as two overloads in the `zerocurve` slice. Four
+defects retired for two overloads is the best trade in this register.
+
+### Reachability
+
+`JpmcdsLinInterpCurve` has no caller inside the library. It appears exactly
+once outside its own file:
+
+```c
+TCurveInterpFunc JpmcdsLinInterpCurve;      /* interp.h:65 */
+```
+
+which is a declaration against a function-pointer typedef, not a call. So this
+is an exported function whose only possible callers are external ones — the
+same situation as `JpmcdsGenerateUnadjDates` in UPSTREAM-30, and the same
+consequence: the arguments nobody inside the library passes are the arguments
+nothing inside the library validates.
+
+Reproduce with `defect_evidence u36`, and `defect_evidence u36 --unsafe` under
+the asan preset for the trace. The live call is also a `DISABLED_` test.
+
+### In the port
+
+**Cannot occur.** `ZeroCurve` is non-empty by construction, so
+`points().front()` and `points().back()` are total functions and the clamp has
+nothing to check.

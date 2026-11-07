@@ -501,6 +501,12 @@
           <td><span class="chip">Reproduced; signature fixed</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u36">UPSTREAM-36</a></td>
+          <td>The <strong>fourth</strong> unguarded <code>fArray[fNumItems-1]</code> &mdash; at four occurrences it is an idiom the codebase trusts, not four accidents</td>
+          <td><span class="chip mid">Medium &middot; null-derived read</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u35">UPSTREAM-35</a></td>
           <td><code>toupper</code> on a plain <code>char</code> &mdash; undefined for 127 of the 128 high-bit bytes, and <strong>legal for the 128th by collision with EOF</strong></td>
           <td><span class="chip low">Low &middot; UB, no consequence shown</span></td>
@@ -2675,6 +2681,98 @@ after one extrapolation: same call               -&gt; <span class="hit">SUCCESS
 
     <div class="tests">
       <span>Reproduce:</span> ./build/debug/defect_evidence u28
+    </div>
+  </section>
+
+  <!-- ============ U36 ============ -->
+  <section class="record sev-mid" id="u36">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-36</span>
+      <h2>The fourth unguarded <code>fArray[fNumItems-1]</code></h2>
+    </div>
+    <div class="chips">
+      <span class="chip mid">Medium &middot; null-derived read at a public entry point</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">linterpc.c:65 &mdash; JpmcdsLinInterpCurve</p>
+
+    <h3>Mechanism</h3>
+    <p>
+      The function clamps each requested date into the old curve's range to
+      avoid extrapolating &mdash; the intent is right and the comment says so:
+    </p>
+<pre><code>for (idx = 0; idx &lt; desiredDates-&gt;fNumItems; idx++)
+{
+    modDates[idx] = MIN(desiredDates-&gt;fArray[idx],
+                        <span class="hit">oldCurve-&gt;fArray[oldCurve-&gt;fNumItems-1]</span>.fDate);
+    modDates[idx] = MAX(modDates[idx],
+                        <span class="hit">oldCurve-&gt;fArray[0]</span>.fDate);</code></pre>
+    <p>
+      Neither end is guarded, and <code>JpmcdsNewTCurve</code> accepts a count
+      of <strong>zero</strong> &mdash; only a negative one is refused &mdash;
+      leaving <code>fArray</code> NULL. So the two lines are
+      <code>NULL[-1]</code> and <code>NULL[0]</code>:
+    </p>
+<pre><code>linterpc.c:65:25: runtime error: <span class="hit">applying non-zero offset
+                  18446744073709551600 to null pointer</span>
+ERROR: AddressSanitizer: SEGV on unknown address <span class="hit">0xfffffffffffffff0</span>
+SUMMARY: AddressSanitizer: SEGV linterpc.c:65 in JpmcdsLinInterpCurve</code></pre>
+    <p>
+      And a zero-point curve is not a hypothetical shape &mdash; zerocurve.c
+      builds one as its <strong>first act</strong>:
+      <code>JpmcdsNewTCurve(valueDate, 0, (double) 1L, JPMCDS_ACT_365F)</code>.
+    </p>
+
+    <h3>The pattern, which is the point of this entry</h3>
+    <p>
+      At four occurrences, <code>fArray[fNumItems-1]</code> without a guard
+      stops being four accidents:
+    </p>
+    <table class="data">
+      <thead><tr><th>entry</th><th>file</th><th>shape</th></tr></thead>
+      <tbody>
+        <tr><td><a href="#u21">UPSTREAM-21</a></td><td>zcall.c</td><td>read, <code>NULL[-1]</code>, measured SIGSEGV</td></tr>
+        <tr><td><a href="#u29">UPSTREAM-29</a></td><td>schedule.c</td><td>the zero-period list that enables one</td></tr>
+        <tr><td><a href="#u32">UPSTREAM-32</a></td><td>zcswutil.c</td><td>read-modify-<strong>write</strong>, <code>NULL[-1]</code></td></tr>
+        <tr><td>UPSTREAM-36</td><td>linterpc.c</td><td>read, <code>NULL[-1]</code> <em>and</em> <code>NULL[0]</code></td></tr>
+      </tbody>
+    </table>
+    <p>
+      Four different sites in four different files reached for the same idiom.
+      In each one the author knew their own count was positive &mdash; and in
+      each one that knowledge lived nowhere a compiler or a later reader could
+      check it. That is what the absence of a non-empty container type costs,
+      billed four times.
+    </p>
+    <p>
+      It is worth being precise about what the port did here. It did not add
+      four guards. It made one type non-empty, in the zero_curve slice, long
+      before three of these four were found &mdash; and the cost of that
+      decision showed up exactly once, as two overloads in the zerocurve slice.
+      <strong>Four defects retired for two overloads</strong> is the best trade
+      in this register.
+    </p>
+
+    <h3>Reachability</h3>
+    <p>
+      <code>JpmcdsLinInterpCurve</code> has no caller inside the library. It
+      appears exactly once outside its own file, as
+      <code>TCurveInterpFunc JpmcdsLinInterpCurve;</code> in interp.h &mdash; a
+      declaration against a function-pointer typedef, not a call. The same
+      situation as UPSTREAM-30: an exported function whose only possible callers
+      are external, which is exactly who gets no argument checking.
+    </p>
+
+    <h3>In the port</h3>
+    <p>
+      <strong>Cannot occur.</strong> <code>ZeroCurve</code> is non-empty by
+      construction, so <code>points().front()</code> and
+      <code>points().back()</code> are total functions and the clamp has nothing
+      to check.
+    </p>
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u36
+      &nbsp;&middot;&nbsp; trace: ./build/asan/defect_evidence u36 --unsafe
     </div>
   </section>
 
