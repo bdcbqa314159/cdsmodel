@@ -3553,3 +3553,110 @@ differential test compares it bit-exactly for the same reason.
 
 That is the cheapest way I know to test an order dependency: choose inputs
 where the wrong order cannot produce the right answer.
+
+## Decision 33 — A second entry point is not a second defect
+
+`zr2fwd.c` and `zr2coup.c` together: the rates a zero curve implies. Two files,
+one idea — the forward between two dates, and the coupon that prices an
+instrument at par — so one header.
+
+Upstream's `JpmcdsZerosToCouponsPoint` and `...PointAdj` collapse into one
+function here. The first calls the second with no bad-day adjustment and a
+"NO_WEEKENDS" holiday file; the port takes a convention and a calendar span, so
+the unadjusted case is `BadDayConv::None` with `Calendar::no_weekends()`. That
+is the same two arguments, named rather than hidden in a wrapper.
+
+### The decision worth recording: not filing a 29th defect
+
+`JpmcdsForwardFromZCurve` divides two discount factors with no guard at all:
+
+```c
+forwardDiscount = endDiscount/startDiscount;
+JpmcdsDiscountToRate(forwardDiscount, startDate, endDate, dayCountConv, basis, rate);
+```
+
+Measured, both ends of the range produce a NaN rate reported as SUCCESS —
+`0/0` where the factors underflow, `inf/inf` where they overflow. And this is
+*strictly less* protection than the `zcall.c` site, which at least tests
+`if (discount1 <= 0.0)` — badly, which is UPSTREAM-18, but it tests.
+
+I did not give it a number. The mechanism is UPSTREAM-19's blind guard in
+`JpmcdsDiscountToRate`, the consequence is the same NaN-as-success, and the fix
+was the same one line — the port was already immune here and needed no new
+work. So UPSTREAM-19's record now has a "second site" section on all three
+surfaces.
+
+The reasoning is worth stating because the temptation runs the other way: the
+register is a visible count, and twenty-nine reads as more thorough than
+twenty-eight. But **a register that counts entry points rather than defects
+stops being a map of the code and becomes a map of my reading order.** Someone
+fixing UPSTREAM-19 fixes both sites with one edit; that is the test for whether
+it is one defect.
+
+The contrast is UPSTREAM-9 and UPSTREAM-10, which *are* separate: one supplies
+a bad pointer, the other performs the unbounded write, and fixing either leaves
+the other. Same file, same symptom, two edits — two numbers.
+
+### The property that is worth more than the whole differential suite
+
+`par_coupon_rate` composes four things: a schedule, a present value, a discount
+factor and a quotient. The differential suite compares it against upstream
+across 216 combinations and that is useful, but both sides could be wrong
+together.
+
+The check that cannot be is the **par round trip**: take the coupon the
+function returned, rebuild the instrument at that coupon, price it off the same
+curve, and the result must equal the present value of the start date. That is
+the definition of "par", it needs no reference implementation, and it would
+survive someone replacing the whole function.
+
+It passes across basis, interpolation type, payment interval, stub position and
+two schedule shapes — 72 combinations, to 1e-10 relative. For something
+assembled from four other modules, that is the first check I would want and the
+last one I would delete.
+
+### A property I asserted wrongly, and the arithmetic that corrected it
+
+The flat-curve test first claimed the par coupon lands "within a basis point"
+of the curve level. It failed at semiannual by **39 basis points**.
+
+Not a bug. 2 × (1.04^0.5 − 1) = 3.9608%, and the function returned 3.96080% —
+the semiannual equivalent of a 4% annual rate, to seven figures. My assertion
+was simply false: annual-to-semiannual conversion *is* forty basis points at
+that level, and calling it noise was an error of finance, not of tolerance.
+
+The replacement asserts the real relationship — `f * ((1+r)^(1/f) - 1)` — to
+2e-5, with the residual attributed to day-count drift, since the schedule falls
+on actual dates rather than exact fractions of a year. That is a better test
+than the loose one would have been even if the loose one had passed: it now
+checks the compounding conversion rather than the magnitude.
+
+Fifth tolerance I have had to revisit, and the first where widening would have
+been the wrong fix. The previous four were cases where the arithmetic could not
+deliver what I asserted. This one was a case where the arithmetic delivered
+something I had not thought about.
+
+### `fltrate.c`, read and deferred, with a reason
+
+I read `fltrate.c` while surveying and did not port it. `JpmcdsFloatRateSet` is
+its only function and it has one notable property: `TFloatRate` has **seven**
+fields and the function sets six. The one it misses is `rateType`, which the
+struct's own documentation describes at length —
+
+> payInterval is ONLY used if rateType = JPMCDS_SIMPLE_BASIS. ... In order to
+> compute compounding rates, set rateType = JPMCDS_ANNUAL_BASIS (1) or 2 for
+> semi-annual compounding
+
+— and it returns SUCCESS. Measured with a pre-dirtied struct, `rateType`
+survives as `0x5a5a5a5a5a5a5a5a`.
+
+Then the thing that decides the severity: **nothing in the library reads it.**
+Grepping the whole tree, the only other `rateType` is an unrelated parameter in
+`cfinanci.h`. So it is a dead field — declared, documented as load-bearing,
+never set by its only initialiser, never consulted.
+
+That makes it an observation rather than a defect, and it belongs with
+`streamcf.c`, which is both the only caller of `JpmcdsFloatRateSet` and the only
+consumer of `TFloatRate`. Porting a struct setter in isolation would mean
+guessing at a type whose users I have not read yet, which is the mistake the
+dependency script exists to prevent.

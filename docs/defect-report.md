@@ -1450,6 +1450,39 @@ form: across every basis, day count and rate in the sweep, **no evaluation
 returns NaN**. Infinity is still permitted, since UPSTREAM-15 settled that it
 is a value.
 
+### A second site: `JpmcdsForwardFromZCurve`
+
+The same defect is reachable from `zr2fwd.c`, where there is no guard at all:
+
+```c
+forwardDiscount = endDiscount/startDiscount;
+
+if (JpmcdsDiscountToRate(forwardDiscount, startDate, endDate,
+                      dayCountConv, basis, rate) == FAILURE)
+```
+
+That is strictly less protection than `JpmcdsZCFwdDiscountFactor` has --
+there, at least, `if (discount1 <= 0.0)` is tested, badly (UPSTREAM-18), but
+tested. Here everything rests on `JpmcdsDiscountToRate`, whose guard is the one
+above. Measured, continuous basis over 30 years:
+
+```
+rate   disc(start)     disc(end)       fwd disc   rc        forward rate
+0.03   0.406302        0.394294        0.970446   SUCCESS   0.0304545
+24     1.20094e-313    4.94066e-324    4.11e-11   SUCCESS   2.43073e+10
+25     0               0               nan        SUCCESS   nan
+-24    inf             inf             nan        SUCCESS   nan
+```
+
+Both ends of the range produce a NaN rate reported as success: `0/0` where the
+factors underflow and `inf/inf` where they overflow.
+
+Recorded here rather than as a separate entry. The mechanism is the same blind
+guard, the consequence is the same NaN-as-success, and the fix was the same one
+line in `discount_to_rate` -- the port needed no new work to be immune at this
+site. Giving it its own number would make the register count entry points
+rather than defects.
+
 ## UPSTREAM-20 — The precondition the documentation does not mention
 
 **Location:** `lib/src/cashflow.c`, `JpmcdsMergeCFL`.
