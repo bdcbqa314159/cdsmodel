@@ -19,6 +19,7 @@
 #include <cdsmodel/cash_flow_schedule.hpp>
 #include <cdsmodel/cds.hpp>
 #include <cdsmodel/coupon_schedule.hpp>
+#include <cdsmodel/curve_instruments.hpp>
 #include <cdsmodel/curve_rates.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_interval.hpp>
@@ -62,6 +63,7 @@ extern "C" {
 #include "datelist.h"
 #include "defaulted.h"
 #include "dtlist.h"
+#include "gtozc.h"
 #include "interp.h"
 #include "ldate.h"
 #include "lintrp.h"
@@ -2368,6 +2370,77 @@ void u33() {
               "alone.\n");
 }
 
+void u34(bool unsafe) {
+  heading("UPSTREAM-34", "a validator that reports a NULL pointer and then dereferences it");
+  std::printf(
+      "Both static validators in gtozc.c ACCUMULATE failures rather than\n"
+      "returning at the first one. That is good design -- it reports every\n"
+      "problem with the input instead of only the earliest. But one of the\n"
+      "accumulated checks is a PRECONDITION for a later one:\n\n"
+      "    if(zeroCurve == NULL)\n"
+      "    {\n"
+      "        JpmcdsErrMsg(\"%%s: ZeroCurve is NULL\\n\", routine);\n"
+      "        status = FAILURE;            /* and no return */\n"
+      "    }\n"
+      "    ...\n"
+      "    for (i=0 ;i<numRates ;i++ )\n"
+      "    {\n"
+      "        ...\n"
+      "        if (dateArr[i] <= zeroCurve->fBaseDate)      /* NULL->fBaseDate */\n\n"
+      "so the validator detects the NULL curve, reports it, and then\n"
+      "dereferences it.\n\n"
+      "TWO SITES, one mechanism, one fix. CheckZCSwapsInputs has the same shape\n"
+      "and is worse -- its dereference is not inside a count-guarded loop:\n\n"
+      "    if(JpmcdsIsBusinessDay(zeroCurve->fBaseDate, holidayFile, &isBusDay)==FAILURE)\n\n"
+      "That runs whatever the instrument count is.\n\n"
+      "    gtozc.c:345   CheckZCCashInputs    dateArr[i] <= zeroCurve->fBaseDate\n"
+      "    gtozc.c:464   CheckZCSwapsInputs   JpmcdsIsBusinessDay(zeroCurve->fBaseDate, ...)\n\n"
+      "One edit -- an early return -- fixes both, so this is one defect at two\n"
+      "sites rather than two defects, the same counting rule as UPSTREAM-19.\n\n");
+
+  TDate dates[2] = {JpmcdsDate(2025, 1, 15), JpmcdsDate(2026, 1, 15)};
+  double rates[2] = {0.03, 0.035};
+
+  std::printf("A zero instrument count short-circuits BEFORE any validation, so a\n"
+              "NULL curve is harmless there -- JpmcdsCopyCurve tolerates it:\n\n");
+  TCurve *a = JpmcdsZCCash(nullptr, dates, rates, 0, JPMCDS_ACT_360);
+  std::printf("  %-52s %s\n", "JpmcdsZCCash(NULL, ..., 0, ...)",
+              a == nullptr ? "NULL" : "non-NULL");
+  JpmcdsFreeTCurve(a);
+  TCurve *b =
+      JpmcdsZCSwaps(nullptr, nullptr, dates, rates, 0, 2, 2, JPMCDS_ACT_360, JPMCDS_ACT_360, 'M',
+                    static_cast<TBadDayAndStubPos>(JPMCDS_BAD_DAY_NONE), (char *)"NONE");
+  std::printf("  %-52s %s\n", "JpmcdsZCSwaps(NULL, ..., 0, ...)",
+              b == nullptr ? "NULL" : "non-NULL");
+  JpmcdsFreeTCurve(b);
+
+  std::printf("\nWith a positive count the validator is reached. Under the asan preset:\n\n"
+              "    gtozc.c:345:37: runtime error: member access within null pointer\n"
+              "                    of type 'TCurve'\n"
+              "    ERROR: AddressSanitizer: SEGV on unknown address 0x000000000010\n"
+              "    SUMMARY: AddressSanitizer: SEGV gtozc.c:345 in CheckZCCashInputs\n\n"
+              "    gtozc.c:464:34: runtime error: member access within null pointer\n"
+              "                    of type 'TCurve'\n"
+              "    SUMMARY: AddressSanitizer: SEGV gtozc.c:464 in CheckZCSwapsInputs\n\n"
+              "IN THE PORT: cannot occur. Both functions take `const ZeroCurve &`, so\n"
+              "the input does not exist.\n\n"
+              "The lesson is narrower than \"return early\". The accumulating style is\n"
+              "worth keeping -- stream_cash_flows.hpp's is_well_formed does exactly\n"
+              "that, safely, because every check there is independent. An accumulating\n"
+              "validator is safe only when no check guards another.\n\n");
+
+  if (!unsafe) {
+    std::printf("Pass --unsafe to reach the dereference. It reads through NULL.\n");
+    return;
+  }
+  std::printf("--unsafe given: calling JpmcdsZCCash(NULL, ..., 2, ...) now.\n"
+              "This process is about to die.\n");
+  std::fflush(stdout);
+  TCurve *c = JpmcdsZCCash(nullptr, dates, rates, 2, JPMCDS_ACT_360);
+  std::printf("  survived; returned %s\n", c == nullptr ? "NULL" : "non-NULL");
+  JpmcdsFreeTCurve(c);
+}
+
 int main(int argc, char **argv) {
   JpmcdsErrMsgOff();
   bool unsafe = false;
@@ -2486,6 +2559,9 @@ int main(int argc, char **argv) {
   }
   if (want("u33")) {
     u33();
+  }
+  if (want("u34")) {
+    u34(unsafe);
   }
   return 0;
 }
