@@ -39,6 +39,7 @@ OUT_OF_SCOPE = {
     "strutil": "string helpers; std::string_view",
     "cmemory": "the allocator; new/delete and std::vector",
     "version": "replaced by version.hpp",
+    "buscache": "the process-wide holiday cache; Calendar is a value the caller owns",
 }
 
 # Replaced structurally rather than one-for-one, so never countable as gaps.
@@ -60,6 +61,14 @@ STRUCTURAL = {
     "JpmcdsBSearchCheckOrder",
 }
 
+# Deliberately NOT ported, each with its reason recorded in port-notes.md.
+# These are decisions, not gaps, and listing them here keeps them out of the
+# "missing" column where they read as unfinished work.
+NON_PORTS = {
+    "JpmcdsHolidayLoadFromDisk": "reads a holiday file into a process-wide cache",
+    "JpmcdsStringToDayCountConv": "string parsing deferred with the other parsers",
+}
+
 
 def exported_by_file():
     out = subprocess.run(
@@ -71,6 +80,27 @@ def exported_by_file():
         if m:
             by_file[re.sub(r"\.(c|cpp)$", "", m.group(1))].add(m.group(2))
     return by_file
+
+
+def mentioned_anywhere():
+    """Every Jpmcds* name that appears in any header, claimed or merely discussed.
+
+    This exists because of a mistake made three times. `port_progress` reports
+    the functions a header does not NAME, and three separate slices read that
+    as the functions not PORTED -- then wrote a port that already existed, or
+    chased a gap that was a missing sentence. Decision 30 found four such
+    functions, Decision 34 found four more, and the cxbsearch slice ported one
+    twice.
+
+    A name that appears in a header but not in a claim clause is almost always
+    a claim-text omission. A name that appears nowhere is almost always genuine
+    work. Splitting the two costs one pass over the headers and removes the
+    ambiguity that caused all three.
+    """
+    names = set()
+    for h in sorted((ROOT / "include" / "cdsmodel").glob("*.hpp")):
+        names.update(re.findall(r"Jpmcds\w+", h.read_text(encoding="utf-8")))
+    return names
 
 
 def provenance():
@@ -95,13 +125,14 @@ def main():
         print("no oracle archive -- build the debug preset with an upstream copy present")
         return
     claimed_files, ported = provenance()
+    mentioned = mentioned_anywhere()
     lines = {p.stem: sum(1 for _ in p.open(encoding="utf-8", errors="replace"))
              for p in list(UP.glob("*.c")) + list(UP.glob("*.cpp"))}
 
     rows = []
     for stem, n_lines in sorted(lines.items()):
         funcs = by_file.get(stem, set())
-        countable = {f for f in funcs if f not in STRUCTURAL}
+        countable = {f for f in funcs if f not in STRUCTURAL and f not in NON_PORTS}
         done = countable & ported
         rows.append((stem, n_lines, funcs, countable, done))
 
@@ -131,14 +162,29 @@ def main():
           f"   (coarsest; flatters most)")
     print()
     if partial:
-        print("PARTIAL -- a header claims the file, these functions are not named:")
+        print("PARTIAL -- a header claims the file, these functions are not named.")
+        print("NOT NAMED is not the same as NOT PORTED. A name that already appears")
+        print("somewhere in a header is almost always a missing claim sentence, not")
+        print("missing work -- three slices have been wasted on that distinction.")
+        print()
         for stem, n_lines, _funcs, countable, done in sorted(partial,
                                                              key=lambda r: len(r[3]) - len(r[4]),
                                                              reverse=True):
             missing = sorted(countable - done)
-            print(f"  {stem:12} {len(done)}/{len(countable)}  {n_lines:>5} lines   "
-                  f"{', '.join(missing)}")
+            unported = [f for f in missing if f not in mentioned]
+            unclaimed = [f for f in missing if f in mentioned]
+            print(f"  {stem:12} {len(done)}/{len(countable)}  {n_lines:>5} lines")
+            if unported:
+                print(f"    not ported:   {', '.join(unported)}")
+            if unclaimed:
+                print(f"    *** MENTIONED but not claimed -- check before porting: "
+                      f"{', '.join(unclaimed)}")
         print()
+        if NON_PORTS:
+            print(f"({len(NON_PORTS)} functions are deliberate non-ports and are excluded "
+                  f"from the counts above;")
+            print(" see NON_PORTS in this script and the reasons in docs/port-notes.md)")
+            print()
     print("NOT STARTED, by size:")
     for stem, n_lines, _f, countable, _d in sorted(untouched, key=lambda r: r[1], reverse=True):
         print(f"  {stem:12} {len(countable):>2} fn {n_lines:>5} lines")

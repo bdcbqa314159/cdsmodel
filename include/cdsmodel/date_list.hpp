@@ -46,11 +46,11 @@ namespace cdsmodel {
   return std::ranges::adjacent_find(dates, std::ranges::greater_equal{}) == dates.end();
 }
 
-/// Sort and remove duplicates.
+/// Sort and remove duplicates. Replaces `JpmcdsSortDateList`.
 ///
-/// This is upstream's `JpmcdsSortDateList`, whose header says only "Sorts a
-/// datelist" -- it also applies `JpmcdsNewDateListDistinct`, so sorting
-/// silently removes duplicates. The name here says what it does.
+/// Upstream's header says only "Sorts a datelist" -- it also applies
+/// `JpmcdsNewDateListDistinct`, so sorting silently removes duplicates. The
+/// name here says what it does.
 [[nodiscard]] inline std::vector<Date> sorted_distinct(std::span<const Date> dates) {
   std::vector<Date> out{dates.begin(), dates.end()};
   std::ranges::sort(out);

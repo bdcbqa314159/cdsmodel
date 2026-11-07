@@ -4810,3 +4810,128 @@ operations in `dtlist`, two in `cxdatelist`, the three string parsers
 (deliberately held together because UPSTREAM-4 lives in that family), the five
 holiday-cache functions that are recorded non-ports, and five one-offs. A
 cleanup sweep rather than a path.
+
+## Decision 44 — The audit was lying, and it was my fault three times
+
+This slice began as a cleanup sweep over the 22 functions `port_progress.py`
+listed as remaining. Two of them turned out to be already ported.
+
+### The pattern, now unambiguous
+
+* `JpmcdsStringToDateInterval` — ported in `date_interval.hpp`, claimed with
+  *"Reproduces"*.
+* `JpmcdsSortDateList` — ported as `sorted_distinct` in `date_list.hpp`,
+  claimed with *"This is upstream's"*.
+
+The claims parser recognises `Replaces` and `Equivalent to`. Neither of those
+phrasings matched, so both functions were ported, tested, merged — and
+reported as outstanding work. Fixing two sentences moved the count from
+149/171 to 151/171.
+
+That is the third time. Decision 30 found four such functions, Decision 34
+found four more and concluded *"twice is a class, not an incident"*, and the
+`cxbsearch` slice found the inverse — a function claimed twice, which cost a
+whole module written for nothing.
+
+I have now fixed the symptom three times. The thing I had not done is make the
+distinction visible in the one place I actually read.
+
+### The fix that targets the mistake rather than the instance
+
+`port_progress.py` printed *"these functions are not named"*. I read that,
+three times, as *"these functions are not ported"*. Those are different claims
+and the tool had the information to tell them apart: a name that already
+appears somewhere in a header is almost always a missing sentence; a name that
+appears nowhere is almost always genuine work.
+
+So it now splits them:
+
+```
+  cxdatelist   2/4    475 lines
+    not ported:   JpmcdsDateListAddDates
+    *** MENTIONED but not claimed -- check before porting: JpmcdsDateListAddDatesFreeOld
+```
+
+On its first run the new flag produced one true positive and one false one,
+which is the right ratio for a heuristic whose message is *check*, not *fix*.
+
+The true positive was better than I expected. `JpmcdsCdsFeeLegFlows` carried a
+note in `cds.hpp` saying it was not ported because it *"needs cashflow.c, which
+is layer 7 and not on the pricing path"*. **That reason had expired.**
+`cashflow.c` has since been ported in full, so the dependency is available and
+only the work remains. A deferral with a reason attached had quietly become a
+deferral with no reason, and nothing would have noticed — a stale justification
+reads exactly like a live one.
+
+### An honest denominator, briefly lost
+
+Adding a function-level `NON_PORTS` set had a side effect I nearly shipped.
+`buscache.c` is 726 lines and all five of its functions are deliberate
+non-ports, so once they were excluded the file had zero countable functions and
+the report called it **complete** — and counted its 726 lines toward "lines in
+function-complete files", which jumped from 63% to 81%.
+
+That is precisely the flattering denominator the script's own docstring warns
+against: *"Stated so the denominator is honest rather than flattering."* Nothing
+about those 726 lines was completed; they were declined.
+
+`buscache` is a file-level decision, so it belongs in `OUT_OF_SCOPE` where its
+lines leave the denominator entirely rather than counting as done. With that
+corrected the figures are 155/164 functions and 80% of lines — and the 80% is
+real.
+
+Worth noting how close that came to being a quietly inflated number in a
+progress report I write myself and nobody audits.
+
+### Porting four functions nothing needs
+
+`ldate.c`'s four year helpers — `JpmcdsYear`, `JpmcdsIsLeap`,
+`JpmcdsYearStart`, `JpmcdsDaysLeftThisYear` — exist to serve
+`JpmcdsDayCountFraction`'s ACT/ACT branch, which walks whole years adding 365
+or 366. The port's `year_fraction` intersects the period with each calendar
+year instead, so **nothing in the port needs any of them.** That is why they
+sat unclaimed for most of the project.
+
+Ported anyway, because all four are declared in `ldate.h` and are therefore
+public API: an external caller using the model's date layer can reach them even
+though the library no longer does. The alternative was to record four
+non-ports, which would have been a defensible decision and a worse one — this
+is a port of a published interface, not only of a pricing path.
+
+### The verification is better than usual, and the reason is a property of the
+### functions rather than of my diligence
+
+Three of the four have a **definition**, not just a reference implementation.
+The Gregorian leap rule is "divisible by 4, except centuries, except multiples
+of 400". The start of a year is the first of January. The year of a date is its
+year.
+
+So the tier-1 tests do not replay recorded upstream answers. They check the
+rule, written out longhand, over all 800 years from 1601 to 2400 — and
+separately check that a leap year is exactly a year of 366 days, which compares
+the predicate against the calendar's own length rather than against another
+predicate. That is a genuinely independent oracle, the highest rung the ladder
+offers, and it is available here only because functions this small have a
+closed form. Most of this project does not get that luxury.
+
+There is no golden file for this module, and the test header says why.
+
+### Two more predictions corrected by measuring
+
+Fourth and fifth time this session, and both were in test *expectations* rather
+than in the port:
+
+1. I asserted 50 leap days in 1896–2104. The answer is 51: there are 53
+   multiples of four in that range, not 52, minus 1900 and 2100.
+2. I asserted that 31 December gives one day left under ACT and **zero** under
+   30/360 — the clean illustration of the function's misleading name. It gives
+   **one** under both. 30/360 USA adjusts D1 from 31 to 30, so the difference
+   is `360 - 330 - 29 = 1`, and the two conventions agree exactly where I
+   expected them to diverge. The honest illustration is 1 January: 365 real
+   days against 30/360's 360.
+
+Both times the port matched upstream and only my arithmetic was wrong. The
+tally for the session is now five, which is high enough to stop being a
+curiosity: **when I write down a number I have not computed, it is wrong about
+a third of the time.** The tests now carry the computation next to the
+assertion.
