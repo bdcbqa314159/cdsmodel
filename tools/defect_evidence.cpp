@@ -18,6 +18,7 @@
 #include <cdsmodel/cash_flow_list.hpp>
 #include <cdsmodel/cash_flow_schedule.hpp>
 #include <cdsmodel/cds.hpp>
+#include <cdsmodel/coupon_schedule.hpp>
 #include <cdsmodel/curve_rates.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_interval.hpp>
@@ -63,6 +64,7 @@ extern "C" {
 #include "lintrp.h"
 #include "macros.h"
 #include "mdydate.h"
+#include "schedule.h"
 #include "stub.h"
 #include "tcurve.h"
 #include "yearfrac.h"
@@ -1915,6 +1917,134 @@ void u28() {
 
 } // namespace
 
+void u29(bool unsafe) {
+  heading("UPSTREAM-29", "a schedule the library returns and its own validator rejects");
+  std::printf("CheckArgsSwapMakeSchedule rejects `startDate > matDate` -- but not\n"
+              "equality, and its error message reads \"maturity date is on or before\n"
+              "start date\", which is not the condition it guards. Equality then\n"
+              "produces one accrual period of zero length, which the empty-period\n"
+              "removal loop drops, decrementing fNumItems to 0. The function returns\n"
+              "SUCCESS with a non-NULL list.\n\n"
+              "JpmcdsCouponDateListCheck, the library's own validator for this exact\n"
+              "type, rejects such a list: \"schedule must have at least one coupon\n"
+              "period\". So the constructor hands back a value the validator refuses.\n\n");
+
+  TDateInterval iv;
+  JpmcdsMakeDateInterval(6, 'M', &iv);
+
+  struct Probe {
+    const char *label;
+    TDate start;
+    TDate maturity;
+    TBoolean stub_at_end;
+    long conv;
+  };
+  const TDate same = JpmcdsDate(2024, 3, 15);
+  const Probe probes[] = {
+      {"start == maturity, front stub", same, same, FALSE, JPMCDS_BAD_DAY_NONE},
+      {"start == maturity, back stub", same, same, TRUE, JPMCDS_BAD_DAY_NONE},
+      {"Sat -> Sun, FOLLOW", JpmcdsDate(2024, 3, 16), JpmcdsDate(2024, 3, 17), FALSE,
+       JPMCDS_BAD_DAY_FOLLOW},
+  };
+
+  std::printf("  %-32s %8s %10s %12s\n", "input", "periods", "stub", "validator");
+  for (const Probe &p : probes) {
+    TCouponDateList *s =
+        JpmcdsNewCouponDatesSwap(p.start, p.maturity, &iv, TRUE, FALSE, 0, 0, p.stub_at_end, FALSE,
+                                 0, 0, 0, p.conv, p.conv, p.conv, (char *)"NONE");
+    if (s == nullptr) {
+      std::printf("  %-32s %8s\n", p.label, "refused");
+      continue;
+    }
+    std::printf("  %-32s %8d %10ld %12s\n", p.label, s->fNumItems, s->stubLocation,
+                JpmcdsCouponDateListCheck(s) == SUCCESS ? "SUCCESS" : "FAILURE");
+    JpmcdsFreeCouponDateList(s);
+  }
+
+  std::printf("\n"
+              "Note the third row: this is NOT confined to start == maturity. Any\n"
+              "span whose every accrual period collapses under bad-day adjustment\n"
+              "reaches it, and a Saturday-to-Sunday span with FOLLOW does.\n\n"
+              "Note also the stub column. At i == 0 the removal loop maps\n"
+              "FRONT_STUB to NO_STUB but leaves BACK_STUB alone -- correctly, since\n"
+              "dropping the front period does not remove a back stub. With no\n"
+              "periods left at all, the schedule still claims one.\n\n"
+              "WHY IT MATTERS. zcswap.c reads\n\n"
+              "    floatDL->fArray[floatDL->fNumItems-1].resetDate   (line 725)\n"
+              "    floatDL->fArray[floatDL->fNumItems-1].payDate     (lines 743, 744)\n\n"
+              "with no emptiness check and no call to the validator. fNumItems == 0\n"
+              "makes that fArray[-1]. zcswap.c passes zc->valueDate as the start\n"
+              "date, so a benchmark instrument maturing on the curve's value date\n"
+              "is enough. streamcf.c:1066 does call the validator, and is safe.\n\n"
+              "Under ASan the read is reported as heap-use-after-free rather than a\n"
+              "buffer underflow, because the 40 bytes before streamSched->fArray\n"
+              "are adjStreamSched->fArray, which the function frees on its way out\n"
+              "at schedule.c:345. Both descriptions are true; the fault is the\n"
+              "negative index.\n\n");
+
+  if (!unsafe) {
+    std::printf("Pass --unsafe under the asan preset to perform the fArray[-1] read.\n");
+    return;
+  }
+  TCouponDateList *s = JpmcdsNewCouponDatesSwap(same, same, &iv, TRUE, FALSE, 0, 0, TRUE, FALSE, 0,
+                                                0, 0, JPMCDS_BAD_DAY_NONE, JPMCDS_BAD_DAY_NONE,
+                                                JPMCDS_BAD_DAY_NONE, (char *)"NONE");
+  if (s == nullptr) {
+    std::printf("  (upstream refused; nothing to read)\n");
+    return;
+  }
+  std::printf("--unsafe given: reading fArray[fNumItems-1] exactly as zcswap.c does.\n");
+  std::fflush(stdout);
+  const TDate seen = s->fArray[s->fNumItems - 1].resetDate;
+  std::printf("  read %ld without trapping (no sanitizer in this build)\n", (long)seen);
+  JpmcdsFreeCouponDateList(s);
+}
+
+void u30(bool unsafe) {
+  heading("UPSTREAM-30", "a buffer sized from one span and filled from another");
+  std::printf("JpmcdsGenerateUnadjDates sizes its scratch array from the span it was\n"
+              "asked about:\n\n"
+              "    JpmcdsCountDates(startDate, matDate, couponInterval, &numPeriods, &dummyInt);\n"
+              "    numPeriods = numPeriods + 3;\n"
+              "    dateArr = NEW_ARRAY(TDate, numPeriods);\n\n"
+              "and then steps the generating loop from the ROLL date, not from\n"
+              "startDate:\n\n"
+              "    beginDate = firstRollDate;\n"
+              "    ...\n"
+              "    dateArr[nDates++] = unadjustedDate;        /* line 761 */\n\n"
+              "A roll date outside [startDate, matDate] makes the stepped span longer\n"
+              "than the span the array was sized for, and the loop writes past the end.\n"
+              "The function validates none of its nine arguments.\n\n"
+              "REACHABILITY. JpmcdsNewCouponDatesSwap bounds both roll dates to\n"
+              "[startDate, matDate] in CheckArgsSwapMakeSchedule before calling, and\n"
+              "within that bound the stepped span is always the shorter one -- so the\n"
+              "library's own path is safe. But JpmcdsGenerateUnadjDates is declared in\n"
+              "the public schedule.h and has no caller inside the library at all: it\n"
+              "exists for external callers, and it is exactly those callers who get no\n"
+              "argument checking. Reachability bounds how bad a defect is, never\n"
+              "whether there is one.\n\n"
+              "Sizing span   2024-01-01 .. 2024-07-01 by 1M  ->  ~9 slots\n"
+              "Stepped span  1990-01-01 .. 2024-07-01 by 1M  ->  ~415 dates\n\n"
+              "Under the asan preset this reports:\n\n"
+              "    AddressSanitizer: heap-buffer-overflow\n"
+              "        schedule.c:761 in JpmcdsGenerateUnadjDates\n\n");
+
+  if (!unsafe) {
+    std::printf("Pass --unsafe under the asan preset to run the overflowing call.\n");
+    return;
+  }
+  std::printf("--unsafe given: calling it now. Under asan this run is about to abort.\n");
+  std::fflush(stdout);
+  TDateInterval iv;
+  JpmcdsMakeDateInterval(1, 'M', &iv);
+  TDateList *out = nullptr;
+  long stub = 0;
+  JpmcdsGenerateUnadjDates(JpmcdsDate(2024, 1, 1), JpmcdsDate(2024, 7, 1), &iv, FALSE, FALSE,
+                           JpmcdsDate(1990, 1, 1), 0, &out, &stub);
+  std::printf("  returned without trapping (no sanitizer in this build)\n");
+  JpmcdsFreeDateList(out);
+}
+
 int main(int argc, char **argv) {
   JpmcdsErrMsgOff();
   bool unsafe = false;
@@ -2018,6 +2148,12 @@ int main(int argc, char **argv) {
   }
   if (want("u28")) {
     u28();
+  }
+  if (want("u29")) {
+    u29(unsafe);
+  }
+  if (want("u30")) {
+    u30(unsafe);
   }
   return 0;
 }

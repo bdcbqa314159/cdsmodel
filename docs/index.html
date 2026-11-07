@@ -501,6 +501,18 @@
           <td><span class="chip">Reproduced; signature fixed</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u29">UPSTREAM-29</a></td>
+          <td>A schedule the library returns and <strong>its own validator rejects</strong> — zero coupon periods, reported SUCCESS, then indexed at <code>fArray[-1]</code> by zcswap.c</td>
+          <td><span class="chip mid">Medium · out-of-bounds read</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
+          <td class="id"><a href="#u30">UPSTREAM-30</a></td>
+          <td>A heap buffer <strong>sized from one date span and filled from another</strong>, at a public entry point that validates none of its nine arguments</td>
+          <td><span class="chip mid">Medium · heap overflow</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u28">UPSTREAM-28</a></td>
           <td>Interpolating past the end of a curve leaves order validation <strong>disabled process-wide and permanently</strong> — the same global as UPSTREAM-13, leaking on the success paths instead</td>
           <td><span class="chip mid">Medium · permanent effect</span></td>
@@ -2633,6 +2645,228 @@ after one extrapolation: same call               -&gt; <span class="hit">SUCCESS
 
     <div class="tests">
       <span>Reproduce:</span> ./build/debug/defect_evidence u28
+    </div>
+  </section>
+
+  <!-- ============ U29 ============ -->
+  <section class="record sev-mid" id="u29">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-29</span>
+      <h2>A schedule the library returns and its own validator rejects</h2>
+    </div>
+    <div class="chips">
+      <span class="chip mid">Medium · invalid schedule reported SUCCESS; out-of-bounds read downstream</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">schedule.c — JpmcdsNewCouponDatesSwap · consequence in zcswap.c:725, 743, 744</p>
+
+    <h3>Mechanism</h3>
+    <p>The argument check opens with four lines that disagree with each other:</p>
+<pre><code>if <span class="hit">(startDate &gt; matDate)</span>
+{
+    JpmcdsErrMsg("%s: maturity date (%s) <span class="hit">is on or before</span> start date (%s)\n", ...</code></pre>
+    <p>
+      The condition says <em>after</em>; the message says <em>on or before</em>.
+      Equality is accepted, and the message is the only statement of intent
+      anywhere, so the gap is invisible unless you read both halves.
+    </p>
+    <p>
+      Equality produces one unadjusted period of zero length. The
+      empty-accrual-period removal loop — added for exactly this case, with the
+      comment <em>&ldquo;Thanks to Neill Penney for the solution&rdquo;</em> —
+      drops it and decrements the count:
+    </p>
+<pre><code>if ( adjStreamSched-&gt;fArray[i].accrueStartDate !=
+     adjStreamSched-&gt;fArray[i].accrueEndDate )
+{
+    streamSched-&gt;fArray[j] = adjStreamSched-&gt;fArray[i];
+    j++;
+}
+else
+{
+   if ( i==0 )
+   {
+      ...
+      <span class="hit">streamSched-&gt;fNumItems--;</span></code></pre>
+    <p>
+      With one period there is nothing left. The consistency check that follows
+      compares <code>j</code> against <code>fNumItems</code> — both zero, so it
+      passes — <code>retCode = SUCCESS</code>, and a non-NULL list comes back.
+      That list is rejected by the library's own validator for the same type:
+    </p>
+<pre><code>if (schedule-&gt;fNumItems &lt; 1)
+{
+    JpmcdsErrMsg("%s: <span class="hit">schedule must have at least one coupon period</span>"
+              " but has only %d.\n", ...
+    return FAILURE;</code></pre>
+    <p>
+      So the constructor and the validator disagree about the same value, and
+      nothing in the library says which one is right.
+    </p>
+
+    <h3>Not confined to the degenerate input</h3>
+    <p>
+      The obvious reading is that this needs <code>startDate == matDate</code>,
+      a zero-tenor swap no sane caller builds. It does not. Any span whose every
+      accrual period collapses <em>under bad-day adjustment</em> arrives at the
+      same place, and a weekend does it:
+    </p>
+    <table class="data">
+      <thead><tr><th>input</th><th>periods</th><th>stubLocation</th><th>validator</th></tr></thead>
+      <tbody>
+        <tr><td>start == maturity, front stub</td><td>0</td><td>NO_STUB</td><td>FAILURE</td></tr>
+        <tr><td>start == maturity, back stub</td><td>0</td><td>BACK_STUB</td><td>FAILURE</td></tr>
+        <tr><td>2024-03-16 &rarr; 2024-03-17 (Sat &rarr; Sun), FOLLOW</td><td>0</td><td>NO_STUB</td><td>FAILURE</td></tr>
+      </tbody>
+    </table>
+    <p>
+      Both dates in the third row adjust forward to Monday the 18th, so the
+      single period has <code>accrueStartDate == accrueEndDate</code> and is
+      removed. A one-day span over a weekend is not obviously invalid input,
+      which is why the port's guard tests the <em>outcome</em> rather than the
+      input.
+    </p>
+    <p>
+      The <code>stubLocation</code> column is a second finding inside the first.
+      At <code>i == 0</code> the removal maps <code>FRONT_STUB</code> to
+      <code>NO_STUB</code> but leaves <code>BACK_STUB</code> alone — correctly,
+      since dropping the front period does not remove a stub at the back. With
+      no periods left at all, the schedule still reports one.
+    </p>
+
+    <h3>Why it matters</h3>
+    <p>zcswap.c consumes the schedule without validating it:</p>
+<pre><code>   (floatDL-&gt;fArray[<span class="hit">floatDL-&gt;fNumItems-1</span>].resetDate,          <span class="c">/* 725 */</span>
+maxDate = MAX(indexMatDate, floatDL-&gt;fArray[<span class="hit">floatDL-&gt;fNumItems-1</span>].payDate);
+minDate = MIN(indexMatDate, floatDL-&gt;fArray[<span class="hit">floatDL-&gt;fNumItems-1</span>].payDate);</code></pre>
+    <p>
+      No emptiness check, and no call to <code>JpmcdsCouponDateListCheck</code>
+      on either schedule it builds. With <code>fNumItems == 0</code> all three
+      are <code>fArray[-1]</code>. The reachability is ordinary: zcswap.c passes
+      <code>zc-&gt;valueDate</code> as the start date, so a benchmark instrument
+      maturing on the curve's own value date is enough. streamcf.c:1066
+      <em>does</em> validate, and is safe.
+    </p>
+    <p>Under ASan:</p>
+<pre><code>ERROR: AddressSanitizer: <span class="hit">heap-use-after-free</span>
+  ... freed by thread T0 here:
+      JpmcdsFreeCouponDateList schedule.c:631
+      JpmcdsNewCouponDatesSwap schedule.c:345</code></pre>
+    <p>
+      Reported as use-after-free rather than as an underflow because the 40
+      bytes immediately before <code>streamSched-&gt;fArray</code> are
+      <code>adjStreamSched-&gt;fArray</code>, the scratch list the function frees
+      on its way out — including on the success path, since the
+      <code>error:</code> label sits after <code>retCode = SUCCESS</code> and is
+      a cleanup label rather than an error one. Both labels are accurate. The
+      fault is the negative index; which block it lands in is the allocator's
+      choice.
+    </p>
+
+    <h3>In the port</h3>
+    <p>
+      <strong>Cannot occur.</strong> <code>coupon_schedule</code> returns
+      <code>std::nullopt</code> when the removal leaves no periods, so
+      <code>CouponSchedule::periods</code> is non-empty by construction and
+      <code>is_well_formed</code> — the port's validator — is true of every
+      schedule the port builds. The guard is on the outcome, not on
+      <code>start == maturity</code>, because the weekend case shows the input
+      test is the wrong test.
+    </p>
+    <p>
+      This is one of the cases the port's policy says to correct rather than
+      reproduce: there is no single upstream behaviour to preserve when the
+      constructor and the validator contradict each other about the same value.
+      It is pinned without the oracle — the zero-period cases are recorded in
+      the tier-1 vectors as accepted with zero periods, and the replay asserts
+      the port declines exactly those four.
+    </p>
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u29
+      &nbsp;·&nbsp; trace: ./build/asan/defect_evidence u29 --unsafe
+    </div>
+  </section>
+
+  <!-- ============ U30 ============ -->
+  <section class="record sev-mid" id="u30">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-30</span>
+      <h2>A buffer sized from one span and filled from another</h2>
+    </div>
+    <div class="chips">
+      <span class="chip mid">Medium · heap buffer overflow</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">schedule.c:761 — JpmcdsGenerateUnadjDates</p>
+
+    <h3>Mechanism</h3>
+    <p>The function sizes its scratch array from the span it was asked about:</p>
+<pre><code>if (JpmcdsCountDates(<span class="hit">startDate, matDate</span>, couponInterval, &amp;numPeriods, &amp;dummyInt)==FAILURE)
+    goto done;
+numPeriods = numPeriods + 3;
+dateArr = NEW_ARRAY(TDate,numPeriods);</code></pre>
+    <p>and then steps the generating loop from somewhere else entirely:</p>
+<pre><code>if (firstRollDate &gt; 0)
+{
+    beginDate = <span class="hit">firstRollDate</span>;
+    endDate   = matDate;
+    ...
+    <span class="hit">dateArr[nDates++] = unadjustedDate;</span>        <span class="c">/* line 761 */</span></code></pre>
+    <p>
+      <code>startDate..matDate</code> sized the array;
+      <code>firstRollDate..matDate</code> fills it. A roll date before
+      <code>startDate</code> makes the second span the longer one, and the
+      <code>+ 3</code> of slack is not a bound on the difference. The
+      <code>lastRollDate</code> branch has the mirror problem with a roll date
+      after <code>matDate</code>. Measured, at a one-month interval:
+    </p>
+    <table class="data">
+      <thead><tr><th>span</th><th>by</th><th>dates</th></tr></thead>
+      <tbody>
+        <tr><td>sizing: 2024-01-01 &rarr; 2024-07-01</td><td>1M</td><td>~9 slots allocated</td></tr>
+        <tr><td>stepping: 1990-01-01 &rarr; 2024-07-01</td><td>1M</td><td>~415 written</td></tr>
+      </tbody>
+    </table>
+<pre><code>ERROR: AddressSanitizer: <span class="hit">heap-buffer-overflow</span>
+SUMMARY: AddressSanitizer: heap-buffer-overflow
+  schedule.c:761 in JpmcdsGenerateUnadjDates</code></pre>
+
+    <h3>Reachability, and why it is still a defect</h3>
+    <p><code>JpmcdsNewCouponDatesSwap</code> bounds both roll dates before calling:</p>
+<pre><code>if (firstRollDate &lt; startDate) { ... return FAILURE; }
+if (firstRollDate &gt; matDate)   { ... return FAILURE; }</code></pre>
+    <p>
+      and within <code>[startDate, matDate]</code> the stepped span is always a
+      sub-span of the sizing span, so the library's own path is safe. That is
+      the whole of the protection: a check in the caller, which the callee
+      neither performs nor documents as a precondition.
+    </p>
+    <p>
+      <code>JpmcdsGenerateUnadjDates</code> is declared in the public
+      <code>schedule.h</code> and has <strong>no caller inside the library at
+      all</strong>. It is not an internal helper that happens to be exported;
+      it is an exported function whose only possible callers are external ones,
+      and those are exactly the callers that get no argument checking.
+      In-library safety says how bad this is, not whether it exists — the same
+      conclusion UPSTREAM-25 reached, where reasoning from in-library
+      reachability to function safety nearly dropped a confirmed heap overflow.
+    </p>
+
+    <h3>In the port</h3>
+    <p>
+      <strong>Cannot occur</strong>, twice over.
+      <code>generate_unadjusted_dates</code> accumulates into a
+      <code>std::vector</code>, so there is no array to size and no sizing to
+      get wrong. And the bound upstream applies in its caller is applied
+      <em>here</em> as well, in the function that needs it, so the public entry
+      point is as safe as the internal one. The overflowing upstream call is
+      kept as a <code>DISABLED_</code> test: recorded, never executed, because
+      running it is undefined behaviour and a vector derived from it would be a
+      committed file produced by UB.
+    </p>
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u30
+      &nbsp;·&nbsp; trace: ./build/asan/defect_evidence u30 --unsafe
     </div>
   </section>
 
