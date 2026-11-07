@@ -162,6 +162,7 @@ if(CDSMODEL_BUILD_TESTS)
                  tests/curve_discount_test.cpp
                  tests/curve_rates_test.cpp
                  tests/coupon_schedule_test.cpp
+                 tests/float_rate_test.cpp
                  tests/adversarial_test.cpp)
   target_link_libraries(cdsmodel_tests PRIVATE cdsmodel GTest::gtest_main)
   target_include_directories(cdsmodel_tests PRIVATE tests)
@@ -205,7 +206,8 @@ if(CDSMODEL_BUILD_TESTS)
                    tests/interp_curve_differential_test.cpp
                    tests/curve_discount_differential_test.cpp
                    tests/curve_rates_differential_test.cpp
-                   tests/coupon_schedule_differential_test.cpp)
+                   tests/coupon_schedule_differential_test.cpp
+                   tests/float_rate_differential_test.cpp)
     target_link_libraries(cdsmodel_differential_tests
                           PRIVATE cdsmodel cds_reference GTest::gtest_main)
     target_include_directories(cdsmodel_differential_tests PRIVATE tests)

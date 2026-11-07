@@ -79,6 +79,8 @@ struct AdjustedOffset {
 
   /// Unused for `BusinessDays`, which cannot land on a bad day.
   BadDayConv bad_day = BadDayConv::None;
+
+  friend constexpr bool operator==(const AdjustedOffset &, const AdjustedOffset &) = default;
 };
 
 /// Advance a date by an adjusted offset. Replaces `JpmcdsDtFwdAdj`.
