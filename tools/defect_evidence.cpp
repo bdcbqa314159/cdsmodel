@@ -29,6 +29,7 @@
 #include <cdsmodel/defaulted.hpp>
 #include <cdsmodel/interp_curve.hpp>
 #include <cdsmodel/interpolation.hpp>
+#include <cdsmodel/stream_cash_flows.hpp>
 #include <cdsmodel/stub.hpp>
 #include <cdsmodel/swap_dates.hpp>
 #include <cdsmodel/version.hpp>
@@ -65,6 +66,7 @@ extern "C" {
 #include "macros.h"
 #include "mdydate.h"
 #include "schedule.h"
+#include "streamcf.h"
 #include "stub.h"
 #include "tcurve.h"
 #include "yearfrac.h"
@@ -2045,6 +2047,128 @@ void u30(bool unsafe) {
   JpmcdsFreeDateList(out);
 }
 
+void u31() {
+  heading("UPSTREAM-31", "an output written after the error label, from a variable never set");
+  std::printf("streamcf.c's GetFloatStubRate declares its result uninitialised,\n"
+              "assigns it only inside the one success branch, and then writes the\n"
+              "caller's output AFTER the label every failure path jumps to:\n\n"
+              "    double        rate;                  /* never assigned here */\n"
+              "    ...\n"
+              "    switch (swapType)\n"
+              "    {\n"
+              "      case JPMCDS_SINGLE_REFIX:\n"
+              "        if (JpmcdsForwardFromZCurve(..., &rate) == FAILURE)\n"
+              "            goto done;\n"
+              "        break;\n"
+              "      default:\n"
+              "        JpmcdsErrMsg(...);\n"
+              "        goto done;\n"
+              "    }\n"
+              "    status = SUCCESS;\n"
+              "  done:\n"
+              "    if (status == FAILURE)\n"
+              "        JpmcdsErrMsg(\"%%s: Failed to calculate back stub rate.\\n\", routine);\n"
+              "    *stubRate = rate;                    /* <-- runs on EVERY path */\n"
+              "    return status;\n\n"
+              "So a failure copies an indeterminate double into the caller's variable.\n\n");
+
+  std::printf("THE PRECONDITION, MEASURED. The read is only indeterminate if\n"
+              "JpmcdsForwardFromZCurve leaves its output alone when it fails. It\n"
+              "does -- both JpmcdsDiscountDate failures and the JpmcdsDiscountToRate\n"
+              "failure `goto done` without touching it. Swept with a sentinel in\n"
+              "the output so an unwritten result is visible:\n\n");
+
+  const TDate base = JpmcdsDate(2024, 1, 15);
+  TDate point = JpmcdsDate(2300, 1, 15);
+  double curve_rate = 1.0e2;
+  TCurve *curve = JpmcdsMakeTCurve(base, &point, &curve_rate, 1, 1.0, JPMCDS_ACT_365F);
+  if (curve == nullptr) {
+    std::printf("  (upstream refused the curve; nothing to show)\n");
+    return;
+  }
+
+  constexpr double kSentinel = 12345.0;
+  int failures = 0;
+  int unwritten = 0;
+  int nan_as_success = 0;
+  int ordinary = 0;
+  int first_failing_year = 0;
+  for (int year = 1; year <= 200; ++year) {
+    double out = kSentinel;
+    const int rc = JpmcdsForwardFromZCurve(
+        curve, JPMCDS_FLAT_FORWARDS, JpmcdsDate(2024 + year, 1, 15), JpmcdsDate(2024 + year, 7, 15),
+        JPMCDS_ACT_360, JPMCDS_SIMPLE_BASIS, &out);
+    if (rc != SUCCESS) {
+      ++failures;
+      if (out == kSentinel) {
+        ++unwritten;
+        if (first_failing_year == 0) {
+          first_failing_year = year;
+        }
+      }
+    } else if (std::isnan(out)) {
+      ++nan_as_success;
+    } else {
+      ++ordinary;
+    }
+  }
+  std::printf("  %-44s %d\n", "forward computations attempted", 200);
+  std::printf("  %-44s %d\n", "ordinary successes", ordinary);
+  std::printf("  %-44s %d   <- UPSTREAM-19, second site\n", "NaN returned as SUCCESS",
+              nan_as_success);
+  std::printf("  %-44s %d\n", "FAILURE returned", failures);
+  std::printf("  %-44s %d\n", "...of those, output left untouched", unwritten);
+
+  std::printf("\nREACHABILITY. A back-stub schedule whose final accrual period lands\n"
+              "in that window hands GetBackStub exactly such a period, and\n"
+              "GetFloatStubRate calls the forward on it:\n\n");
+
+  TDateInterval iv;
+  JpmcdsMakeDateInterval(6, 'M', &iv);
+  TCouponDateList *dl = JpmcdsNewCouponDatesSwap(
+      base, JpmcdsDate(2185, 6, 15), &iv, TRUE, FALSE, 0, 0, TRUE, FALSE, 0, 0, 0,
+      JPMCDS_BAD_DAY_NONE, JPMCDS_BAD_DAY_NONE, JPMCDS_BAD_DAY_NONE, (char *)"NONE");
+  if (dl != nullptr && dl->fNumItems > 0) {
+    const TCouponDates last = dl->fArray[dl->fNumItems - 1];
+    double out = kSentinel;
+    const int rc =
+        JpmcdsForwardFromZCurve(curve, JPMCDS_FLAT_FORWARDS, last.accrueStartDate,
+                                last.accrueEndDate, JPMCDS_ACT_360, JPMCDS_SIMPLE_BASIS, &out);
+    std::printf("  schedule: %d periods, stubLocation %ld (BACK_STUB)\n", dl->fNumItems,
+                dl->stubLocation);
+    std::printf("  stub period accrues %s -> %s\n", JpmcdsFormatDate(last.accrueStartDate),
+                JpmcdsFormatDate(last.accrueEndDate));
+    std::printf("  forward on that period: %s, output %s\n", rc == SUCCESS ? "SUCCESS" : "FAILURE",
+                out == kSentinel ? "LEFT UNTOUCHED" : "written");
+  }
+  JpmcdsFreeCouponDateList(dl);
+  JpmcdsFreeTCurve(curve);
+
+  std::printf("\nWHY THIS ONE IS DIFFERENT. Every other memory finding in this register\n"
+              "was caught by a sanitizer. This one cannot be, and the reasons stack up:\n\n"
+              "  * ASan does not instrument uninitialised reads at all;\n"
+              "  * UBSan has no check for them either;\n"
+              "  * MemorySanitizer would catch it, and this project has no MSan job --\n"
+              "    it is unavailable on the development platform;\n"
+              "  * and single-file static analysis cannot see it, because whether\n"
+              "    `rate` is indeterminate depends on JpmcdsForwardFromZCurve's failure\n"
+              "    behaviour, which lives in zr2fwd.c. Measured: both\n"
+              "    `-Wconditional-uninitialized` and `clang --analyze` on streamcf.c\n"
+              "    report nothing.\n\n"
+              "So this is the first instance of a blind spot this port has been\n"
+              "documenting since the harness was set up: an uninitialised STACK read,\n"
+              "in a cross-translation-unit shape.\n\n"
+              "CONSEQUENCE: none observable. GetFrontStub and GetBackStub both test the\n"
+              "status before touching the value, so the indeterminate double is\n"
+              "discarded. The read is still undefined behaviour, and the second site --\n"
+              "the `default:` branch, where `rate` is never assigned on any path -- is\n"
+              "unreachable only because TSwapType's one enumerator makes its underlying\n"
+              "type unsigned in C, so the one-sided guard `swapType >\n"
+              "JPMCDS_SINGLE_REFIX` catches negatives by accident.\n\n"
+              "IN THE PORT: cannot occur. detail::stub_payment RETURNS its value, so a\n"
+              "failure path has no output to write and the shape is unavailable.\n");
+}
+
 int main(int argc, char **argv) {
   JpmcdsErrMsgOff();
   bool unsafe = false;
@@ -2154,6 +2278,9 @@ int main(int argc, char **argv) {
   }
   if (want("u30")) {
     u30(unsafe);
+  }
+  if (want("u31")) {
+    u31();
   }
   return 0;
 }
