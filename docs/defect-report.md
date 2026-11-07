@@ -3184,6 +3184,16 @@ A zero-point curve is not a hypothetical shape. `zerocurve.c` builds one as its
 zcurveIni = JpmcdsNewTCurve(valueDate, 0, (double) 1L, JPMCDS_ACT_365F);
 ```
 
+**A second path, found later while porting `convert.c`.** `JpmcdsMakeTCurve`
+delegates to `JpmcdsMakeTCurveNoRateCheck`, which stops copying at the first
+point whose date is TDate 0 — so the length argument is an upper bound, not a
+count. Measured: a *first* point with date 0 yields a **zero-point curve**.
+TDate 0 is 1601-01-01, a real date, so any caller building a curve from
+externally-supplied dates can produce the empty curve without asking for one
+and without an error. That matters for severity here: the first path needs a
+caller to pass a literal `0`, which is visible at the call site. This one needs
+only a data value that looks ordinary.
+
 ### The pattern, which is the point of this entry
 
 At four occurrences, `fArray[fNumItems-1]` without a guard stops being four
@@ -3394,3 +3404,222 @@ function's own documentation promises:
 So the branch is dead code rather than a broken check, and the documentation is
 honest. Not filed. Recorded because the branch reads like a safety net and is
 not one.
+
+---
+
+## UPSTREAM-38 — Three bytes lowercased however short the token is
+
+**Location:** `lib/src/convert.c:395`, `NStringToMonth`, reached from
+`JpmcdsStringToDate` at `convert.c:119`.
+**Severity:** High. Stack buffer overflow — a read *and* a write — at a public
+entry point that takes untrusted text.
+
+### Mechanism
+
+`NStringToMonth` turns a token into a month number by lowercasing its first
+three characters and comparing against three-letter names:
+
+```c
+cp[0] = (char) tolower(cp[0]);
+cp[1] = (char) tolower(cp[1]);
+cp[2] = (char) tolower(cp[2]);   /* convert.c:395 */
+```
+
+There is no length check before those lines, and they are read-modify-**writes**,
+not reads. A one-character token has its NUL at `cp[1]` — still inside the
+buffer — and nothing at all at `cp[2]`.
+
+Three facts have to line up for that to leave the buffer, and all three are
+reachable through the public `JpmcdsStringToDate`:
+
+1. the input is copied into a 32-byte stack buffer, so a token can end *at* the
+   buffer's end:
+   ```c
+   char dateCopy[32];
+   (void)strncpy(dateCopy, mmddyyyy, sizeof(dateCopy)-1);
+   ```
+2. the second token reaches `NStringToMonth` only when it fails to parse as an
+   integer — so it must be non-numeric;
+3. the *first* token must therefore be long enough to push the second to offset
+   30, which means roughly 29 characters `JpmcdsSscanf` accepts as a number.
+
+A 29-digit run and a one-letter month — `"11111111111111111111111111111-a"` —
+puts the token at `dateCopy[30]`, the NUL at `[31]`, and `cp[2]` at `[32]`.
+Measured under the `asan` preset:
+
+```
+lscanf.c:486:28: runtime error: signed integer overflow:
+  1111111111111111111 * 10 cannot be represented in type 'long'
+==57811==ERROR: AddressSanitizer: stack-buffer-overflow on address 0x00016b1cdc20
+    #0 NStringToMonth convert.c:395
+    #1 JpmcdsStringToDate convert.c:119
+  [32, 64) 'dateCopy' (line 45) <== Memory access at offset 64 overflows this variable
+SUMMARY: AddressSanitizer: stack-buffer-overflow convert.c:395 in NStringToMonth
+```
+
+ASan reports a READ because the read inside `tolower(cp[2])` happens first; the
+store that follows is to the same byte.
+
+The precondition is observable without touching the overflow. Short tokens
+placed near the *start* of the buffer, where the third byte is still inside it,
+are all refused — but refused *after* the three writes have happened:
+
+```
+j-15-2024      refused
+ja-15-2024     refused
+jan-15-2024    accepted
+janu-15-2024   refused
+```
+
+Only the three-character token can match, which means every call with a token
+of any other length writes three bytes for nothing.
+
+### Why the pair matters
+
+This is the **second** stack overflow in `convert.c`, 225 lines from
+[UPSTREAM-4](#upstream-4), and the two together say something neither says
+alone. UPSTREAM-4 is an unbounded copy *into* a buffer. This one is a **bounded**
+copy — the `strncpy` above is correct, and truncation is precisely why over-long
+input is accepted rather than refused — followed by an unchecked read past the
+result.
+
+The bound on the copy does not help, because the overflow is downstream of it.
+Getting the `memcpy` right is not the same as being safe.
+
+### In the port
+
+Cannot occur. The token is a `string_view` and `to_month_name` returns
+`nullopt` for any size but 3 **before** reading a character. The lowercasing
+writes into a local three-byte array rather than back into the caller's text —
+so the port also does not mutate the string it was asked to parse, which
+upstream does, unannounced, to a `char *` parameter.
+
+---
+
+## UPSTREAM-39 — An unparseable year is invented, not refused
+
+**Location:** `lib/src/convert.c:124`, `JpmcdsStringToDate`.
+**Severity:** High. Silent wrong answer from untrusted input, at a public entry
+point, with no diagnostic.
+
+### Mechanism
+
+The function reads three delimited tokens. The month and the day are parsed
+with a function whose return value is **checked**:
+
+```c
+if (JpmcdsSscanf(cp,"%ld",&mdy.month) == 0)  /* If not integer try string */
+{
+    if (NStringToMonth(cp,&mdy.month) == FAILURE)
+        goto done;                           /* refused */
+}
+```
+
+Eleven lines later, the year is parsed with a function that **cannot** report
+failure:
+
+```c
+mdy.year = atol(cp);
+if (mdy.year > 99 && mdy.year < JPMCDS_TDATE_BASE_YEAR)
+    ... out of range ...
+if (mdy.year < CROSSOVER_YEAR)
+    mdy.year += 2000;
+```
+
+`atol` returns 0 both for `"0"` and for text it cannot parse, and stops silently
+at the first non-digit. Neither case is detectable. So a year of `"aaaa"`
+becomes 0, 0 is below `CROSSOVER_YEAR`, and the date comes back as the year
+2000 — a year nobody wrote down.
+
+Measured:
+
+| input | result | |
+|---|---|---|
+| `03/15/2024` | 2024-03-15 | a real year, for contrast |
+| `03/15/aaaa` | **2000**-03-15 | no digits at all → `atol` 0 → +2000 |
+| `15-Mar-twenty` | **2000**-03-15 | a spelled-out year |
+| `1-1-x2024` | **2000**-01-01 | digits present, but not first |
+| `03/15/2024XX` | 2024-03-15 | `atol` stops at the junk |
+| `03/15/99bogus` | **1999**-03-15 | 99 is *above* the pivot, so +1900 |
+| `aa/15/2024` | refused | an unparseable **month**, for contrast |
+| `03/aa/2024` | refused | an unparseable **day**, for contrast |
+
+The last two rows are what make this a defect rather than a convention. An
+unparseable month is refused. An unparseable day is refused. An unparseable year
+is accepted and replaced with 2000. One function, one input, three fields, two
+different policies.
+
+I predicted `99bogus` would give 2099 and it gives 1999 — 99 is above the
+crossover, so it takes the `+1900` branch. The table holds measurements, not
+predictions, for that reason.
+
+### Severity
+
+Higher than the mechanism suggests. A crash gets investigated; a date does not.
+This takes untrusted text — a holiday file, a regression input, a spreadsheet
+cell — and returns a date twenty-four years off with no error channel touched.
+Every downstream discount factor, accrual and par spread is then computed
+correctly from a wrong date.
+
+### In the port
+
+**Corrected, not reproduced** — the one place in this port where that call went
+against the default. The project rule is to reproduce when the code is
+self-consistent and only the documentation disagrees. Here the code disagrees
+with *itself*, eleven lines apart, so there is no single upstream behaviour to
+preserve. `date_from_string` refuses any year token containing a non-digit.
+
+The divergence is pinned from **both** sides in
+`tests/date_from_string_differential_test.cpp`: upstream accepts and the port
+refuses, both asserted, so a change on either side fails the test. The recorded
+vectors deliberately **exclude** these inputs — freezing a known divergence into
+the file the port is checked against would turn a documented difference into a
+silent one.
+
+---
+
+## UPSTREAM-40 — Digits accumulated into a signed long, unchecked
+
+**Location:** `lib/src/lscanf.c:486`, `JpmcdsSscanf`.
+**Severity:** Low-Medium. Undefined behaviour on untrusted input; out of the
+port's scope, but reachable from an in-scope public function.
+
+### Mechanism
+
+`JpmcdsSscanf` is a hand-written `scanf`. Its integer conversion accumulates
+digits with no range check:
+
+```c
+value = value * 10 + (*cp - '0');     /* lscanf.c:486 */
+```
+
+Signed overflow is undefined behaviour in C, so there is no defined result for a
+19-or-more-digit number. Under the `asan` preset, which enables UBSan:
+
+```
+lscanf.c:486:28: runtime error: signed integer overflow:
+  1111111111111111111 * 10 cannot be represented in type 'long'
+```
+
+Reached here through `JpmcdsStringToDate`, which hands it the first token of a
+date string — so the input is untrusted text, and a long digit run is a
+plausible thing for a spreadsheet cell to hold.
+
+### Why it is filed at all
+
+`lscanf.c` is **out of scope** for this port: it exists to read holiday files,
+which the port does with the standard library instead. It is filed because the
+register's subject is upstream's defects, not the port's surface, and because
+this one is reachable from an in-scope public function.
+
+It was found while measuring UPSTREAM-38 — the same input triggers both, and
+UBSan reported this one first. The two share an input and nothing else: a
+different file, a different mechanism, a different fix. Three entries from one
+probe, which is what the "count defects, not entry points" rule produces when
+one entry point really does have three.
+
+### In the port
+
+Not applicable — no `scanf` reimplementation exists. The equivalent arithmetic
+in `date_from_string` range-checks before each multiply and returns `nullopt`
+instead of wrapping.

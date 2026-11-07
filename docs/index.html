@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Eight defects found in the ISDA CDS Standard Model 1.8.3 while porting it to C++20, with sanitizer traces, measured evidence and fix status for each.">
+<meta name="description" content="Forty defects found in the ISDA CDS Standard Model 1.8.3 while porting all 163 of its in-scope functions to C++20, with sanitizer traces, measured evidence and fix status for each.">
 <meta name="color-scheme" content="light dark">
-<meta property="og:title" content="Eight defects in the ISDA CDS Standard Model">
+<meta property="og:title" content="Forty defects in the ISDA CDS Standard Model">
 <meta property="og:description" content="Found by differential testing a C++20 port against the original C under AddressSanitizer. Seven cannot occur in the port; one is reproduced on purpose.">
 <meta property="og:type" content="article">
 <title>ISDA CDS Defect Register</title>
@@ -409,12 +409,14 @@
 <div class="page">
 
   <header class="masthead">
-    <p class="eyebrow">Defect report · 2026-11-02</p>
-    <h1>Eight defects in the ISDA CDS Standard Model</h1>
+    <p class="eyebrow">Defect report · 2026-11-07</p>
+    <h1>Forty defects in the ISDA CDS Standard Model</h1>
     <p class="standfirst">
-      Found while porting the 2009 C library to C++20, by running both
-      implementations side by side under AddressSanitizer. Six cannot occur in
-      the port, one is reproduced on purpose, and one is still open.
+      Found while porting the 2009 C library to C++20 &mdash; all 163 in-scope
+      functions, with both implementations run side by side under
+      AddressSanitizer and UBSan. Most cannot occur in the port, because the
+      types stopped permitting them. Thirty-nine are reproduced faithfully;
+      exactly one is corrected, and that decision is argued below.
     </p>
   </header>
 
@@ -499,6 +501,24 @@
           <td>Supplying a substitution table silently disables the bad day convention, so an unlisted Saturday <strong>stays a Saturday</strong></td>
           <td><span class="chip low">Low · documented purpose only</span></td>
           <td><span class="chip">Reproduced; signature fixed</span></td>
+        </tr>
+        <tr>
+          <td class="id"><a href="#u39">UPSTREAM-39</a></td>
+          <td>An unparseable year is <strong>invented, not refused</strong> &mdash; the month and day in the same function do check; the year is read with a bare <code>atol</code> eleven lines later</td>
+          <td><span class="chip high">High &middot; silent wrong date</span></td>
+          <td><span class="chip">Corrected &mdash; the only one</span></td>
+        </tr>
+        <tr>
+          <td class="id"><a href="#u38">UPSTREAM-38</a></td>
+          <td>Three bytes lowercased <strong>however short the token is</strong> &mdash; a <em>bounded</em> copy followed by an unchecked read past its result</td>
+          <td><span class="chip high">High &middot; memory safety</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
+          <td class="id"><a href="#u40">UPSTREAM-40</a></td>
+          <td>Digits accumulated into a signed <code>long</code> with no range check &mdash; UB on any 19-digit number, from untrusted text</td>
+          <td><span class="chip low">Low-Medium &middot; UB, out of scope</span></td>
+          <td><span class="chip immune">Not applicable</span></td>
         </tr>
         <tr>
           <td class="id"><a href="#u37">UPSTREAM-37</a></td>
@@ -693,19 +713,22 @@
       project has. Every user of the official C library still has all five.
     </p>
     <p>
-      Of the six, <strong>four were not fixed so much as made
-      unrepresentable</strong>. No patch was written for UPSTREAM-1, -2, -3 or -6;
+      Of the first six, <strong>four were not fixed so much as made
+      unrepresentable</strong> &mdash; and that ratio held as the register grew
+      to forty. No patch was written for UPSTREAM-1, -2, -3 or -6;
       the types stopped permitting them. A month that cannot be 13. A result
       that cannot carry a sentinel. A period type normalised at construction.
       A loop whose bound is derived rather than hoped for. That is the
-      strongest single argument for the port existing: four of six defects
-      died as a side effect of choosing better types and stating preconditions,
-      not as a side effect of hunting for bugs.
+      strongest single argument for the port existing: those four died as a
+      side effect of choosing better types and stating preconditions, not as a
+      side effect of hunting for bugs.
     </p>
     <p>
-      <strong>UPSTREAM-4 is the only defect the port consciously declines to
-      reproduce.</strong> Faithfully reproducing a buffer overflow is not
-      fidelity.
+      <strong>Two defects the port consciously declines to reproduce.</strong>
+      UPSTREAM-4, because faithfully reproducing a buffer overflow is not
+      fidelity; and UPSTREAM-39, because there the code contradicts
+      <em>itself</em> eleven lines apart, so there is no single behaviour to be
+      faithful to. Everything else is reproduced exactly, divergences included.
     </p>
     <p>
       <strong>UPSTREAM-5 is the only one deliberately kept</strong>, because
@@ -2690,6 +2713,240 @@ after one extrapolation: same call               -&gt; <span class="hit">SUCCESS
     </div>
   </section>
 
+
+  <!-- ============ U38 ============ -->
+  <section class="record sev-high" id="u38">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-38</span>
+      <h2>Three bytes lowercased however short the token is</h2>
+    </div>
+    <div class="chips">
+      <span class="chip high">High &middot; stack buffer overflow, read and write</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">convert.c:395 &mdash; NStringToMonth, from JpmcdsStringToDate</p>
+
+    <h3>Mechanism</h3>
+    <p>
+      The month-name helper lowercases a token's first three characters and
+      compares them against three-letter names:
+    </p>
+<pre><code>cp[0] = (char) tolower(cp[0]);
+cp[1] = (char) tolower(cp[1]);
+<span class="hit">cp[2] = (char) tolower(cp[2]);</span>   /* convert.c:395 */</code></pre>
+    <p>
+      No length check precedes them, and they are
+      read-modify-<strong>writes</strong>, not reads. A one-character token has
+      its NUL at <code>cp[1]</code> &mdash; still inside the buffer &mdash; and
+      nothing at all at <code>cp[2]</code>.
+    </p>
+    <p>
+      Three facts have to line up for that to leave the buffer, and all three
+      are reachable through the public <code>JpmcdsStringToDate</code>: the
+      input is copied into a 32-byte stack buffer, so a token can end
+      <em>at</em> the buffer's end; the second token only reaches this helper
+      when it fails to parse as an integer, so it must be non-numeric; and the
+      <em>first</em> token must therefore be long enough to push the second to
+      offset 30. A 29-digit run and a one-letter month does it.
+    </p>
+<pre><code>ERROR: AddressSanitizer: stack-buffer-overflow
+    #0 NStringToMonth convert.c:395
+    #1 JpmcdsStringToDate convert.c:119
+  <span class="hit">[32, 64) 'dateCopy' (line 45)</span>
+  &lt;== Memory access at offset 64 overflows this variable</code></pre>
+    <p>
+      ASan reports a READ because the read inside <code>tolower(cp[2])</code>
+      happens first; the store that follows is to the same byte.
+    </p>
+
+    <h3>The precondition, measured where it is safe</h3>
+    <p>
+      Short tokens placed near the <em>start</em> of the buffer, where the third
+      byte is still inside it, are all refused &mdash; but refused
+      <em>after</em> the three writes have already happened. Only the
+      three-character token can match, so every call with a token of any other
+      length writes three bytes for nothing.
+    </p>
+<pre><code>j-15-2024      refused
+ja-15-2024     refused
+jan-15-2024    accepted
+janu-15-2024   refused</code></pre>
+
+    <h3>Why the pair is the finding</h3>
+    <p>
+      This is the <strong>second</strong> stack overflow in
+      <code>convert.c</code>, 225 lines from
+      <a href="#u4">UPSTREAM-4</a>, and together they say something neither
+      says alone. UPSTREAM-4 is an unbounded copy <em>into</em> a buffer. This
+      one is a <strong>bounded</strong> copy &mdash; the <code>strncpy</code>
+      is correct, the NUL is placed by hand, and truncation is exactly why
+      over-long input is accepted rather than refused &mdash; followed by an
+      unchecked read past the result.
+    </p>
+    <p>
+      The bound on the copy bought nothing, because the overflow is downstream
+      of it. <strong>Getting the <code>memcpy</code> right is not the same as
+      being safe.</strong>
+    </p>
+
+    <h3>In the port</h3>
+    <p>
+      Cannot occur. The token is a <code>string_view</code> and
+      <code>to_month_name</code> refuses any size but 3 <strong>before</strong>
+      reading a character. The lowercasing writes into a local three-byte array,
+      so the port also does not mutate the string it was asked to parse &mdash;
+      which upstream does, unannounced, to a <code>char *</code> parameter.
+    </p>
+    <p class="trace">
+      reproducer: DISABLED_Upstream38ShortTokenAtTheBufferEndOverflows
+      &nbsp;&middot;&nbsp; trace: ./build/asan/defect_evidence u38 --unsafe
+    </p>
+  </section>
+
+  <!-- ============ U39 ============ -->
+  <section class="record sev-high" id="u39">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-39</span>
+      <h2>An unparseable year is invented, not refused</h2>
+    </div>
+    <div class="chips">
+      <span class="chip high">High &middot; silent wrong answer from untrusted input</span>
+      <span class="chip">Corrected &mdash; the only correction in the port</span>
+    </div>
+    <p class="locus">convert.c:124 &mdash; JpmcdsStringToDate</p>
+
+    <h3>Mechanism</h3>
+    <p>
+      The function reads three delimited tokens. The month and the day are
+      parsed with a call whose return value is <strong>checked</strong>:
+    </p>
+<pre><code>if (<span class="hit">JpmcdsSscanf(cp,"%ld",&amp;mdy.month) == 0</span>)  /* If not integer try string */
+{
+    if (NStringToMonth(cp,&amp;mdy.month) == FAILURE)
+        goto done;                           /* refused */
+}</code></pre>
+    <p>
+      Eleven lines later, the year is parsed with a function that
+      <strong>cannot</strong> report failure:
+    </p>
+<pre><code><span class="hit">mdy.year = atol(cp);</span>
+if (mdy.year &gt; 99 &amp;&amp; mdy.year &lt; JPMCDS_TDATE_BASE_YEAR)
+    ... out of range ...
+if (mdy.year &lt; CROSSOVER_YEAR)
+    mdy.year += 2000;</code></pre>
+    <p>
+      <code>atol</code> returns 0 both for <code>"0"</code> and for text it
+      cannot parse, and stops silently at the first non-digit. Neither case is
+      detectable. So a year of <code>"aaaa"</code> becomes 0, 0 is below the
+      crossover, and the date comes back as the year 2000 &mdash; a year nobody
+      wrote down.
+    </p>
+<pre><code>03/15/2024     -&gt; 2024-03-15   a real year, for contrast
+03/15/aaaa     -&gt; <span class="hit">2000</span>-03-15   no digits at all
+15-Mar-twenty  -&gt; <span class="hit">2000</span>-03-15   a spelled-out year
+1-1-x2024      -&gt; <span class="hit">2000</span>-01-01   digits present, but not first
+03/15/2024XX   -&gt; 2024-03-15   atol stops at the junk
+03/15/99bogus  -&gt; <span class="hit">1999</span>-03-15   99 is ABOVE the pivot, so +1900
+aa/15/2024     -&gt; refused        an unparseable MONTH
+03/aa/2024     -&gt; refused        an unparseable DAY</code></pre>
+    <p>
+      The last two lines are what make this a defect rather than a convention.
+      An unparseable month is refused. An unparseable day is refused. An
+      unparseable year is <em>invented</em>. One function, one input, three
+      fields, two different policies.
+    </p>
+
+    <h3>Severity</h3>
+    <p>
+      Higher than the mechanism suggests. A crash gets investigated; a date does
+      not. This takes untrusted text &mdash; a holiday file, a regression input,
+      a spreadsheet cell &mdash; and returns a date twenty-four years off with
+      no error channel touched. Every downstream accrual, discount factor and
+      par spread is then computed perfectly correctly from a wrong date.
+    </p>
+
+    <h3>In the port &mdash; corrected, and why that is the exception</h3>
+    <p>
+      This is the <strong>only</strong> place in this port where upstream
+      behaviour was corrected rather than reproduced, so the reasoning matters.
+      The standing rule is: reproduce when the implementation is self-consistent
+      and only the documentation disagrees. Here the code disagrees with
+      <strong>itself</strong>, eleven lines apart, in one function, about one
+      question. There is no single upstream behaviour to preserve &mdash; there
+      are two, and they contradict.
+    </p>
+    <p>
+      <code>date_from_string</code> refuses any year token containing a
+      non-digit. The divergence is asserted from <strong>both</strong> sides in
+      one test &mdash; upstream accepts, the port refuses &mdash; so a change on
+      either side fails. The recorded vectors deliberately <strong>exclude</strong>
+      these inputs: freezing a known divergence into the file the port is checked
+      against would convert a documented difference into a silent one, which is
+      the worst thing a golden file can do.
+    </p>
+    <p class="trace">
+      reproducer: Upstream39UnparseableYearIsAcceptedUpstreamRefusedHere
+      &nbsp;&middot;&nbsp; trace: ./build/debug/defect_evidence u39
+    </p>
+  </section>
+
+  <!-- ============ U40 ============ -->
+  <section class="record sev-low" id="u40">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-40</span>
+      <h2>Digits accumulated into a signed long, unchecked</h2>
+    </div>
+    <div class="chips">
+      <span class="chip low">Low-Medium &middot; undefined behaviour on untrusted input</span>
+      <span class="chip immune">Not applicable &mdash; out of the port's scope</span>
+    </div>
+    <p class="locus">lscanf.c:486 &mdash; JpmcdsSscanf</p>
+
+    <h3>Mechanism</h3>
+    <p>
+      <code>JpmcdsSscanf</code> is a hand-written <code>scanf</code>. Its
+      integer conversion accumulates digits with no range check, and signed
+      overflow is undefined behaviour in C &mdash; so there is no defined result
+      for a 19-or-more-digit number.
+    </p>
+<pre><code><span class="hit">value = value * 10 + (*cp - '0');</span>     /* lscanf.c:486 */</code></pre>
+<pre><code>lscanf.c:486:28: runtime error: signed integer overflow:
+  1111111111111111111 * 10 cannot be represented in type 'long'</code></pre>
+    <p>
+      Reached through <code>JpmcdsStringToDate</code>, which hands it the first
+      token of a date string &mdash; so the input is untrusted text, and a long
+      digit run is a plausible thing for a spreadsheet cell to hold.
+    </p>
+
+    <h3>Why it is filed at all</h3>
+    <p>
+      <code>lscanf.c</code> is <strong>out of scope</strong> for this port: it
+      exists to read holiday files, which the port does with the standard
+      library instead. It is filed because this register's subject is upstream's
+      defects, not the port's surface, and because this one is reachable from an
+      in-scope public function.
+    </p>
+    <p>
+      It surfaced while measuring UPSTREAM-38 &mdash; the same input triggers
+      both, and UBSan reported this one first. The two share an input and
+      nothing else: a different file, a different mechanism, a different fix.
+      Three register entries from one probe, which is what
+      &ldquo;count defects, not entry points&rdquo; produces when one entry
+      point really does have three.
+    </p>
+
+    <h3>In the port</h3>
+    <p>
+      Not applicable &mdash; no <code>scanf</code> reimplementation exists. The
+      equivalent arithmetic in <code>date_from_string</code> range-checks before
+      each multiply and returns <code>nullopt</code> instead of wrapping.
+    </p>
+    <p class="trace">
+      trace: ./build/asan/defect_evidence u38 --unsafe &nbsp;&middot;&nbsp;
+      narrative: ./build/debug/defect_evidence u40
+    </p>
+  </section>
+
   <!-- ============ U37 ============ -->
   <section class="record sev-mid" id="u37">
     <div class="record-head">
@@ -4183,13 +4440,17 @@ default:
     <h3>Scope</h3>
     <p>
       Covers only the parts of the library ported so far — binary search,
-      dates, day counts, date intervals, the holiday calendar and the bad day
-      conventions, about 3,500 of 21,775 upstream lines. Business-day
-      arithmetic, schedules,
-      curves, cashflows, the CDS legs, the solver and the top-level pricing
-      API have not been examined. No attempt was
-      made to assess exploitability of UPSTREAM-4 beyond confirming the
-      out-of-bounds write.
+      all 41 in-scope files &mdash; 17,915 of 21,377 upstream lines in
+      <code>lib/src</code>, covering dates, day counts, date intervals, the
+      holiday calendar, bad day conventions, business-day arithmetic,
+      schedules, curves, cashflows, the CDS legs, the solver and the top-level
+      pricing API. The remaining 3,462 lines are the eight out-of-scope files:
+      the holiday-file cache, the <code>scanf</code> reimplementation and
+      related I/O, which this port replaces with the standard library rather
+      than translating. UPSTREAM-40 is in one of them, filed because it is
+      reachable from an in-scope public function.
+      No attempt was made to assess exploitability of UPSTREAM-4 or
+      UPSTREAM-38 beyond confirming the out-of-bounds access.
     </p>
     <p>
       This report is based on the ISDA CDS Standard Model (version 1.8.3),

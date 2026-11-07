@@ -173,6 +173,7 @@ if(CDSMODEL_BUILD_TESTS)
                  tests/cx_test.cpp
                  tests/ldate_year_test.cpp
                  tests/fee_leg_flows_test.cpp
+                 tests/date_from_string_test.cpp
                  tests/adversarial_test.cpp)
   target_link_libraries(cdsmodel_tests PRIVATE cdsmodel GTest::gtest_main)
   target_include_directories(cdsmodel_tests PRIVATE tests)
@@ -228,7 +229,8 @@ if(CDSMODEL_BUILD_TESTS)
                    tests/cx_differential_test.cpp
                    tests/ldate_year_differential_test.cpp
                    tests/cxdatelist_differential_test.cpp
-                   tests/fee_leg_flows_differential_test.cpp)
+                   tests/fee_leg_flows_differential_test.cpp
+                   tests/date_from_string_differential_test.cpp)
     target_link_libraries(cdsmodel_differential_tests
                           PRIVATE cdsmodel cds_reference GTest::gtest_main)
     target_include_directories(cdsmodel_differential_tests PRIVATE tests)
@@ -246,7 +248,7 @@ if(CDSMODEL_BUILD_TESTS)
                  interp_curve curve_discount curve_rates coupon_schedule
                  stream_cash_flows swap_bootstrap_flows swap_bootstrap
                  curve_instruments ir_zero_curve curve_linear_interp
-                 match_range cx fee_leg_flows)
+                 match_range cx fee_leg_flows date_from_string)
       add_executable(gen_${gen}_golden tools/gen_${gen}_golden.cpp)
       target_link_libraries(gen_${gen}_golden PRIVATE cdsmodel cds_reference)
       target_include_directories(gen_${gen}_golden PRIVATE tests)

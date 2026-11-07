@@ -1927,6 +1927,188 @@ void u28() {
   JpmcdsFreeTCurve(curve);
 }
 
+void u38(bool unsafe) {
+  heading("UPSTREAM-38", "three bytes lowercased however short the token is");
+  std::printf("convert.c's NStringToMonth turns a token into a month number by\n"
+              "lowercasing its first three characters and comparing:\n\n"
+              "    static int NStringToMonth(char *cp, long *monthIdx)\n"
+              "    {\n"
+              "        ...\n"
+              "        cp[0] = (char) tolower(cp[0]);\n"
+              "        cp[1] = (char) tolower(cp[1]);\n"
+              "        cp[2] = (char) tolower(cp[2]);   /* convert.c:395 */\n\n"
+              "There is no length check before those three lines, and they are\n"
+              "read-modify-WRITES, not reads. A one-character token has a NUL at\n"
+              "cp[1] -- still inside the buffer -- and nothing at all at cp[2].\n\n"
+              "Three facts have to line up for that to leave the buffer, and all\n"
+              "three are reachable through the public JpmcdsStringToDate:\n\n"
+              "  1. the input is copied into a 32-byte stack buffer, so a token can\n"
+              "     end AT the buffer's end:\n"
+              "         char dateCopy[32];\n"
+              "         (void)strncpy(dateCopy, mmddyyyy, sizeof(dateCopy)-1);\n"
+              "  2. the second token is only handed to NStringToMonth when it does\n"
+              "     not parse as an integer -- so it must be non-numeric;\n"
+              "  3. the FIRST token must therefore be long enough to push the\n"
+              "     second to offset 30, which means roughly 29 characters that\n"
+              "     JpmcdsSscanf accepts as a number.\n\n"
+              "A 29-digit run and a one-letter month: \"111...1-a\". Then the token\n"
+              "sits at dateCopy[30], cp[1] is the NUL at [31], and cp[2] is [32] --\n"
+              "one past the end of the buffer.\n\n");
+
+  std::printf("  the precondition, measured where it is SAFE -- short tokens near the\n"
+              "  start of the buffer, so the third byte is still inside it:\n");
+  for (const char *input : {"j-15-2024", "ja-15-2024", "jan-15-2024", "janu-15-2024"}) {
+    char buf[64];
+    std::strcpy(buf, input);
+    TDate out = -999;
+    const int status = JpmcdsStringToDate(buf, &out);
+    std::printf("    %-14s %s%s\n", input, status == SUCCESS ? "accepted" : "refused",
+                status == SUCCESS ? "" : "  <- after cp[0..2] were already written");
+  }
+  std::printf("\n  Only the three-character token matches, so every other length is\n"
+              "  refused -- but refused AFTER the writes, not before them.\n\n");
+
+  if (!unsafe) {
+    std::printf("  The overflowing input is not run by default. Re-run with --unsafe\n"
+                "  under the asan preset to see it. Recorded there:\n\n"
+                "    ERROR: AddressSanitizer: stack-buffer-overflow\n"
+                "    READ of size 1 at 0x... thread T0\n"
+                "        #0 NStringToMonth convert.c:395\n"
+                "        #1 JpmcdsStringToDate convert.c:119\n"
+                "      [32, 64) 'dateCopy' (line 45)\n"
+                "      <== Memory access at offset 64 overflows this variable\n"
+                "    SUMMARY: AddressSanitizer: stack-buffer-overflow convert.c:395\n\n"
+                "  ASan reports a READ because the read in `tolower(cp[2])` happens\n"
+                "  first; the store that follows is to the same byte.\n\n");
+  } else {
+    std::printf("  --unsafe: running the overflowing input now.\n\n");
+    std::fflush(stdout);
+    char buf[64];
+    std::strcpy(buf, "11111111111111111111111111111-a");
+    TDate out = -999;
+    JpmcdsStringToDate(buf, &out);
+    // Under the asan preset this line is never reached: the sanitizer aborts
+    // first. In every other build it prints, which is the point being made.
+    std::printf("  returned without a diagnostic -- so outside a sanitizer build this\n"
+                "  is silent, which is the whole problem.\n\n");
+  }
+
+  std::printf("This is the SECOND stack overflow in convert.c, 225 lines from\n"
+              "UPSTREAM-4, and the pair is instructive. UPSTREAM-4 is an unbounded\n"
+              "copy INTO a buffer. This one is a bounded copy -- the strncpy above\n"
+              "is correct, and truncation is why over-long input is accepted rather\n"
+              "than refused -- followed by an unchecked read past the result. The\n"
+              "bound on the copy does not help, because the overflow is downstream\n"
+              "of it. Getting the memcpy right is not the same as being safe.\n\n"
+              "A SECOND defect surfaced from the same input, in a file this port\n"
+              "does not cover. UBSan on the 29-digit token:\n\n"
+              "    lscanf.c:486:28: runtime error: signed integer overflow:\n"
+              "      1111111111111111111 * 10 cannot be represented in type 'long'\n\n"
+              "That is JpmcdsSscanf accumulating digits into a signed long with no\n"
+              "range check -- undefined behaviour on any 19-or-more-digit number,\n"
+              "reachable through the same public entry point. Filed as UPSTREAM-40,\n"
+              "because the mechanism, the file and the fix are all different.\n\n"
+              "IN THE PORT: cannot occur. The token is a `string_view`, and\n"
+              "`to_month_name` returns nullopt for any size but 3 BEFORE reading a\n"
+              "character. The lowercasing writes into a local three-byte array, not\n"
+              "back into the caller's text -- so the port also does not mutate the\n"
+              "string it was asked to parse, which upstream does.\n\n");
+}
+
+void u39() {
+  heading("UPSTREAM-39", "an unparseable year is invented, not refused");
+  std::printf("JpmcdsStringToDate reads three delimited tokens. The month and the\n"
+              "day are parsed with a function whose return value is CHECKED:\n\n"
+              "    if (JpmcdsSscanf(cp,\"%%ld\",&mdy.month) == 0)  /* not integer */\n"
+              "    {\n"
+              "        if (NStringToMonth(cp,&mdy.month) == FAILURE)\n"
+              "            goto done;                            /* refused */\n"
+              "    }\n\n"
+              "Eleven lines later, the year is parsed with a function whose return\n"
+              "value CANNOT report failure:\n\n"
+              "    mdy.year = atol(cp);\n"
+              "    if (mdy.year > 99 && mdy.year < JPMCDS_TDATE_BASE_YEAR)\n"
+              "        ... out of range ...\n"
+              "    if (mdy.year < CROSSOVER_YEAR)\n"
+              "        mdy.year += 2000;\n\n"
+              "atol returns 0 both for \"0\" and for text it cannot parse, and stops\n"
+              "silently at the first non-digit. Neither case is detectable. So a\n"
+              "year of \"aaaa\" becomes 0, 0 is below CROSSOVER_YEAR, and the date\n"
+              "comes back as the year 2000 -- a year no one wrote down.\n\n");
+
+  struct Case {
+    const char *input;
+    const char *note;
+  };
+  const Case cases[]{
+      {"03/15/2024", "a real year, for contrast"},
+      {"03/15/aaaa", "no digits at all -> atol 0 -> +2000"},
+      {"15-Mar-twenty", "a spelled-out year"},
+      {"1-1-x2024", "digits present, but not first"},
+      {"03/15/2024XX", "atol stops at the junk"},
+      {"03/15/99bogus", "99 is ABOVE the pivot, so +1900"},
+      {"aa/15/2024", "an unparseable MONTH, for contrast"},
+      {"03/aa/2024", "an unparseable DAY, for contrast"},
+  };
+  for (const Case &c : cases) {
+    char buf[64];
+    std::strcpy(buf, c.input);
+    TDate out = -999;
+    if (JpmcdsStringToDate(buf, &out) == SUCCESS) {
+      TMonthDayYear mdy;
+      JpmcdsDateToMDY(out, &mdy);
+      std::printf("    %-14s -> %04ld-%02ld-%02ld   %s\n", c.input, mdy.year, mdy.month, mdy.day,
+                  c.note);
+    } else {
+      std::printf("    %-14s -> refused        %s\n", c.input, c.note);
+    }
+  }
+
+  std::printf("\nThe last two lines are what make this a defect rather than a\n"
+              "convention. An unparseable month is refused. An unparseable day is\n"
+              "refused. An unparseable year is accepted and replaced with 2000. The\n"
+              "same function, the same input, three fields, two different policies.\n\n"
+              "There is no reading of this where both behaviours are intended, which\n"
+              "is why the port does not reproduce it: the project rule is to\n"
+              "reproduce when the code is self-consistent and only the documentation\n"
+              "disagrees, and this code disagrees with itself.\n\n"
+              "Severity is higher than its mechanism suggests. This takes untrusted\n"
+              "text -- a holiday file, a regression input, a spreadsheet cell -- and\n"
+              "silently returns a date twenty-four years off rather than an error. A\n"
+              "crash gets investigated. A date does not.\n\n"
+              "IN THE PORT: `date_from_string` refuses any year token containing a\n"
+              "non-digit, and the divergence is pinned from both sides in\n"
+              "tests/date_from_string_differential_test.cpp -- upstream accepts,\n"
+              "the port refuses, both asserted, so a change on either side fails.\n"
+              "The recorded vectors deliberately exclude these inputs: freezing a\n"
+              "known divergence into the file the port is checked against would\n"
+              "turn a documented difference into a silent one.\n\n");
+}
+
+void u40() {
+  heading("UPSTREAM-40", "digits accumulated into a signed long, unchecked");
+  std::printf("lscanf.c's JpmcdsSscanf is a hand-written scanf. Its integer\n"
+              "conversion accumulates digits with no range check:\n\n"
+              "    value = value * 10 + (*cp - '0');     /* lscanf.c:486 */\n\n"
+              "Signed overflow is undefined behaviour in C, so there is no defined\n"
+              "result for a 19-or-more-digit number. Under the asan preset, which\n"
+              "enables UBSan:\n\n"
+              "    lscanf.c:486:28: runtime error: signed integer overflow:\n"
+              "      1111111111111111111 * 10 cannot be represented in type 'long'\n\n"
+              "Reached here through JpmcdsStringToDate, which hands it the first\n"
+              "token of a date string -- so the input is untrusted text, and a long\n"
+              "digit run is a plausible thing for a spreadsheet cell to contain.\n\n"
+              "lscanf.c is OUT OF SCOPE for this port: it exists to read holiday\n"
+              "files, which the port does with the standard library instead. It is\n"
+              "filed anyway because the register's subject is upstream's defects,\n"
+              "not the port's surface, and because this one is reachable from an\n"
+              "in-scope public function. Found while measuring UPSTREAM-38; the two\n"
+              "share an input and nothing else.\n\n"
+              "IN THE PORT: not applicable -- no scanf reimplementation exists. The\n"
+              "equivalent arithmetic in `date_from_string` range-checks before each\n"
+              "multiply and returns nullopt instead of wrapping.\n\n");
+}
+
 } // namespace
 
 void u29(bool unsafe) {
@@ -2823,6 +3005,15 @@ int main(int argc, char **argv) {
   }
   if (want("u37")) {
     u37(unsafe);
+  }
+  if (want("u38")) {
+    u38(unsafe);
+  }
+  if (want("u39")) {
+    u39();
+  }
+  if (want("u40")) {
+    u40();
   }
   return 0;
 }
