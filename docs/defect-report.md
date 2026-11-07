@@ -2234,3 +2234,242 @@ auditing its users: the second defect needed no new work to be immune to.
 The differential test for this one resets the flag in `SetUp` and `TearDown`,
 because the function under test leaks it — without that, test *order* would
 decide what the checked searches do for every other test in the binary.
+
+## UPSTREAM-29 — A schedule the library returns and its own validator rejects
+
+**Location:** `lib/src/schedule.c`, `JpmcdsNewCouponDatesSwap` and
+`CheckArgsSwapMakeSchedule`. Consequence in `lib/src/zcswap.c`, lines 725, 743
+and 744.
+**Severity:** Medium. A structurally invalid schedule returned as SUCCESS, and
+an out-of-bounds heap read in the only part of the library that consumes it
+without validating.
+
+### Mechanism
+
+`CheckArgsSwapMakeSchedule` opens with
+
+```c
+if (startDate > matDate)
+{
+    JpmcdsErrMsg("%s: maturity date (%s) is on or before start date (%s)\n", ...
+```
+
+Two things are wrong with those four lines together. The message says *on or
+before* while the condition says *after*, so equality is accepted; and the
+message is the only documentation of the intent, so the gap is invisible unless
+you read both.
+
+Equality then produces one unadjusted period of zero length. The
+empty-accrual-period removal loop — introduced to handle exactly this, with the
+comment *"Thanks to Neill Penney for the solution"* — drops it:
+
+```c
+if ( adjStreamSched->fArray[i].accrueStartDate !=
+     adjStreamSched->fArray[i].accrueEndDate )
+{
+    streamSched->fArray[j] = adjStreamSched->fArray[i];
+    j++;
+}
+else
+{
+   if ( i==0 )
+   {
+      ...
+      streamSched->fNumItems--;
+```
+
+With one period there is nothing left, and `fNumItems` reaches zero. The
+consistency check that follows compares `j` against `fNumItems` — both zero, so
+it passes. `retCode = SUCCESS`, and a non-NULL list comes back.
+
+That list is rejected by the library's own validator for this exact type:
+
+```c
+if (schedule->fNumItems < 1)
+{
+    JpmcdsErrMsg("%s: schedule must have at least one coupon period"
+              " but has only %d.\n", ...
+    return FAILURE;
+```
+
+So `JpmcdsNewCouponDatesSwap` and `JpmcdsCouponDateListCheck` disagree about
+the same value. One of them is wrong, and nothing in the library says which.
+
+### Not confined to the degenerate input
+
+The obvious reading is that this needs `startDate == matDate` — a zero-tenor
+swap, which no sane caller builds. It does not. Any span whose every accrual
+period collapses *under bad-day adjustment* arrives at the same place, and a
+weekend does it:
+
+| input | periods | stubLocation | validator |
+|---|---|---|---|
+| start == maturity, front stub | 0 | NO_STUB | FAILURE |
+| start == maturity, back stub | 0 | BACK_STUB | FAILURE |
+| 2024-03-16 → 2024-03-17 (Sat → Sun), FOLLOW | 0 | NO_STUB | FAILURE |
+
+Both dates in the third row adjust forward to Monday the 18th, so the single
+period has `accrueStartDate == accrueEndDate` and is removed. This matters for
+severity: a one-day span over a weekend is not obviously invalid input, and the
+port's guard therefore tests the *outcome* rather than the input.
+
+The `stubLocation` column is a second finding inside the first. At `i == 0` the
+removal maps `FRONT_STUB` to `NO_STUB` and `TWO_STUB` to `BACK_STUB`, but
+leaves `BACK_STUB` alone — correctly, since dropping the front period does not
+remove a stub at the back. With no periods left at all, the schedule still
+reports one. Note also that upstream's `i == 0` arm is an `else if` chain ahead
+of its `i == fNumItems-1` arm, so for a single-period schedule the front arm
+wins and the back mapping never runs.
+
+Both mapping arms read `adjStreamSched->stubLocation`, the original value,
+rather than the one being written. When the front and the back period both
+collapse, `FRONT -> NONE` and then `TWO -> FRONT` are evaluated against the
+same original, landing on `FRONT` where composing the two would have given
+`NONE`. The port reproduces that, with a comment, because it is the behaviour.
+
+### Why it matters
+
+`zcswap.c` consumes the schedule without validating it:
+
+```c
+   (floatDL->fArray[floatDL->fNumItems-1].resetDate,          /* line 725 */
+   maxDate = MAX(indexMatDate, floatDL->fArray[floatDL->fNumItems-1].payDate);
+   minDate = MIN(indexMatDate, floatDL->fArray[floatDL->fNumItems-1].payDate);
+```
+
+There is no emptiness check and no call to `JpmcdsCouponDateListCheck` on
+either schedule it builds. With `fNumItems == 0` all three are `fArray[-1]`.
+
+The reachability is ordinary rather than exotic: `zcswap.c` passes
+`zc->valueDate` as the start date, so a benchmark instrument maturing on the
+curve's own value date is sufficient. `streamcf.c:1066` *does* call the
+validator, and is safe.
+
+Under ASan the read reports as
+
+```
+ERROR: AddressSanitizer: heap-use-after-free
+  ... freed by thread T0 here:
+      JpmcdsFreeCouponDateList schedule.c:631
+      JpmcdsNewCouponDatesSwap schedule.c:345
+```
+
+rather than as a buffer underflow, because the 40 bytes immediately before
+`streamSched->fArray` are `adjStreamSched->fArray` — the scratch list the
+function allocates at `schedule.c:115` and frees at `:345` on its way out,
+including on the success path (the `error:` label is reached after
+`retCode = SUCCESS`, so it is a cleanup label, not an error one). Both labels
+are accurate. The fault is the negative index; which block it lands in is the
+allocator's choice.
+
+Reproduce with `defect_evidence u29`, and `defect_evidence u29 --unsafe` under
+the asan preset for the trace.
+
+### In the port
+
+**Cannot occur.** `coupon_schedule` returns `std::nullopt` when the removal
+leaves no periods, so `CouponSchedule::periods` is non-empty by construction
+and `is_well_formed` — the port's `JpmcdsCouponDateListCheck` — is true of
+every schedule the port builds. The guard is on the outcome, not on
+`start == maturity`, because the weekend case above shows the input test is the
+wrong test.
+
+This is a **deliberate difference**, and it is one of the cases the port's
+policy says to correct rather than reproduce: there is no single upstream
+behaviour to preserve when the constructor and the validator contradict each
+other about the same value. Reproducing either means contradicting the other.
+
+It is pinned without the oracle. The zero-period cases are recorded in
+`tests/golden/coupon_schedule_cases.hpp` as `accepted == true` with
+`period_count == 0`, and the tier-1 replay asserts the port declines exactly
+those four and no others — so if the refusal is ever removed, or widened, CI
+says so on a machine with no upstream copy.
+
+## UPSTREAM-30 — A buffer sized from one span and filled from another
+
+**Location:** `lib/src/schedule.c`, `JpmcdsGenerateUnadjDates`.
+**Severity:** Medium. Heap buffer overflow at a public entry point with no
+argument validation.
+
+### Mechanism
+
+The function sizes its scratch array from the span it was asked about:
+
+```c
+if (JpmcdsCountDates(startDate, matDate, couponInterval, &numPeriods, &dummyInt)==FAILURE)
+    goto done;
+numPeriods = numPeriods + 3;
+dateArr = NEW_ARRAY(TDate,numPeriods);
+```
+
+and then steps the generating loop from somewhere else entirely:
+
+```c
+if (firstRollDate > 0)
+{
+    beginDate = firstRollDate;
+    endDate   = matDate;
+    ...
+    dateArr[nDates++] = unadjustedDate;        /* line 761 */
+```
+
+`startDate..matDate` sized the array; `firstRollDate..matDate` fills it. A roll
+date before `startDate` makes the second span the longer one, and the `+ 3` of
+slack is not a bound on the difference. The `lastRollDate` branch has the mirror
+problem with a roll date after `matDate`.
+
+Measured, with a one-month interval:
+
+| span | by | dates |
+|---|---|---|
+| sizing: 2024-01-01 → 2024-07-01 | 1M | ~9 slots allocated |
+| stepping: 1990-01-01 → 2024-07-01 | 1M | ~415 written |
+
+```
+ERROR: AddressSanitizer: heap-buffer-overflow
+SUMMARY: AddressSanitizer: heap-buffer-overflow
+  schedule.c:761 in JpmcdsGenerateUnadjDates
+```
+
+The function validates none of its nine arguments. It does not call
+`CheckArgsSwapMakeSchedule`, and nothing in its own body bounds the roll dates.
+
+### Reachability, and why it is still a defect
+
+`JpmcdsNewCouponDatesSwap` bounds both roll dates before calling:
+
+```c
+if (firstRollDate < startDate) { ... return FAILURE; }
+if (firstRollDate > matDate)   { ... return FAILURE; }
+```
+
+and within `[startDate, matDate]` the stepped span is always a sub-span of the
+sizing span, so the library's own path is safe. That is the whole of the
+protection: a check in the caller, which the callee neither performs nor
+documents as a precondition.
+
+`JpmcdsGenerateUnadjDates` is declared in the public `lib/include/isda/schedule.h`
+and has **no caller inside the library at all**. It is not an internal helper
+that happens to be exported; it is an exported function whose only possible
+callers are external ones, and those are exactly the callers that get no
+argument checking. The in-library safety says how bad this is, not whether it
+exists — the same conclusion UPSTREAM-25 reached, where reasoning from
+in-library reachability to function safety nearly dropped a confirmed heap
+overflow.
+
+Reproduce with `defect_evidence u30`, and `defect_evidence u30 --unsafe` under
+the asan preset to execute the overflow.
+
+### In the port
+
+**Cannot occur**, twice over. `generate_unadjusted_dates` accumulates into a
+`std::vector`, so there is no array to size and no sizing to get wrong. And the
+bound upstream applies in its caller is applied *here* as well, in the function
+that needs it, so the public entry point is as safe as the internal one —
+`coupon_schedule` checks it too, since checking a precondition in both places
+costs two comparisons and removes the question of which one is responsible.
+
+The overflowing upstream call is kept as a `DISABLED_` test alongside the
+differential suite: recorded, never executed, because running it is undefined
+behaviour and a recorded vector derived from it would be a committed file
+produced by UB.

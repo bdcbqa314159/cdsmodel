@@ -47,7 +47,7 @@ STRUCTURAL = {
     "JpmcdsCopyCurve", "JpmcdsFreeDateList", "JpmcdsNewEmptyDateList",
     "JpmcdsCopyDateList", "JpmcdsZCFree", "JpmcdsZCMake", "JpmcdsSwapDatesFree",
     "JpmcdsSwapDatesNewEmpty", "JpmcdsFreeHoliday", "JpmcdsHolidayListDelete",
-    "JpmcdsFreeCouponDateList", "JpmcdsFreeTStreamFixed", "JpmcdsFreeTStreamFloat",
+    "JpmcdsFreeCouponDateList", "JpmcdsNewEmptyCouponDateList", "JpmcdsFreeTStreamFixed", "JpmcdsFreeTStreamFloat",
     "JpmcdsErrMsg", "JpmcdsErrMsgFailure", "JpmcdsFormatDate",
     "JpmcdsFormatDayCountConv", "JpmcdsFormatDateInterval",
     "JpmcdsBSearchCheckOrder",

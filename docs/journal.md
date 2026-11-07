@@ -3735,3 +3735,133 @@ missing port are indistinguishable from outside, and I have now been the person
 who could not tell them apart twice.** The provenance comments are not
 documentation of the port, they are its index, and an index with gaps sends you
 to write code that already exists.
+
+## Decision 35 — A constructor and a validator that disagree about the same value
+
+`schedule.c` is 832 lines and `JpmcdsNewCouponDatesSwap` takes sixteen
+parameters — the most extreme signature in the project. I expected the slice to
+be about that signature. It was not.
+
+### What the reading suggested, and what measuring said
+
+Reading the file turned up four candidate findings. I wrote a probe for each
+before filing any, which is the discipline that keeps paying: **two were real,
+one was wrong, and one turned out to be intended behaviour that the port still
+has to be careful about.**
+
+The one I got wrong is worth recording. `CheckArgsSwapMakeSchedule` rejects
+`startDate > matDate` but not equality, and the empty-accrual-period removal
+loop then drops the single zero-length period, so `fNumItems` reaches zero. I
+predicted the schedule would also come back claiming a `BACK_STUB`, because at
+`i == 0` the removal maps `FRONT_STUB` to `NO_STUB` but leaves `BACK_STUB`
+alone. The probe said `NO_STUB`. My reasoning had been right about the mapping
+and wrong about which stub the generator produced — with `stubAtEnd == FALSE`
+the cycle runs backward and the stub comes out `FRONT`, which *is* mapped. Set
+`stubAtEnd = TRUE` and the `BACK_STUB` survives, on a schedule with no periods
+in it at all.
+
+That is a small thing, but it is the fourth time this project has caught me
+predicting the output of code I had just read. The probe cost two minutes.
+
+### The finding: two functions in one library, disagreeing
+
+`JpmcdsNewCouponDatesSwap` returns a non-NULL `TCouponDateList` with
+`fNumItems == 0`, reported SUCCESS. `JpmcdsCouponDateListCheck` — in the same
+file, for the same type — rejects it: *"schedule must have at least one coupon
+period"*.
+
+Every other defect in this register is a function being wrong about the world.
+This one is **two functions being wrong about each other**, and that changes
+what "reproduce upstream" even means. The port's policy says to correct only
+where there is no single upstream behaviour to preserve, and I have always read
+that as a narrow clause about undefined behaviour. Here it applies for a
+different reason: there are two upstream behaviours, they contradict, and
+reproducing either one means contradicting the other. There is no faithful
+option.
+
+So the port refuses, and `CouponSchedule::periods` is non-empty by
+construction.
+
+### The guard I nearly got wrong
+
+My first instinct was to refuse `start == maturity`. That would have been the
+input test, and it would have been wrong — which the exhaustive sweep caught,
+not my probes. A Saturday-to-Sunday span under FOLLOW adjustment collapses the
+same way: both dates move to Monday, the single period has
+`accrueStartDate == accrueEndDate`, and it is removed. `start < maturity`
+throughout.
+
+A one-day span over a weekend is not obviously invalid input. **Guard on the
+outcome, not on the input that first showed you the outcome** — the same lesson
+as UPSTREAM-24, where three hand-picked probes agreed and the sweep found seven
+differing cases I had not imagined.
+
+### The second defect, and the reachability argument I have now made twice
+
+`JpmcdsGenerateUnadjDates` sizes its scratch array from
+`CountDates(startDate, matDate)` and then steps the generating loop from the
+*roll date*. A roll date outside the span makes the stepped span the longer one
+and the array overflows — `heap-buffer-overflow` at `schedule.c:761` under
+ASan.
+
+`JpmcdsNewCouponDatesSwap` bounds the roll dates before calling, so the
+library's own path is safe. I caught myself about to not file it on exactly
+that basis, which is the mistake UPSTREAM-25 taught and I apparently needed to
+be taught again. What settled it this time was a sharper fact than
+"reachability bounds severity": `JpmcdsGenerateUnadjDates` is declared in the
+public `schedule.h` and has **no caller inside the library at all**. It is not
+an internal helper that happens to be exported. It exists for external callers,
+and those are precisely the callers who get no argument checking.
+
+Two edits in two functions with two mechanisms, so two register numbers — the
+counting rule from Decision 33 applied in the direction that *splits* rather
+than merges.
+
+### Order is load-bearing, and the obvious implementation loses
+
+The intended-behaviour candidate is the most useful thing in this slice for
+anyone porting the rest.
+
+`fullFirstCoupDate` overrides `fArray[0].accrueStartDate`, and that override is
+the *last* thing the function does — after the reset dates have already been
+computed from the accrual starts. So period 0 ends up with a reset six months
+*after* its own accrual start:
+
+```
+[0] accStart=2023-09-15  accEnd=2024-07-15  reset=2024-03-15  pay=2024-07-15
+```
+
+This is defensible finance: the rate was set when the swap actually started,
+and the accrual is backdated to the full-coupon date. It is also exactly the
+kind of thing a tidy-minded port destroys, because computing the resets *after*
+the override is the obvious order and produces a different schedule. The
+validator does not object either way.
+
+It gets a comment at the site saying ORDER IS LOAD-BEARING, and a dedicated
+tier-2 test — because the big sweep would not have caught it. The override only
+fires on front-stub schedules with a full-first-coupon date, and only period
+zero differs. One assertion on one period, written because I could see the trap
+rather than because a test went red.
+
+### What the type system absorbed
+
+Of the sixteen parameters, the three TDates using `> 0` as "supplied" became
+`std::optional`, and the runtime check that both roll dates are not supplied at
+once became a `std::variant` — a check with nothing left to check. The
+`i`/`E`/`J` guard in the long-stub branch became nothing at all: those period
+types are not representable, and it turns out the guard was dead upstream too,
+since `JpmcdsDtFwdAny` refuses them before the branch is reached.
+
+The one place the type system actively misled me: I reached for
+`detail::scale` to compute `periods * direction * step` and every single case
+refused. `scale`'s bounds check assumes a positive factor — `INT_MIN / -1`
+overflows — and it had only ever been called with the constants 12, 6, 3, 1, 7
+and 28. A helper correct for every existing caller, wrong for the first one
+with a sign. Widening to `long long` and checking the range is three lines and
+needs no assumption about the factor.
+
+### Where this leaves the bootstrap
+
+`schedule.c` was the principal blocker on the path to `zcswap.c`. The chain is
+now `fltrate` (47 lines) → `streamcf` (1,100) → `zcswap` (940) → `gtozc` (494)
+→ `zerocurve` (135), and nothing else is in the way.
