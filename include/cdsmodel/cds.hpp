@@ -14,13 +14,13 @@
 // split is the one the model itself makes: `Cds` is what was traded, the
 // arguments are when and against what it is being valued.
 //
-// `JpmcdsCdsFeeLegFlows` is not ported here YET, and the reason this comment
-// used to give has expired. It said the function "needs cashflow.c, which is
-// layer 7 and not on the pricing path" -- cashflow.c has since been ported in
-// full (cash_flow_list.hpp and cash_flow_schedule.hpp), so the dependency is
-// available and only the work remains. Flagged by `port_progress.py`'s
-// mentioned-but-not-claimed check, which is how a stale deferral gets noticed
-// instead of calcifying into a permanent-looking decision.
+// `JpmcdsCdsFeeLegFlows` is ported, at the bottom of this header. It carried
+// a deferral note for most of the project -- "needs cashflow.c, which is layer
+// 7 and not on the pricing path" -- which was true when written and stopped
+// being true once cashflow.c was ported. Nothing noticed for several slices.
+// `port_progress.py`'s mentioned-but-not-claimed check is what surfaced it,
+// which is the argument for machine-checked provenance: a deferral with an
+// expired reason reads exactly like a live one.
 
 #include <cdsmodel/bad_day.hpp>
 #include <cdsmodel/calendar.hpp>
@@ -183,6 +183,31 @@ cds_contingent_leg_pv(Date today, Date value_date, Date start, Date end, double 
   leg.payments.back().accrual_end =
       cds.protect_start ? dates.back() + std::chrono::days{1} : dates.back();
   return leg;
+}
+
+/// The non-contingent cash flows of a vanilla CDS fee leg. Replaces
+/// `JpmcdsCdsFeeLegFlows`.
+///
+/// Builds the leg and asks it for its flows, which is exactly what upstream
+/// does. Two of upstream's inputs are not parameters here because they are not
+/// parameters there either: it hardcodes `payAccOnDefault = 1` and
+/// `protectStart = TRUE` as locals before calling `JpmcdsCdsFeeLegMake`. The
+/// port takes a `Cds`, whose defaults are those same values -- so a caller who
+/// wants upstream's behaviour passes a default-constructed `Cds` and a caller
+/// who wants something else can say so, which upstream's signature does not
+/// allow.
+///
+/// Note that `pay_accrual_on_default` has no effect on the ANSWER here: these
+/// are the flows that occur when there is no default, so the accrual
+/// convention never comes into play. It is part of the leg because the leg
+/// carries it for pricing, not because this function reads it.
+[[nodiscard]] inline std::optional<std::vector<CashFlow>>
+cds_fee_leg_flows(const Cds &cds, double notional, std::span<const Calendar> calendars) {
+  const std::optional<FeeLeg> leg = cds_fee_leg(cds, notional, calendars);
+  if (!leg) {
+    return std::nullopt;
+  }
+  return fee_leg_flows(*leg);
 }
 
 /// PV of the premium leg. Replaces `JpmcdsCdsFeeLegPV`.

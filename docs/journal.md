@@ -5047,3 +5047,79 @@ functions remain:
 * `JpmcdsFeeLegFlows` (feeleg.c) — almost certainly the same story;
 * `JpmcdsStringToDate` (convert.c) — the last of the string parsers;
 * `JpmcdsMakeTCurveNoRateCheck` (tcurve.c).
+
+## Decision 46 — The deferral whose reason expired
+
+Two functions this slice, both of which had been sitting behind the same note
+for most of the project:
+
+```c
+// `JpmcdsCdsFeeLegFlows` is NOT ported here. It returns a TCashFlowList and
+// needs cashflow.c, which is layer 7 and not on the pricing path.
+```
+
+That was true when I wrote it. `cashflow.c` was then ported in full — both
+halves, `cash_flow_list.hpp` and `cash_flow_schedule.hpp` — and the note
+stayed. For several slices afterwards the project carried a deferral whose
+stated reason no longer existed, and nothing surfaced it.
+
+What eventually did was the mentioned-but-not-claimed check added two slices
+ago, which flagged `JpmcdsCdsFeeLegFlows` as *mentioned in a header but not
+claimed*. I expected a missing claim sentence. What I found was a live-looking
+justification for not doing work that had become possible.
+
+**A deferral with an expired reason reads exactly like a live one.** That is
+the whole argument for machine-checked provenance over a comment: the comment
+was honest, specific, and wrong, and no amount of care in writing it would have
+made it notice its own obsolescence.
+
+### The functions themselves
+
+`JpmcdsFeeLegFlows` is one multiply per period —
+`yearFraction(accrual_start, accrual_end) * couponRate * notional`, dated at
+the pay date. `JpmcdsCdsFeeLegFlows` builds the leg and asks it for its flows.
+
+Two things worth stating about them.
+
+First, they are **undiscounted**, which is unusual in this project and buys
+properties a priced quantity would not have. The tier-1 tests use them: the
+amounts are exactly linear in the notional (double it, every amount doubles and
+no date moves), a zero coupon gives zero amounts on an unchanged schedule, and
+every amount's sign follows the coupon's. Those last two would catch a sign
+slip that a per-amount tolerance would wave through.
+
+Second, `JpmcdsCdsFeeLegFlows` hardcodes `payAccOnDefault = 1` and
+`protectStart = TRUE` as locals before calling the leg builder, so a caller
+cannot set either. The port takes a `Cds`, whose defaults are those same
+values. And `pay_accrual_on_default` **cannot affect the answer here** — these
+are the flows that occur when there is *no* default, so the accrual convention
+never comes into play. The field is on the leg because the leg carries it for
+pricing. That is asserted rather than left to a reader's inference, because the
+field is right there and looking relevant.
+
+### A finding parked for the final slice
+
+While checking how much was left I read `JpmcdsMakeTCurveNoRateCheck`, and it
+contains the clearest instance of this project's central theme that I have
+found:
+
+```
+** If it encounters a TDate = 0, it assumes that this is a terminator.
+** This allows spreadsheet users to select a big range of dates, but use
+** less than the whole range by terminating with a 1 or 0.
+```
+
+TDate 0 is 1601-01-01, a real date, and here it is **deliberately** a sentinel
+— explicitly for spreadsheet callers, which is the audience the Cellwright
+layer is eventually for. `JpmcdsMakeTCurve`, the checked sibling, has no such
+behaviour.
+
+And the comment says "terminating with a 1 or 0" while the code tests only
+`== 0`, so TDate 1 is not a terminator. That needs measuring before it is
+written up, which is the next slice's job along with `JpmcdsStringToDate`.
+
+### Where this leaves the port
+
+**162 of 164 in-scope functions = 99%**, 39 of 41 files complete. Two
+functions remain, and they are the last two: `JpmcdsStringToDate` (convert.c)
+and `JpmcdsMakeTCurveNoRateCheck` (tcurve.c).
