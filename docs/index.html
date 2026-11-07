@@ -501,6 +501,12 @@
           <td><span class="chip">Reproduced; signature fixed</span></td>
         </tr>
         <tr>
+          <td class="id"><a href="#u31">UPSTREAM-31</a></td>
+          <td>An output written <strong>after the error label</strong>, from a variable never set &mdash; the first finding here that <em>no</em> sanitizer could have caught</td>
+          <td><span class="chip low">Low &middot; UB, value discarded</span></td>
+          <td><span class="chip immune">Cannot occur</span></td>
+        </tr>
+        <tr>
           <td class="id"><a href="#u29">UPSTREAM-29</a></td>
           <td>A schedule the library returns and <strong>its own validator rejects</strong> — zero coupon periods, reported SUCCESS, then indexed at <code>fArray[-1]</code> by zcswap.c</td>
           <td><span class="chip mid">Medium · out-of-bounds read</span></td>
@@ -2645,6 +2651,143 @@ after one extrapolation: same call               -&gt; <span class="hit">SUCCESS
 
     <div class="tests">
       <span>Reproduce:</span> ./build/debug/defect_evidence u28
+    </div>
+  </section>
+
+  <!-- ============ U31 ============ -->
+  <section class="record sev-low" id="u31">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-31</span>
+      <h2>An output written after the error label, from a variable never set</h2>
+    </div>
+    <div class="chips">
+      <span class="chip low">Low &middot; undefined behaviour, value discarded</span>
+      <span class="chip immune">Cannot occur</span>
+    </div>
+    <p class="locus">streamcf.c &mdash; GetFloatStubRate</p>
+
+    <h3>Mechanism</h3>
+<pre><code>int           status = FAILURE;     <span class="c">/* Until proven successful */</span>
+<span class="hit">double        rate;</span>                 <span class="c">/* never assigned here */</span>
+...
+switch (swapType)
+{
+  case JPMCDS_SINGLE_REFIX:
+    if (JpmcdsForwardFromZCurve(..., &amp;rate) == FAILURE)
+        <span class="hit">goto done;</span>
+    break;
+
+  default:
+    JpmcdsErrMsg("%s: unknown swap type. Can't calculate stub rate.\n", routine);
+    <span class="hit">goto done;</span>
+}
+
+status = SUCCESS;
+
+ done:
+   if (status == FAILURE)
+       JpmcdsErrMsg("%s: Failed to calculate back stub rate.\n", routine);
+
+<span class="hit">    *stubRate = rate;</span>               <span class="c">/* runs on EVERY path */</span>
+
+    return status;</code></pre>
+    <p>
+      The output write sits <strong>after</strong> the label, so it executes on
+      every path &mdash; and on the failure paths <code>rate</code> was never
+      assigned. Reading an indeterminate <code>double</code> is undefined
+      behaviour whatever the caller then does with it.
+    </p>
+    <p>
+      The same shape as schedule.c's <code>error:</code> label, which is also
+      reached on success. There the shared exit block was harmless; here it
+      writes an output.
+    </p>
+
+    <h3>The precondition, measured</h3>
+    <p>
+      The read is only indeterminate if <code>JpmcdsForwardFromZCurve</code>
+      leaves its output alone when it fails. It does &mdash; all three of its
+      failure paths <code>goto done</code> without touching
+      <code>*rate</code>. Confirmed by sweeping 200 forward computations with a
+      sentinel in the output, so an unwritten result is visible:
+    </p>
+    <table class="data">
+      <thead><tr><th>outcome</th><th>count</th></tr></thead>
+      <tbody>
+        <tr><td>ordinary success</td><td>160</td></tr>
+        <tr><td><strong>NaN returned as SUCCESS</strong> (UPSTREAM-19, second site)</td><td><strong>39</strong></td></tr>
+        <tr><td>FAILURE returned</td><td>1</td></tr>
+        <tr><td>&hellip;of those, output left untouched</td><td>1</td></tr>
+      </tbody>
+    </table>
+    <p>
+      The failure window is narrow: it needs <code>startDiscount &gt; 0</code>
+      with <code>endDiscount</code> exactly <code>0</code>, so the forward
+      discount is <code>0</code> and <code>JpmcdsDiscountToRate</code>'s
+      <code>discount &lt;= 0</code> guard fires. One rung further out both
+      discounts underflow, giving <code>0/0</code>, and then the guard cannot
+      see the NaN and returns it as SUCCESS &mdash; which is UPSTREAM-19 again,
+      quantified here at 39 of 200.
+    </p>
+
+    <h3>Reachability</h3>
+    <p>
+      A back-stub schedule whose final accrual period lands in that window
+      hands <code>GetBackStub</code> exactly such a period:
+    </p>
+<pre><code>schedule: 323 periods, stubLocation 1 (BACK_STUB)
+stub period accrues 15 Jan 2185 -> 15 Jun 2185
+forward on that period: FAILURE, output LEFT UNTOUCHED</code></pre>
+    <p>
+      The <code>default:</code> branch is a second site of the same write, and
+      there <code>rate</code> is never assigned on <em>any</em> path. It is
+      unreachable, for a reason worth recording: <code>TSwapType</code> has one
+      enumerator, so in C its compatible type is unsigned,
+      <code>(TSwapType)(-1)</code> is 4294967295, and the one-sided guard
+      <code>if (swapType &gt; JPMCDS_SINGLE_REFIX)</code> &mdash; where that
+      constant is <code>0</code> &mdash; catches negatives <em>by accident</em>.
+      In C++ clang gives the same enum a signed type, so a C++ translation unit
+      and the C library sharing <code>schedule.h</code> disagree about it.
+    </p>
+
+    <h3>Why this one could not have been caught</h3>
+    <p>
+      Every other memory finding on this page was caught by a sanitizer. This
+      one cannot be, and the reasons compound:
+    </p>
+    <ul>
+      <li><strong>ASan</strong> does not instrument uninitialised reads at all &mdash; it tracks addressability, not initialisedness.</li>
+      <li><strong>UBSan</strong> has no check for them either.</li>
+      <li><strong>MemorySanitizer</strong> would catch it, and this project has no MSan job: it is unavailable on the development platform, a gap recorded since the harness was set up.</li>
+      <li><strong>Single-file static analysis cannot see it.</strong> Whether <code>rate</code> is indeterminate depends on <code>JpmcdsForwardFromZCurve</code>'s failure behaviour, which lives in zr2fwd.c; from inside streamcf.c the call takes <code>&amp;rate</code> and might write it. Measured: <code>-Wconditional-uninitialized</code> reports nothing, and <code>clang --analyze</code> with <code>core.uninitialized</code> reports nothing. Both are <em>correct</em> &mdash; the information they need is in another translation unit.</li>
+    </ul>
+    <p>
+      So this is the first concrete instance of a blind spot that had been a
+      stated limitation with no example: an uninitialised <strong>stack</strong>
+      read, in a cross-translation-unit shape. Found by reading, then confirmed
+      by measuring the precondition rather than asserting it.
+    </p>
+
+    <h3>Consequence</h3>
+    <p>
+      None observable. <code>GetFrontStub</code> and <code>GetBackStub</code>
+      both test the status before touching the value, so the indeterminate
+      double is written and then discarded. Nothing wrong reaches a price. The
+      read is undefined behaviour all the same, and a compiler is entitled to
+      assume it does not happen.
+    </p>
+
+    <h3>In the port</h3>
+    <p>
+      <strong>Cannot occur.</strong> <code>detail::stub_payment</code> returns
+      <code>std::optional&lt;double&gt;</code> rather than writing through an
+      out-pointer, so a failure path has no output to write and the shape is
+      unavailable. This is the general argument for returning values instead of
+      filling them in: a function that returns cannot write a result it did not
+      compute.
+    </p>
+    <div class="tests">
+      <span>Reproduce:</span> ./build/debug/defect_evidence u31
     </div>
   </section>
 

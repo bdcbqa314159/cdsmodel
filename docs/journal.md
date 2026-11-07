@@ -3865,3 +3865,128 @@ needs no assumption about the factor.
 `schedule.c` was the principal blocker on the path to `zcswap.c`. The chain is
 now `fltrate` (47 lines) → `streamcf` (1,100) → `zcswap` (940) → `gtozc` (494)
 → `zerocurve` (135), and nothing else is in the way.
+
+## Decision 36 — Proving a field is dead before deleting it
+
+`streamcf.c` is 1,100 lines and most of its interface does nothing. The port
+drops six things, and the interesting part of this slice is not the dropping —
+it is what licensed it.
+
+### The inventory
+
+| dropped | why |
+|---|---|
+| `TSwapType` | one enumerator |
+| `TStreamFloat.firstCoupon` / `.finalCoupon` | neither field ever read |
+| `.averSoFar` / `.compSoFar` | read, passed down two levels, land in unused parameters |
+| the fixed path's `valueDate` | passed through three functions, read by none |
+
+`streamcf.c` is the remains of a larger library. The parameters for averaging
+and compounding swaps survived; the code that used them did not.
+`GetFloatStubRate` takes eleven parameters and uses five.
+
+### The rule I had to make explicit
+
+"Upstream never reads this field" is a claim **about upstream**, so it gets
+tested against upstream. Each dropped field is swept over values that would
+move the answer if it were read — stub rates at 9.5 and −0.5, stub intervals of
+one day and ten years, `averSoFar` and `compSoFar` at 0.77 and −0.33, value
+dates across a century including dates long after maturity — and every cash
+flow is required to stay put.
+
+Without those tests the omissions are an assertion. With them they are a
+measurement. It is the same move as the oracle ladder generally: the claim that
+licenses a simplification has to be checked at the same standard as the
+arithmetic.
+
+This also forced a distinction I had got wrong one slice earlier.
+`FloatRate::weight` is *kept* even though nothing reads it, while `TStubRates`
+is dropped. The difference: `weight` is one field a caller fills in and a
+consumer might legitimately apply, whereas `TStubRates` is a whole struct
+passed into a function that ignores every bit of it. Removing a field two
+callers set changes their code; removing one nobody sets or reads does not.
+
+### UPSTREAM-31, and the first finding no sanitizer could catch
+
+`GetFloatStubRate` writes `*stubRate = rate;` **after** the `done:` label every
+failure path jumps to, and `rate` is assigned only inside the one success
+branch. So a failure copies an indeterminate double to the caller.
+
+I did not file that from the reading. The read is only indeterminate if
+`JpmcdsForwardFromZCurve` leaves its output alone on failure, which is a fact
+about a different file — so I swept 200 forward computations with a sentinel in
+the output. One failed, and the sentinel survived. The precondition holds.
+
+(The same sweep found 39 of 200 returning **NaN as SUCCESS**, which is
+UPSTREAM-19's second site turning up unbidden and now quantified.)
+
+What makes this entry worth its number is what it says about the harness.
+Every previous memory finding here was caught by a sanitizer. This one cannot
+be:
+
+* ASan tracks addressability, not initialisedness;
+* UBSan has no check for uninitialised reads;
+* MSan would catch it, and there is no MSan job — unavailable on this platform,
+  a gap the port notes have recorded since the harness was set up;
+* and single-file static analysis cannot see it either. From inside
+  `streamcf.c` the call takes `&rate` and *might* write it. I ran
+  `-Wconditional-uninitialized`, `-Wuninitialized`, and `clang --analyze` with
+  `core.uninitialized`. All three report nothing, and **all three are right** —
+  the information they need is in `zr2fwd.c`.
+
+So the blind spot that had been a stated limitation with no example now has
+one. It was found by reading the code, which is the only instrument that
+crosses translation units.
+
+### Three predictions, three corrections
+
+Same ratio as last slice, and worth tallying because the probes keep paying:
+
+1. I thought the `SUBTRACT_INITIAL` branch overflowed, writing `fArray[i+1]`
+   for `i` up to `fNumItems-1`. It allocates `fNumItems+1`.
+2. I thought `firstCoupon = 1` on a front stub meant `fArray[0]` never got
+   written, losing the initial principal flow. The amounts-computing loop and
+   the cash-flow-writing loop are *separate* loops; the second always starts at
+   zero. I had merged them while reading.
+3. I thought the one-sided guard `swapType > JPMCDS_SINGLE_REFIX` (that
+   constant being `0`) let negatives through. It does not: an all-non-negative
+   enum gets an unsigned compatible type in C, so `(TSwapType)(-1)` is
+   4294967295.
+
+The third correction then corrected *itself*. I wrote the test as
+`EXPECT_FALSE(static_cast<TSwapType>(-1) < 0)` and it failed — because in
+**C++** clang gives that same enum a signed type. The test file and the oracle
+it links against disagree about `TSwapType`, through the same header. The
+comparison happens on the C side so the C answer governs, but a guard correct
+only by implementation-defined enum signedness, differing between the two
+languages sharing its header, is not protection worth carrying forward.
+
+I nearly left behind an `EXPECT_TRUE(x || !x)` while restating that as
+something true. A tautology dressed as a test is worse than no test: it reports
+green forever and documents nothing. The comment carries it instead.
+
+### The two legs disagree, and the port keeps the disagreement
+
+For a one-period `TWO_STUB` schedule — which `JpmcdsCouponDateListCheck`
+accepts and `JpmcdsNewEmptyCouponDateList` makes constructible — the front and
+back stub both address index 0:
+
+* the fixed path writes `couponRates[n-1] = final` then `couponRates[0] =
+  first`, so **first** wins;
+* the float path runs `GetFrontStub` then `GetBackStub` into `amounts[0]`, so
+  **back** wins.
+
+Opposite precedence, from the same stub location, in the same file. Reproduced
+on both sides with a test asserting the disagreement, because picking a winner
+is a convention decision rather than a porting one — UPSTREAM-24 and
+UPSTREAM-27's reasoning, now applied to an internal inconsistency rather than a
+documentation one.
+
+### Where this leaves the bootstrap
+
+`zcswap.c` is now the only thing between the port and `gtozc` → `zerocurve`.
+Which is also where UPSTREAM-29 lands: `zcswap.c` reads
+`floatDL->fArray[floatDL->fNumItems-1]` at three sites with no emptiness check,
+and `streamcf.c` is the reason the float leg arrives unvalidated —
+`CheckFixedStreamDetails` calls the schedule validator and there is no
+`CheckFloatStreamDetails` at all.

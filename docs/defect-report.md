@@ -2473,3 +2473,165 @@ The overflowing upstream call is kept as a `DISABLED_` test alongside the
 differential suite: recorded, never executed, because running it is undefined
 behaviour and a recorded vector derived from it would be a committed file
 produced by UB.
+
+## UPSTREAM-31 — An output written after the error label, from a variable never set
+
+**Location:** `lib/src/streamcf.c`, `GetFloatStubRate`.
+**Severity:** Low. Undefined behaviour on a reachable path, with no observable
+consequence — and invisible to every tool in this project's harness.
+
+### Mechanism
+
+```c
+static int GetFloatStubRate(...)
+{
+    int           status = FAILURE;     /* Until proven successful */
+    double        rate;                 /* never assigned here */
+    ...
+    switch (swapType)
+    {
+      case JPMCDS_SINGLE_REFIX:
+        if (JpmcdsForwardFromZCurve(..., &rate) == FAILURE)
+            goto done;
+        break;
+
+      default:
+        JpmcdsErrMsg("%s: unknown swap type. Can't calculate stub rate.\n", routine);
+        goto done;
+    }
+
+    status = SUCCESS;
+
+ done:
+   if (status == FAILURE)
+       JpmcdsErrMsg("%s: Failed to calculate back stub rate.\n", routine);
+
+    *stubRate = rate;
+
+    return status;
+}
+```
+
+The output write sits **after** the label, so it executes on every path — and
+on the failure paths `rate` was never assigned. Reading an indeterminate
+`double` is undefined behaviour, regardless of what the caller then does with
+the value.
+
+This is the same shape as `schedule.c`'s `error:` label, which is also reached
+on success — a single exit block doing cleanup for both outcomes. There the
+shared block was harmless; here it writes an output.
+
+### The precondition, measured
+
+The read is only indeterminate if `JpmcdsForwardFromZCurve` leaves its output
+alone when it fails. It does — all three of its failure paths `goto done`
+without touching `*rate`:
+
+```c
+if (JpmcdsDiscountDate(startDate, zc, interpType, &startDiscount) == FAILURE)
+    goto done;
+if (JpmcdsDiscountDate(endDate, zc, interpType, &endDiscount) == FAILURE)
+    goto done;
+forwardDiscount = endDiscount/startDiscount;
+if (JpmcdsDiscountToRate(forwardDiscount, startDate, endDate,
+                      dayCountConv, basis, rate) == FAILURE)
+    goto done;
+```
+
+Confirmed by sweeping forward computations with a sentinel in the output, so an
+unwritten result is visible. On a curve with one point at an extreme rate, over
+200 six-month forward periods:
+
+| outcome | count |
+|---|---|
+| ordinary success | 160 |
+| **NaN returned as SUCCESS** | **39** |
+| FAILURE returned | 1 |
+| …of those, output left untouched | 1 |
+
+The failure is narrow: it needs `startDiscount > 0` with `endDiscount` exactly
+`0`, so `forwardDiscount` is `0` and `JpmcdsDiscountToRate`'s `discount <= 0`
+guard fires. One rung further out and both discounts underflow, giving `0/0`,
+and then the guard cannot see the NaN and the function returns it as SUCCESS —
+which is UPSTREAM-19's second site, incidentally quantified here at 39 of 200.
+
+### Reachability
+
+A back-stub schedule whose final accrual period lands in that window hands
+`GetBackStub` exactly such a period, and `GetFloatStubRate` calls the forward
+on the period's own accrual dates:
+
+```
+schedule: 323 periods, stubLocation 1 (BACK_STUB)
+stub period accrues 15 Jan 2185 -> 15 Jun 2185
+forward on that period: FAILURE, output LEFT UNTOUCHED
+```
+
+The inputs are absurd — a 160-year swap on a curve quoting a rate of 100 — but
+they come in through the public API and nothing rejects them.
+
+The `default:` branch is a second site of the same write, and there `rate` is
+never assigned on **any** path, not merely on an error one. It is unreachable,
+for a reason worth recording: `TSwapType` has a single enumerator, so in C its
+compatible type is unsigned, `(TSwapType)(-1)` is 4294967295, and the
+one-sided guard `if (swapType > JPMCDS_SINGLE_REFIX)` — where that constant is
+`0` — catches negatives by accident. In **C++** clang gives the same enum a
+signed type, so a C++ translation unit and the C library sharing
+`schedule.h` disagree about it. The comparison happens on the C side, so the C
+answer governs; but a guard that is correct only through implementation-defined
+enum signedness, differing between the two languages that share its header, is
+not protection anyone should rely on.
+
+### Why this one could not have been caught
+
+Every other memory finding in this register was caught by a sanitizer. This one
+cannot be, and the reasons compound:
+
+- **ASan** does not instrument uninitialised reads at all. It tracks
+  addressability, not initialisedness.
+- **UBSan** has no check for them either.
+- **MemorySanitizer** would catch it. This project has no MSan job — it is not
+  available on the development platform, and the gap has been recorded in the
+  port notes since the harness was set up.
+- **Single-file static analysis cannot see it.** Whether `rate` is indeterminate
+  depends on `JpmcdsForwardFromZCurve`'s failure behaviour, which lives in
+  `zr2fwd.c`. From inside `streamcf.c`, the call takes `&rate` and might write
+  it. Measured: `clang -Wconditional-uninitialized -Wuninitialized` on
+  `streamcf.c` reports nothing, and `clang --analyze` with
+  `core.uninitialized` reports nothing. Both are **correct** — the information
+  they would need is in another translation unit.
+
+So this is the first concrete instance of a blind spot that had until now been
+a stated limitation with no example: an uninitialised **stack** read, in a
+cross-translation-unit shape. It was found by reading, and the reading was then
+confirmed by measuring the precondition rather than asserting it.
+
+### Consequence
+
+None observable. `GetFrontStub` and `GetBackStub` both test the status before
+touching the value:
+
+```c
+if (GetFloatStubRate(..., &stubRate) == FAILURE)
+{
+    JpmcdsErrMsg("%s: failed to calculate floating front stub.\n", routine);
+    return FAILURE;
+}
+stubRate += stream->floatingRate->spread;
+```
+
+so the indeterminate double is written and then discarded. Nothing wrong
+reaches a price. The read is undefined behaviour all the same, and a compiler
+is entitled to assume it does not happen.
+
+Reproduce with `defect_evidence u31`. There is no `--unsafe` mode and no
+`DISABLED_` test: unlike UPSTREAM-21, 25 and 30, running this path is not
+dangerous, because the damage is confined to a value nobody reads.
+
+### In the port
+
+**Cannot occur.** `detail::stub_payment` returns `std::optional<double>`
+rather than writing through an out-pointer, so a failure path has no output to
+write and the shape is unavailable. This is the general argument for returning
+values instead of filling them in: a function that returns cannot write a
+result it did not compute.

@@ -42,12 +42,18 @@ OUT_OF_SCOPE = {
 }
 
 # Replaced structurally rather than one-for-one, so never countable as gaps.
+#
+# Allocator/deallocator PAIRS go in together. Three times now a slice has
+# landed with only the Free half listed, and the audit then reported the New
+# half as a gap -- a missing sentence looking exactly like a missing port.
+# If you add one half here, add the other.
 STRUCTURAL = {
     "JpmcdsFreeCFL", "JpmcdsNewEmptyCFL", "JpmcdsFreeTCurve", "JpmcdsNewTCurve",
     "JpmcdsCopyCurve", "JpmcdsFreeDateList", "JpmcdsNewEmptyDateList",
     "JpmcdsCopyDateList", "JpmcdsZCFree", "JpmcdsZCMake", "JpmcdsSwapDatesFree",
     "JpmcdsSwapDatesNewEmpty", "JpmcdsFreeHoliday", "JpmcdsHolidayListDelete",
-    "JpmcdsFreeCouponDateList", "JpmcdsNewEmptyCouponDateList", "JpmcdsFreeTStreamFixed", "JpmcdsFreeTStreamFloat",
+    "JpmcdsFreeCouponDateList", "JpmcdsNewEmptyCouponDateList",
+    "JpmcdsNewEmptyTStreamFixed", "JpmcdsNewEmptyTStreamFloat", "JpmcdsFreeTStreamFixed", "JpmcdsFreeTStreamFloat",
     "JpmcdsErrMsg", "JpmcdsErrMsgFailure", "JpmcdsFormatDate",
     "JpmcdsFormatDayCountConv", "JpmcdsFormatDateInterval",
     "JpmcdsBSearchCheckOrder",
