@@ -55,6 +55,11 @@ STRUCTURAL = {
     "JpmcdsFormatDayCountConv", "JpmcdsFormatDateInterval",
     # mutable global state, deliberately not reproduced -- see UPSTREAM-13
     "JpmcdsBSearchCheckOrder",
+    # the holiday-file reader and its process-wide cache. The port takes
+    # calendars as values, so where they come from is the caller's choice.
+    "JpmcdsHolidayLoadFromDisk", "JpmcdsHolidayListFromCache",
+    "JpmcdsHolidayListAddToCache", "JpmcdsHolidayEmptyCache",
+    "JpmcdsHolidayListRead", "JpmcdsHolidayListNewGeneral",
 }
 claimed = set()
 ported_funcs = set()

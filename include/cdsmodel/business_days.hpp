@@ -83,6 +83,24 @@ inline constexpr std::array<std::array<long, 7>, 7> kBackwardDiff{{
 
 } // namespace detail
 
+// ## Upstream's file-wrapper pattern, and why it collapses here
+//
+// busday.c publishes most of its work twice: once as `X(args, char *holidayFile)`
+// and once as `XFromList(args, THolidayList *hl)`, where the first looks the
+// file up in a process-wide cache and calls the second. The port takes a
+// `Calendar` explicitly, so ONE function covers both -- the file lookup is the
+// caller's business and `JpmcdsHolidayLoadFromDisk` is not ported.
+//
+// That means each port function here replaces a PAIR, and both names have to
+// be claimed or the provenance audit reports a gap that is really a naming
+// omission. This has now cost two rounds of chasing false positives, so the
+// pairs are named explicitly below rather than left to be inferred:
+//
+//     JpmcdsHolidayListAddBusinessDays   + JpmcdsDateFromBusDaysOffset
+//     JpmcdsHolidayListDateToBusinessEOM + JpmcdsDateToBusinessEOM
+//     JpmcdsHolidayListBusinessDay       + JpmcdsBusinessDay      (bad_day.hpp)
+//     JpmcdsHolidayListIsBusinessDay     + JpmcdsIsBusinessDay    (calendar.hpp)
+
 /// Business days between two dates. Replaces `JpmcdsHolidayListBusinessDaysDiff`.
 ///
 /// Upstream's documented definition:
@@ -173,7 +191,8 @@ inline constexpr std::array<std::array<long, 7>, 7> kBackwardDiff{{
 inline constexpr long kMaxBusinessDayOffset = 10'000'000;
 
 /// Move `count` business days from `from`. Replaces
-/// `JpmcdsHolidayListAddBusinessDays`.
+/// `JpmcdsHolidayListAddBusinessDays` and `JpmcdsDateFromBusDaysOffset`, the
+/// file-based wrapper that looks a holiday file up in the cache and calls it.
 ///
 /// Unlike `business_days_between` above, this one is REIMPLEMENTED, because
 /// the intent is recoverable: step in the given direction, counting business
@@ -261,7 +280,8 @@ inline constexpr long kMaxBusinessDayOffset = 10'000'000;
 }
 
 /// Last business day of the date's own month. Replaces
-/// `JpmcdsHolidayListDateToBusinessEOM`.
+/// `JpmcdsHolidayListDateToBusinessEOM` and `JpmcdsDateToBusinessEOM`, its
+/// file-based wrapper.
 ///
 /// Upstream is literally `JpmcdsDateToEOM` followed by an adjustment with
 /// `JPMCDS_BAD_DAY_PREVIOUS`, so the port composes the two pieces it already
