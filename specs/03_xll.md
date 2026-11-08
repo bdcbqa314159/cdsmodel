@@ -175,11 +175,11 @@ Excel is a real oracle; opening the real one and looking is not.
 |----|--------|---------------|------|
 | C0 | **pass** | 16 tests green on macOS with no SDK and no Excel; 777 with the oracle, 462 without (floor 445 -> 462) | the point of D8, demonstrated |
 | C1 | partial | all three probe branches exercised on macOS: absent, partial (names each missing file), complete | the x64 MSVC build itself awaits the SDK on Windows |
-| C2 | todo | | the ABI risk D1 takes on |
-| C3 | todo | | artifact #01 reaching the cell |
-| C4 | todo | | |
-| C5 | todo | | |
-| C6 | todo | | |
-| C7 | todo | | |
+| C2 | partial | `XlValue` round-trips numbers, text (trimmed), booleans, grids, missing and error cells, 16 tests. The `XLOPER12` half awaits `xl/sdk` | |
+| C3 | **pass** | a bad day count arrives as `bad argument: Payment DCC "ACT/999": ...` -- the kind, the field, and what the user typed | artifact #01 reaching the cell |
+| C4 | **pass** | every entry self-consistent; declared arity from the type codes equals the documented parameter count, asserted per function | a mismatch would make Excel pass a different number of cells than the dispatcher reads, silently |
+| C5 | **pass** | `CdsPrice` prices a 5-year trade off two flat curves through the table | |
+| C6 | **pass** | rebuilding a curve under the same name invalidates the old handle: `the handle "USD.disc#1" is stale` | upstream would have handed the old handle the new curve |
+| C7 | **pass** | `clear()` empties the registry and every prior handle stops resolving | |
 | C8 | todo | | UNCHECKABLE in CI, by nature |
 | C10 | **pass** | unknown label reported with the accepted list; duplicate reported; missing required named; any row order | 8 tests |
