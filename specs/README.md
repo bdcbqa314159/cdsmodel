@@ -26,7 +26,8 @@ action and reasoning records of work already done.
 | # | artifact | status | covers |
 |---|---|---|---|
 | 01 | [`01_error_channel.md`](01_error_channel.md) | **current** | `std::optional` → `Expected<T>` in C++20; all 341 sites; the four-kind taxonomy |
-| 02 | [`02_consumability.md`](02_consumability.md) | **ratified** | install/export, package config, the umbrella header |
+| 02 | [`02_consumability.md`](02_consumability.md) | **current** | install/export, package config, the umbrella header |
+| 03 | [`03_xll.md`](03_xll.md) | **ratified** | the XLL foundation: SDK, x64, XLOPER12, one function end to end |
 
 ## ► ARCHIVED
 

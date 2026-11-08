@@ -75,6 +75,13 @@ jobs:
       # Artifact #2. The install tree and a real consumer -- "reading the
       # CMake and nodding is not an oracle". install-tree also enforces
       # CLAUDE.md rule 2 mechanically now that install rules exist.
+      # Coverage, on macOS only: it needs llvm-cov (xcrun provides it there)
+      # and the figure is platform-independent for this code, so measuring it
+      # three times would cost minutes and tell us the same thing. Floors live
+      # in verify.py -- raise them when coverage rises, never lower them.
+      - if: runner.os == 'macOS'
+        run: python verify.py coverage
+
       - run: python verify.py install-tree
       - run: python tools/check_consumer.py
 

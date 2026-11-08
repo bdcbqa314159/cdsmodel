@@ -1,1 +1,2 @@
 clang-format==18.1.8
+openpyxl==3.1.5   # tools/gen_xll_workbook.py -- the C8 smoke workbook

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import pathlib
+import os
 import re
 from pathlib import Path
 import subprocess
@@ -27,7 +28,7 @@ ROOT = pathlib.Path(__file__).parent.resolve()
 # Calibrated to the CI case -- tier 1 only, no oracle present -- because that
 # is the binding one. A local run with the oracle executes strictly more.
 # Bump it when a module lands; never lower it to make a red run green.
-TEST_FLOOR_WITHOUT_ORACLE = 445
+TEST_FLOOR_WITHOUT_ORACLE = 487
 
 
 _PRESET = ["release"]
@@ -523,6 +524,146 @@ def gate_install_tree(preset: str) -> None:
         print(f"ok: install tree is {len(staged)} files, none upstream-derived")
 
 
+def gate_sdk_absent() -> None:
+    """Artifact #3: the Excel XLL SDK is never committed.
+
+    Same reasoning as rule 2 for the ISDA oracle, different owner. `xlcall.h`
+    and `xlcall32.lib` are Microsoft's, obtained from them under their terms;
+    committing them here redistributes them. The repo is public, so this is
+    not hypothetical.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True
+    ).stdout.split("\n")
+
+    banned_names = {"xlcall.h", "xlcall32.lib", "xlcall.cpp", "xlcall64.lib"}
+    offenders = [
+        t for t in tracked
+        if t and (t.startswith("xlsdk/") or Path(t).name.lower() in banned_names)
+    ]
+    if offenders:
+        fail(
+            "the Excel XLL SDK must never be committed (it is Microsoft's):\n  "
+            + "\n  ".join(offenders)
+        )
+    print("ok: no Excel XLL SDK files are tracked")
+
+
+# Coverage floors, per area, measured with `verify.py coverage`.
+#
+# Two areas and not one: they have genuinely different ceilings. The ported
+# library carries 341 error sites whose messages name an offending value, and
+# reaching every one means constructing bad input for every refusal upstream
+# ever made -- worth doing, not worth blocking a commit on. xl/core is new code
+# with a small surface and no excuse.
+#
+# Raise these when coverage rises. NEVER lower one to make a red run green --
+# the whole reason this gate exists is that coverage decayed silently through
+# artifact #01 (341 new branches, no test for most) and nothing noticed until
+# someone asked.
+COVERAGE_FLOORS = {
+    "include/cdsmodel/": {"lines": 85.0, "branches": 80.0},
+    "xl/core/": {"lines": 90.0, "branches": 86.0},
+}
+
+
+def gate_coverage() -> None:
+    """Measures line and branch coverage per area against COVERAGE_FLOORS.
+
+    Test files are EXCLUDED from the measurement. They are 100% line-covered
+    by definition and ~51% branch-covered by gtest's never-taken
+    assertion-failure paths, so including them measures the framework and
+    understates the code -- which is exactly the mistake that produced a
+    bogus "54.1%" for xl/core before this gate existed.
+    """
+    import shutil
+    import tempfile
+
+    profdata = shutil.which("llvm-profdata")
+    cov = shutil.which("llvm-cov")
+    if not profdata or not cov:
+        # Apple ships them under xcrun rather than on PATH.
+        which = subprocess.run(["xcrun", "--find", "llvm-cov"], capture_output=True, text=True)
+        if which.returncode != 0:
+            fail("coverage needs llvm-cov and llvm-profdata on PATH (or xcrun)")
+        cov = which.stdout.strip()
+        profdata = subprocess.run(
+            ["xcrun", "--find", "llvm-profdata"], capture_output=True, text=True
+        ).stdout.strip()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        build = Path(tmp) / "b"
+        configure = subprocess.run(
+            [
+                "cmake", "-S", str(ROOT), "-B", str(build),
+                "-DCMAKE_BUILD_TYPE=Debug",
+                "-DCMAKE_CXX_FLAGS=-fprofile-instr-generate -fcoverage-mapping",
+                "-DCMAKE_EXE_LINKER_FLAGS=-fprofile-instr-generate",
+            ],
+            capture_output=True, text=True,
+        )
+        if configure.returncode != 0:
+            fail("coverage configure failed:\n" + (configure.stderr or configure.stdout)[-1200:])
+        built = subprocess.run(
+            ["cmake", "--build", str(build), "-j", "8", "--target", "cdsmodel_tests"],
+            capture_output=True, text=True,
+        )
+        if built.returncode != 0:
+            fail("coverage build failed:\n" + (built.stderr or built.stdout)[-1200:])
+
+        raw = build / "cov.profraw"
+        run = subprocess.run(
+            [str(build / "cdsmodel_tests")],
+            capture_output=True, text=True,
+            env={**os.environ, "LLVM_PROFILE_FILE": str(raw)},
+        )
+        if run.returncode != 0:
+            fail("the instrumented test binary failed; fix the tests before measuring coverage")
+
+        merged = build / "cov.profdata"
+        subprocess.run([profdata, "merge", "-sparse", str(raw), "-o", str(merged)], check=True)
+        report = subprocess.run(
+            [cov, "report", str(build / "cdsmodel_tests"), f"-instr-profile={merged}"],
+            capture_output=True, text=True,
+        ).stdout
+
+    problems: list[str] = []
+    for area, floors in COVERAGE_FLOORS.items():
+        lines_total = lines_missed = branches_total = branches_missed = 0
+        for row in report.split("\n"):
+            if area not in row or "/tests/" in row:
+                continue
+            parts = row.split()
+            if len(parts) < 13:
+                continue
+            try:
+                lines_total += int(parts[7])
+                lines_missed += int(parts[8])
+                branches_total += int(parts[10])
+                branches_missed += int(parts[11])
+            except ValueError:
+                continue
+        if lines_total == 0:
+            fail(f"coverage found no instrumented lines for {area}; the filter is wrong")
+
+        line_pct = 100.0 * (lines_total - lines_missed) / lines_total
+        branch_pct = (
+            100.0 * (branches_total - branches_missed) / branches_total if branches_total else 100.0
+        )
+        print(f"  {area:<20} lines {line_pct:5.1f}% (floor {floors['lines']:.0f})"
+              f"   branches {branch_pct:5.1f}% (floor {floors['branches']:.0f})")
+        if line_pct < floors["lines"]:
+            problems.append(f"{area} line coverage {line_pct:.1f}% is below its floor "
+                            f"{floors['lines']:.0f}%")
+        if branch_pct < floors["branches"]:
+            problems.append(f"{area} branch coverage {branch_pct:.1f}% is below its floor "
+                            f"{floors['branches']:.0f}%")
+
+    if problems:
+        fail("coverage regressed:\n  " + "\n  ".join(problems))
+    print("ok: every area is at or above its coverage floor")
+
+
 def gate_tests(preset: str) -> None:
     """Run ctest and enforce a floor on how many tests actually ran."""
     proc = subprocess.run(
@@ -562,6 +703,8 @@ GATES = {
     "claims": gate_claims,
     "error-channel": gate_error_channel,
     "umbrella": gate_umbrella,
+    "sdk-absent": gate_sdk_absent,
+    "coverage": gate_coverage,
     "install-tree": lambda: gate_install_tree(_PRESET[0]),
     "golden": gate_golden_generated,
     "reports": gate_reports,

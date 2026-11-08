@@ -112,6 +112,21 @@ else()
 endif()
 
 # =========================================================================
+# The Excel layers -- artifact #3.
+#
+# xl/core is platform-independent and always built, so the existing three-OS
+# matrix tests the marshalling and the labelled-range reader. Only xl/sdk and
+# xl/interface need Windows and the SDK.
+# =========================================================================
+add_subdirectory(xl/core)
+
+if(CDSMODEL_XLL_AVAILABLE)
+  add_subdirectory(xl/sdk)
+  add_subdirectory(xl/interface)
+  message(STATUS "cdsmodel: building cdsmodel.xll")
+endif()
+
+# =========================================================================
 # Tests
 # =========================================================================
 if(CDSMODEL_BUILD_TESTS)
@@ -180,8 +195,11 @@ if(CDSMODEL_BUILD_TESTS)
                  tests/fee_leg_flows_test.cpp
                  tests/date_from_string_test.cpp
                  tests/expected_test.cpp
+                 xl/core/tests/xl_core_test.cpp
+                 xl/core/tests/dispatch_test.cpp
+                 xl/core/tests/error_paths_test.cpp
                  tests/adversarial_test.cpp)
-  target_link_libraries(cdsmodel_tests PRIVATE cdsmodel GTest::gtest_main)
+  target_link_libraries(cdsmodel_tests PRIVATE cdsmodel cdsmodel_xl_core GTest::gtest_main)
   target_include_directories(cdsmodel_tests PRIVATE tests)
   include(GoogleTest)
   gtest_discover_tests(cdsmodel_tests)
@@ -282,6 +300,77 @@ if(CDSMODEL_BUILD_TESTS)
                      -DGOLDEN=${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/reference_example.txt
                      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compare_golden.cmake)
   endif()
+endif()
+
+# =========================================================================
+# The Excel XLL SDK -- OPTIONAL and never redistributed (artifact #3).
+#
+# Microsoft's, not ours: xlcall.h and xlcall32.lib come from the Excel XLL
+# SDK, so they are gitignored exactly like the ISDA oracle and for the same
+# reason. Put the SDK in ./xlsdk (or point CDSMODEL_XLSDK_DIR elsewhere) and
+# the XLL target appears; without it the rest of the build is unaffected.
+#
+# The SDK's internal layout has varied across releases, so this SEARCHES for
+# the two files it needs rather than assuming a path, and says what it found.
+# =========================================================================
+set(CDSMODEL_XLSDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/xlsdk"
+    CACHE PATH "Microsoft Excel XLL SDK (xlcall.h/.cpp + framework.h/.c)")
+
+# Four SOURCE files, no import library. The SDK's own xlcall.cpp resolves the
+# callback with GetProcAddress(hmodule, "MdCallBack12") from the running Excel
+# process, so there is no xlcall32.lib to link and therefore no 32/64-bit
+# mismatch to get wrong -- the compiler decides the bitness.
+set(CDSMODEL_XLSDK_NEEDS xlcall.h xlcall.cpp framework.h framework.c)
+
+# The SDK probe runs on EVERY platform, even though only Windows can build the
+# add-in. Keeping "is the SDK usable?" separate from "can we build an XLL?"
+# means the diagnostic below is exercised by the macOS and Linux CI jobs too --
+# otherwise the only machine that ever sees it is the one trying to use it.
+set(CDSMODEL_XLSDK_USABLE OFF)
+set(CDSMODEL_XLL_AVAILABLE OFF)
+if(NOT EXISTS "${CDSMODEL_XLSDK_DIR}")
+  message(STATUS "cdsmodel: no Excel XLL SDK at ${CDSMODEL_XLSDK_DIR}")
+else()
+  # Search rather than assume: the SDK's internal layout and file casing have
+  # both varied across releases.
+  set(CDSMODEL_XLSDK_FOUND "")
+  set(CDSMODEL_XLSDK_MISSING "")
+  foreach(want ${CDSMODEL_XLSDK_NEEDS})
+    file(GLOB_RECURSE hits "${CDSMODEL_XLSDK_DIR}/${want}")
+    if(NOT hits)
+      string(TOUPPER "${want}" want_upper)
+      file(GLOB_RECURSE hits "${CDSMODEL_XLSDK_DIR}/${want_upper}")
+    endif()
+    if(hits)
+      list(GET hits 0 hit)
+      list(APPEND CDSMODEL_XLSDK_FOUND "${hit}")
+    else()
+      list(APPEND CDSMODEL_XLSDK_MISSING "${want}")
+    endif()
+  endforeach()
+
+  if(CDSMODEL_XLSDK_MISSING)
+    message(STATUS "cdsmodel: ${CDSMODEL_XLSDK_DIR} is not a usable Excel XLL SDK")
+    foreach(m ${CDSMODEL_XLSDK_MISSING})
+      message(STATUS "  MISSING ${m}")
+    endforeach()
+    message(STATUS "  (expected the Excel 2013 XLL SDK: INCLUDE/ and SRC/)")
+  else()
+    set(CDSMODEL_XLSDK_USABLE ON)
+    message(STATUS "cdsmodel: Excel XLL SDK found")
+    foreach(f ${CDSMODEL_XLSDK_FOUND})
+      message(STATUS "  ${f}")
+    endforeach()
+  endif()
+endif()
+
+if(CDSMODEL_XLSDK_USABLE AND WIN32)
+  set(CDSMODEL_XLL_AVAILABLE ON)
+  message(STATUS "cdsmodel: XLL enabled")
+elseif(CDSMODEL_XLSDK_USABLE)
+  message(STATUS "cdsmodel: SDK is usable but this is not Windows, so no XLL")
+else()
+  message(STATUS "cdsmodel: XLL skipped")
 endif()
 
 # =========================================================================
