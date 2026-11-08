@@ -1,6 +1,7 @@
 #include <cdsmodel/xl/functions.hpp>
 
 #include <cdsmodel/xl/arguments.hpp>
+#include <cdsmodel/xl/calendars.hpp>
 
 #include <algorithm>
 #include <array>
@@ -47,7 +48,8 @@ Expected<XlValue> dispatch_cds_price_legacy(std::span<const XlValue> args, CallC
   // then the curves. The subspans below are that order, not a tidier one.
   const std::array<XlValue, 6> convention_cells{args[6], args[7],  args[8],
                                                 args[9], args[10], args[11]};
-  const Expected<Conventions> conventions = Conventions::read_positional(convention_cells);
+  const Expected<Conventions> conventions =
+      Conventions::read_positional(convention_cells, ctx.calendars);
   if (!conventions) {
     return unexpected(conventions.error());
   }
@@ -79,7 +81,7 @@ Expected<XlValue> dispatch_cds_price_grouped(std::span<const XlValue> args, Call
   if (!trade) {
     return unexpected(trade.error());
   }
-  const Expected<Conventions> conventions = Conventions::read_block(args[2]);
+  const Expected<Conventions> conventions = Conventions::read_block(args[2], ctx.calendars);
   if (!conventions) {
     return unexpected(conventions.error());
   }
@@ -92,6 +94,79 @@ Expected<XlValue> dispatch_cds_price_grouped(std::span<const XlValue> args, Call
     return fail(ErrorKind::bad_argument, "Clean Price: " + clean.error().message);
   }
   return price_from(*valuation, *trade, *conventions, *market, *clean);
+}
+
+// --------------------------------------------------------------- calendars
+//
+// Three ways in, one handle out. The range form is primary (D5): the sheet
+// shows what the formula means, it travels with the workbook, and it cannot be
+// missing at recalculation time. The file form is interop, because desks share
+// NYC.dat centrally.
+
+/// `LoadHolidays(path, name)` -- upstream's signature, unchanged.
+Expected<XlValue> dispatch_load_holidays(std::span<const XlValue> args, CallContext &ctx) {
+  if (args.size() != 2) {
+    return fail(ErrorKind::bad_argument,
+                "LoadHolidays takes 2 arguments, got " + detail::num(args.size()));
+  }
+  const Expected<std::string> path = args[0].as_string();
+  if (!path) {
+    return fail(ErrorKind::bad_argument, "Filename: " + path.error().message);
+  }
+  const Expected<std::string> name = args[1].as_string();
+  if (!name) {
+    return fail(ErrorKind::bad_argument, "Name: " + name.error().message);
+  }
+  if (name->empty()) {
+    return fail(ErrorKind::bad_argument, "Name: a calendar needs a name to be referenced by");
+  }
+  const Expected<Calendar> calendar = read_calendar_file(*path);
+  if (!calendar) {
+    return unexpected(calendar.error());
+  }
+  return XlValue{ctx.calendars.store(*name, *calendar)};
+}
+
+/// `CDS.Calendar(dates, weekend, name)` -- from cells. No path, no IO.
+Expected<XlValue> dispatch_calendar_from_range(std::span<const XlValue> args, CallContext &ctx) {
+  if (args.size() != 3) {
+    return fail(ErrorKind::bad_argument,
+                "CDS.Calendar takes 3 arguments, got " + detail::num(args.size()));
+  }
+  const Expected<std::string> name = args[2].as_string();
+  if (!name || name->empty()) {
+    return fail(ErrorKind::bad_argument, "Name: a calendar needs a name");
+  }
+  const Expected<Calendar> calendar = calendar_from_range(args[0], args[1]);
+  if (!calendar) {
+    return unexpected(calendar.error());
+  }
+  return XlValue{ctx.calendars.store(*name, *calendar)};
+}
+
+/// `CDS.CalendarFromFile(path, name)` -- the grouped-form equivalent, which
+/// differs from LoadHolidays only in taking its arguments in the order a
+/// reader expects. Kept separate rather than aliased so the help text can say
+/// which is upstream's.
+Expected<XlValue> dispatch_calendar_from_file(std::span<const XlValue> args, CallContext &ctx) {
+  return dispatch_load_holidays(args, ctx);
+}
+
+/// `CDS.CalendarDates(handle)` -- spills a calendar's dates into cells.
+Expected<XlValue> dispatch_calendar_dates(std::span<const XlValue> args, CallContext &ctx) {
+  if (args.size() != 1) {
+    return fail(ErrorKind::bad_argument,
+                "CDS.CalendarDates takes 1 argument, got " + detail::num(args.size()));
+  }
+  const Expected<std::string> handle = args[0].as_string();
+  if (!handle) {
+    return fail(ErrorKind::bad_argument, "Calendar: expected a handle, got " + args[0].describe());
+  }
+  const Expected<Calendar> calendar = ctx.calendars.resolve(*handle);
+  if (!calendar) {
+    return unexpected(calendar.error());
+  }
+  return calendar_dates_grid(*calendar);
 }
 
 // ------------------------------------------------------------ the table
@@ -122,7 +197,19 @@ constexpr std::array<ParamSpec, 5> kCdsPriceGroupedParams{
      {"Market", "Two-column range: Discount Curve, Spread Curve, Recovery Rate"},
      {"Clean Price", "TRUE for clean, FALSE for dirty"}}};
 
-constexpr std::array<FunctionSpec, 2> kFunctions{
+constexpr std::array<ParamSpec, 2> kLoadHolidaysParams{
+    {{"Filename", "Path to a holiday file (one YYYYMMDD per line)"},
+     {"Name", "Name to reference this calendar by"}}};
+
+constexpr std::array<ParamSpec, 3> kCalendarRangeParams{
+    {{"Dates", "A range of holiday dates, in any order"},
+     {"Weekend", "STANDARD, NONE, or a comma-separated list of day names"},
+     {"Name", "Name to reference this calendar by"}}};
+
+constexpr std::array<ParamSpec, 1> kCalendarDatesParams{
+    {{"Calendar", "A handle from LoadHolidays, CDS.Calendar or CDS.CalendarFromFile"}}};
+
+constexpr std::array<FunctionSpec, 6> kFunctions{
     {{"CdsPrice", "QQQQQQQQQQQQQQQQQ", kCdsPriceLegacyParams,
       "Prices a CDS. The original 16-argument form, kept so existing "
       "workbooks keep working; CDS.Price is the same calculation with the "
@@ -131,7 +218,22 @@ constexpr std::array<FunctionSpec, 2> kFunctions{
      {"CDS.Price", "QQQQQQ", kCdsPriceGroupedParams,
       "Prices a CDS from four labelled ranges. Identical to CdsPrice, with "
       "the six convention values written once instead of per formula.",
-      kCategory, &dispatch_cds_price_grouped}}};
+      kCategory, &dispatch_cds_price_grouped},
+     {"LoadHolidays", "QQQ", kLoadHolidaysParams,
+      "Reads a holiday file and returns a handle. Upstream's signature, "
+      "unchanged.",
+      kCategory, &dispatch_load_holidays},
+     {"CDS.Calendar", "QQQQ", kCalendarRangeParams,
+      "Builds a calendar from a range of dates in the sheet. No file, no "
+      "path, and the holidays are visible where they are used.",
+      kCategory, &dispatch_calendar_from_range},
+     {"CDS.CalendarFromFile", "QQQ", kLoadHolidaysParams,
+      "Reads a holiday file and returns a handle. Same as LoadHolidays.", kCategory,
+      &dispatch_calendar_from_file},
+     {"CDS.CalendarDates", "QQ", kCalendarDatesParams,
+      "The dates in a calendar, as a column. Use it to pull a holiday file "
+      "into a sheet once and drop the file dependency.",
+      kCategory, &dispatch_calendar_dates}}};
 
 } // namespace
 

@@ -120,7 +120,8 @@ Expected<TradeTerms> TradeTerms::read_block(const XlValue &block) {
   return read_positional(cells);
 }
 
-Expected<Conventions> Conventions::read_positional(std::span<const XlValue> cells) {
+Expected<Conventions> Conventions::read_positional(std::span<const XlValue> cells,
+                                                   const CalendarRegistry &calendars) {
   if (cells.size() != 6) {
     return fail(ErrorKind::bad_argument, "conventions need 6 cells");
   }
@@ -178,27 +179,30 @@ Expected<Conventions> Conventions::read_positional(std::span<const XlValue> cell
   }
   out.bad_day = *bad_day;
 
-  // Holidays. A named calendar needs the holiday-file reader, which is a
-  // declared non-port (see docs/port-notes.md), so only the weekend-only
-  // calendar is available and anything else says so plainly rather than
-  // silently pricing against no holidays at all.
+  // Holidays: a handle from LoadHolidays, CDS.Calendar or CDS.CalendarFromFile,
+  // or NONE / blank for weekends only. Artifact #4 made this real; before it,
+  // anything but NONE was refused because there was no reader to resolve it.
+  out.holidays = {Calendar::none()};
   if (!cells[5].is_missing()) {
     const Expected<std::string> holidays = cells[5].as_string();
     if (!holidays) {
       return fail(ErrorKind::bad_argument, "Holidays: " + holidays.error().message);
     }
-    if (!holidays->empty() && *holidays != "NONE" && *holidays != "None" && *holidays != "none") {
-      return fail(ErrorKind::unsupported,
-                  "Holidays \"" + *holidays +
-                      "\": named holiday calendars are not available yet; only NONE is. "
-                      "Pricing against the wrong calendar silently would be worse.");
+    const bool weekends_only =
+        holidays->empty() || *holidays == "NONE" || *holidays == "None" || *holidays == "none";
+    if (!weekends_only) {
+      const Expected<Calendar> named = calendars.resolve(*holidays);
+      if (!named) {
+        return fail(named.error().kind, "Holidays: " + named.error().message);
+      }
+      out.holidays = {*named};
     }
   }
-  out.holidays = {Calendar::none()};
   return out;
 }
 
-Expected<Conventions> Conventions::read_block(const XlValue &block) {
+Expected<Conventions> Conventions::read_block(const XlValue &block,
+                                              const CalendarRegistry &calendars) {
   const Expected<LabelledRange> rows = block_of(block, kLabels, "the conventions block");
   if (!rows) {
     return unexpected(rows.error());
@@ -214,7 +218,7 @@ Expected<Conventions> Conventions::read_block(const XlValue &block) {
     }
     cells[i] = *v;
   }
-  return read_positional(cells);
+  return read_positional(cells, calendars);
 }
 
 Expected<MarketData> MarketData::read_positional(std::span<const XlValue> cells,

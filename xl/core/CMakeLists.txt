@@ -10,7 +10,7 @@ project(cdsmodel_xl_core LANGUAGES CXX)
 add_library(cdsmodel_xl_core STATIC
             src/value.cpp
             src/labelled_range.cpp
-            src/handles.cpp
+            src/calendars.cpp
             src/arguments.cpp
             src/functions.cpp)
 add_library(cdsmodel::xl_core ALIAS cdsmodel_xl_core)

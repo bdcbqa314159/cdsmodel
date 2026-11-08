@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Forty defects found in the ISDA CDS Standard Model 1.8.3 while porting all 163 of its in-scope functions to C++20, with sanitizer traces, measured evidence and fix status for each.">
+<meta name="description" content="Forty-one defects found in the ISDA CDS Standard Model 1.8.3 while porting all 163 of its in-scope functions to C++20, with sanitizer traces, measured evidence and fix status for each.">
 <meta name="color-scheme" content="light dark">
-<meta property="og:title" content="Forty defects in the ISDA CDS Standard Model">
+<meta property="og:title" content="Forty-one defects in the ISDA CDS Standard Model">
 <meta property="og:description" content="Found by differential testing a C++20 port against the original C under AddressSanitizer. Seven cannot occur in the port; one is reproduced on purpose.">
 <meta property="og:type" content="article">
 <title>ISDA CDS Defect Register</title>
@@ -410,13 +410,13 @@
 
   <header class="masthead">
     <p class="eyebrow">Defect report · 2026-11-07</p>
-    <h1>Forty defects in the ISDA CDS Standard Model</h1>
+    <h1>Forty-one defects in the ISDA CDS Standard Model</h1>
     <p class="standfirst">
       Found while porting the 2009 C library to C++20 &mdash; all 163 in-scope
       functions, with both implementations run side by side under
       AddressSanitizer and UBSan. Most cannot occur in the port, because the
       types stopped permitting them. Thirty-nine are reproduced faithfully;
-      exactly one is corrected, and that decision is argued below.
+      two are corrected, and that decision is argued below.
     </p>
   </header>
 
@@ -501,6 +501,12 @@
           <td>Supplying a substitution table silently disables the bad day convention, so an unlisted Saturday <strong>stays a Saturday</strong></td>
           <td><span class="chip low">Low · documented purpose only</span></td>
           <td><span class="chip">Reproduced; signature fixed</span></td>
+        </tr>
+        <tr>
+          <td class="id"><a href="#u41">UPSTREAM-41</a></td>
+          <td>An upper-cased copy of every line that <strong>nobody reads</strong> &mdash; so the weekend directives are case-sensitive, and a lower-case one is dropped in silence</td>
+          <td><span class="chip high">High &middot; silently wrong calendar</span></td>
+          <td><span class="chip">Corrected &mdash; near-misses refused</span></td>
         </tr>
         <tr>
           <td class="id"><a href="#u39">UPSTREAM-39</a></td>
@@ -2800,6 +2806,101 @@ janu-15-2024   refused</code></pre>
     <p class="trace">
       reproducer: DISABLED_Upstream38ShortTokenAtTheBufferEndOverflows
       &nbsp;&middot;&nbsp; trace: ./build/asan/defect_evidence u38 --unsafe
+    </p>
+  </section>
+
+
+  <!-- ============ U41 ============ -->
+  <section class="record sev-high" id="u41">
+    <div class="record-head">
+      <span class="record-id">UPSTREAM-41</span>
+      <h2>The upper-cased copy nobody reads</h2>
+    </div>
+    <div class="chips">
+      <span class="chip high">High &middot; a silently wrong holiday calendar</span>
+      <span class="chip">Corrected &mdash; the second correction in the project</span>
+    </div>
+    <p class="locus">buscache.c:519 and :574 &mdash; JpmcdsHolidayListRead</p>
+
+    <h3>Mechanism</h3>
+    <p>
+      The function declares a buffer for an upper-cased copy of each line,
+      fills it, and then compares the <strong>original</strong>:
+    </p>
+<pre><code>char       buffer[MAX_BUFFER];    /* line of text from file  */
+<span class="hit">char       ucBuffer[MAX_BUFFER];</span>  /* upper case line  &lt;- 519 */
+...
+    <span class="hit">COPY_CAPITALIZE(ucBuffer, buffer, MAX_BUFFER-1);</span>       /* 574 */
+    if (strncmp (<span class="hit">buffer</span>, monString, sizeof(monString)-1) == 0)
+        weekends |= JPMCDS_WEEKEND_MONDAY;</code></pre>
+    <p>
+      <code>ucBuffer</code> is <strong>written once and never read</strong> &mdash;
+      its only two mentions in the file are its declaration and that one
+      assignment. All seven directive comparisons use <code>buffer</code>. So
+      the weekend directives are case-<em>sensitive</em>, while the dead code
+      exists for no purpose other than to make them case-insensitive. The
+      intent is unmistakable and the effect is absent.
+    </p>
+
+    <h3>Measured</h3>
+    <p>Two holiday files, differing only in the case of the directive:</p>
+<pre><code># SATURDAY_NOT_ALWAYS_HOLIDAY   -&gt; Saturday 2024-03-16 is <span class="hit">a business day</span>
+# saturday_not_always_holiday   -&gt; Saturday 2024-03-16 is <span class="hit">a holiday</span></code></pre>
+    <p>
+      Both files load. Neither produces a diagnostic. A user who wrote the
+      directive in lower case gets standard weekends, and every date the model
+      adjusts &mdash; every coupon date, every accrual boundary, every
+      settlement &mdash; is silently wrong.
+    </p>
+    <p>
+      This is the shape of defect this register treats most seriously: not a
+      crash, but a <strong>confident wrong answer</strong> from input nobody
+      would suspect.
+    </p>
+
+    <h3>Two more things in the same macro, neither filed</h3>
+    <p>
+      <code>toupper</code> on a plain <code>char</code> is undefined for the
+      high-bit bytes &mdash; <a href="#u35">UPSTREAM-35</a>'s mechanism, already
+      filed, here executed in code whose result is discarded.
+    </p>
+    <p>
+      And a <strong>predicted off-by-one, refuted.</strong> The loop continues
+      while the offset is <code>&lt;= len</code>, so the terminator appears to
+      land one past the end. Tested with a 300-character comment line under
+      ASan: nothing happens. <code>JpmcdsFgets</code> reads at most
+      <code>MAX_BUFFER-1</code> characters, so the source is never long enough
+      to push the terminator past the last valid index. The macro is unsafe if
+      called with a longer source; at this one call site the caller's bound
+      protects it. Recorded because the prediction was wrong, and the reason
+      &mdash; the bound lives in the caller, not the macro &mdash; is the
+      useful part.
+    </p>
+
+    <h3>In the port</h3>
+    <p>
+      <strong>Corrected</strong>, and the reasoning differs from
+      <a href="#u39">UPSTREAM-39</a>'s. Upstream's behaviour here is
+      unambiguous: <code>buffer</code> is always what gets compared, so there
+      is one behaviour and the standing rule says reproduce it. The dead buffer
+      is evidence of <em>intent</em>, not of a second behaviour.
+    </p>
+    <p>
+      But reproducing it means reproducing a silently wrong calendar. So a
+      comment that case-insensitively matches a directive <strong>but is not
+      exactly it</strong> is refused, quoting the line:
+    </p>
+<pre><code>line 1: "# saturday_not_always_holiday" looks like the directive
+# SATURDAY_NOT_ALWAYS_HOLIDAY but the spelling must match exactly,
+including case. Upstream would ignore this line without saying so.</code></pre>
+    <p>
+      That reproduces nothing silently and accepts nothing upstream rejects.
+      The differential test asserts <strong>both</strong> sides, so an upstream
+      release that fixes this fails the test and tells us to revisit the
+      refusal rather than letting the divergence become invisible.
+    </p>
+    <p class="trace">
+      reproducer: H3UpstreamIgnoresALowerCaseDirectiveAndWeRefuseIt
     </p>
   </section>
 

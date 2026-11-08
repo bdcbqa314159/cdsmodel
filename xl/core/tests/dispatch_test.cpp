@@ -16,6 +16,7 @@
 namespace {
 
 using cdsmodel::xl::all_functions;
+using cdsmodel::xl::CalendarRegistry;
 using cdsmodel::xl::CallContext;
 using cdsmodel::xl::CurveRegistry;
 using cdsmodel::xl::find_function;
@@ -50,9 +51,10 @@ cdsmodel::ZeroCurve flat_curve(double rate) {
 
 struct Fixture {
   CurveRegistry curves;
+  CalendarRegistry calendars;
   std::string discount = curves.store("USD.disc", flat_curve(0.04));
   std::string spread = curves.store("ACME.spread", flat_curve(0.01));
-  CallContext ctx{curves};
+  CallContext ctx{curves, calendars};
 };
 
 // The one test that is not circular. Every other date here is built with the
@@ -221,6 +223,7 @@ TEST(CdsPriceDispatch, C3AFailedCallArrivesAsTextNamingTheProblem) {
 
 TEST(CurveHandles, C6AStaleHandleIsRefusedNotSilentlyResolved) {
   CurveRegistry curves;
+  CalendarRegistry calendars;
   const std::string first = curves.store("USD.disc", flat_curve(0.04));
   ASSERT_TRUE(curves.resolve(first).has_value());
 
@@ -236,6 +239,7 @@ TEST(CurveHandles, C6AStaleHandleIsRefusedNotSilentlyResolved) {
 
 TEST(CurveHandles, UnknownAndMalformedHandlesSayWhich) {
   CurveRegistry curves;
+  CalendarRegistry calendars;
   curves.store("USD.disc", flat_curve(0.04));
   EXPECT_NE(curves.resolve("EUR.disc#1").error().message.find("no curve named"), std::string::npos);
   EXPECT_NE(curves.resolve("USD.disc").error().message.find("not a curve handle"),
@@ -245,6 +249,7 @@ TEST(CurveHandles, UnknownAndMalformedHandlesSayWhich) {
 
 TEST(CurveHandles, C7ClearingTheRegistryInvalidatesEveryHandle) {
   CurveRegistry curves;
+  CalendarRegistry calendars;
   const std::string h = curves.store("USD.disc", flat_curve(0.04));
   ASSERT_EQ(curves.size(), 1u);
   curves.clear(); // what xlAutoClose does

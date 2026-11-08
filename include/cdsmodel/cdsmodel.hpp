@@ -47,6 +47,7 @@
 #include <cdsmodel/expected.hpp>
 #include <cdsmodel/fee_leg.hpp>
 #include <cdsmodel/float_rate.hpp>
+#include <cdsmodel/holiday_file.hpp>
 #include <cdsmodel/interp_curve.hpp>
 #include <cdsmodel/interpolation.hpp>
 #include <cdsmodel/ir_zero_curve.hpp>

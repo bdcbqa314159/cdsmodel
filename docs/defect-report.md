@@ -3623,3 +3623,110 @@ one entry point really does have three.
 Not applicable — no `scanf` reimplementation exists. The equivalent arithmetic
 in `date_from_string` range-checks before each multiply and returns `nullopt`
 instead of wrapping.
+
+---
+
+## UPSTREAM-41 — The upper-cased copy nobody reads
+
+**Location:** `lib/src/buscache.c:519` and `:574`, `JpmcdsHolidayListRead`.
+**Severity:** High. A silently wrong holiday calendar, from input a user wrote
+in good faith, with no diagnostic.
+
+### Mechanism
+
+The function declares a buffer for an upper-cased copy of each line, fills it,
+and then compares the **original**:
+
+```c
+char       buffer[MAX_BUFFER];    /* line of text from file      */
+char       ucBuffer[MAX_BUFFER];  /* upper case line of text     <- line 519 */
+...
+if (buffer[0] == '#')
+{
+    static char satString[] = "# SATURDAY_NOT_ALWAYS_HOLIDAY";
+    ...
+    COPY_CAPITALIZE(ucBuffer, buffer, MAX_BUFFER-1);              /* line 574 */
+    if (strncmp (buffer, monString, sizeof(monString)-1) == 0)    /* buffer   */
+        weekends |= JPMCDS_WEEKEND_MONDAY;
+    ...
+```
+
+`ucBuffer` is **written once and never read** — the only two mentions in the
+file are its declaration and that one assignment. All seven directive
+comparisons use `buffer`.
+
+So the weekend directives are case-**sensitive**, while the dead code exists
+for no purpose other than to make them case-insensitive. The intent is
+unmistakable and the effect is absent.
+
+### Measured
+
+A two-line holiday file, differing only in the case of the directive:
+
+| file contents | Saturday 2024-03-16 |
+|---|---|
+| `# SATURDAY_NOT_ALWAYS_HOLIDAY`<br>`19960101` | **a business day** |
+| `# saturday_not_always_holiday`<br>`19960101` | **a holiday** |
+
+Both files load. Neither produces a diagnostic. A user who wrote the directive
+in lower case gets standard weekends, and every date the model adjusts — every
+coupon date, every accrual boundary, every settlement — is silently wrong.
+
+### Severity
+
+This is the shape of defect this register treats most seriously: not a crash,
+but a *confident wrong answer* from input nobody would suspect. The file
+loaded. No error was reported. The calendar is simply not the one that was
+asked for, and nothing downstream can tell.
+
+### Two more things in the same macro, neither filed
+
+```c
+#define COPY_CAPITALIZE(pTarget,pSrc,len) \
+...
+   while ( (*PSRC) != 0  && (PTARGET - pTarget) <= (len) )\
+   {\
+          (*PTARGET) = (char)toupper((int)(*PSRC));\
+```
+
+**`toupper` on a plain `char`** is undefined for the high-bit bytes — the same
+mechanism as [UPSTREAM-35](#upstream-35), already filed. Here it happens in
+code whose result is discarded, which makes it undefined behaviour executed for
+nothing.
+
+**A predicted off-by-one, refuted.** The loop continues while the offset is
+`<= len`, so the terminator appears to land at `len + 1` — one past the end
+with `len = MAX_BUFFER-1`. **Tested and it does not occur:** `JpmcdsFgets`
+reads at most `MAX_BUFFER-1` characters, so the source string is never long
+enough to push the terminator past the last valid index. A 300-character
+comment line under ASan produces nothing. The macro is unsafe if ever called
+with a longer source; at this one call site the caller's bound protects it.
+
+Recorded because the prediction was wrong and the reason it was wrong — the
+bound lives in the caller, not the macro — is the useful part.
+
+### In the port
+
+**Corrected, and this is the second correction in the project** (the first was
+UPSTREAM-39). The reasoning differs from that one and is worth stating.
+
+Upstream's *behaviour* here is unambiguous: `buffer` is always what gets
+compared, so there is one upstream behaviour and the standing rule says
+reproduce it. The dead buffer is evidence of *intent*, not of a second
+behaviour.
+
+But reproducing it means reproducing a silently wrong calendar. So
+`parse_holiday_file` takes the third option: a comment that case-insensitively
+matches a directive **but is not exactly it** is refused, quoting the line.
+
+```
+line 1: "# saturday_not_always_holiday" looks like the directive
+# SATURDAY_NOT_ALWAYS_HOLIDAY but the spelling must match exactly,
+including case. Upstream would ignore this line without saying so.
+```
+
+That reproduces nothing silently and accepts nothing upstream rejects. The
+differential test asserts **both** sides — that upstream honours the upper-case
+form and drops the lower-case one — so an upstream release that fixes this
+fails the test and tells us to revisit the refusal, rather than letting the
+divergence become invisible.

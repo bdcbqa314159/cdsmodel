@@ -75,8 +75,11 @@ struct Conventions {
                                                      {"Bad Day Convention", true},
                                                      {"Holidays", false}}};
 
-  [[nodiscard]] static Expected<Conventions> read_positional(std::span<const XlValue> cells);
-  [[nodiscard]] static Expected<Conventions> read_block(const XlValue &block);
+  /// Both take the calendar registry, because `Holidays` is a handle now.
+  [[nodiscard]] static Expected<Conventions> read_positional(std::span<const XlValue> cells,
+                                                             const CalendarRegistry &calendars);
+  [[nodiscard]] static Expected<Conventions> read_block(const XlValue &block,
+                                                        const CalendarRegistry &calendars);
 };
 
 /// What the market says today. The curves arrive as handles, because a cell

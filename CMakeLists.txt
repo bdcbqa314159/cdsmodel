@@ -78,7 +78,7 @@ endif()
 # The C++20 port. Grows one module at a time; each module must match the
 # oracle exactly before the next one starts.
 # =========================================================================
-add_library(cdsmodel STATIC src/version.cpp)
+add_library(cdsmodel STATIC src/version.cpp src/holiday_file.cpp)
 add_library(cdsmodel::cdsmodel ALIAS cdsmodel)
 target_compile_features(cdsmodel PUBLIC cxx_std_20)
 target_include_directories(cdsmodel PUBLIC
@@ -198,6 +198,7 @@ if(CDSMODEL_BUILD_TESTS)
                  xl/core/tests/xl_core_test.cpp
                  xl/core/tests/dispatch_test.cpp
                  xl/core/tests/error_paths_test.cpp
+                 xl/core/tests/calendars_test.cpp
                  tests/adversarial_test.cpp)
   target_link_libraries(cdsmodel_tests PRIVATE cdsmodel cdsmodel_xl_core GTest::gtest_main)
   target_include_directories(cdsmodel_tests PRIVATE tests)
@@ -255,10 +256,15 @@ if(CDSMODEL_BUILD_TESTS)
                    tests/cxdatelist_differential_test.cpp
                    tests/fee_leg_flows_differential_test.cpp
                    tests/date_from_string_differential_test.cpp
-                   tests/error_channel_differential_test.cpp)
+                   tests/error_channel_differential_test.cpp
+                   tests/holiday_file_differential_test.cpp)
     target_link_libraries(cdsmodel_differential_tests
                           PRIVATE cdsmodel cds_reference GTest::gtest_main)
     target_include_directories(cdsmodel_differential_tests PRIVATE tests)
+    # Artifact #4's differential test reads the holiday files upstream ships,
+    # so it needs the tree's location -- not its sources.
+    target_compile_definitions(cdsmodel_differential_tests PRIVATE
+                               CDSMODEL_UPSTREAM_PATH="${CDSMODEL_UPSTREAM_DIR}")
     gtest_discover_tests(cdsmodel_differential_tests)
 
     # Regenerates tests/golden/bsearch_cases.hpp from the live oracle, so the

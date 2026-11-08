@@ -31,6 +31,7 @@ struct ParamSpec {
 /// dispatcher needs to run it.
 struct CallContext {
   CurveRegistry &curves;
+  CalendarRegistry &calendars;
 };
 
 /// Returns `Expected<XlValue>`, not `XlValue`.

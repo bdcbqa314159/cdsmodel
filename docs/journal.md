@@ -5304,3 +5304,399 @@ work, so: 163 functions ported, 3 declared non-ports with reasons recorded above
 
 Forty defects in the register. Thirty-nine of them reproduced faithfully, one
 corrected, every divergence asserted from both sides.
+
+---
+
+## Decision 48 — The error channel, and the only correction that was mine to make
+
+The port finished with 341 `return std::nullopt` sites. A failed call said
+nothing about why, and `root_find.hpp` admitted the cost in its own doc
+comment: *"Returns nullopt both when the objective fails and when the iteration
+count"* is exhausted — and separately on backwards bounds. Three different
+outcomes, one answer. A caller could not tell *"your bounds are reversed"* (fix
+the call) from *"it did not converge"* (widen the tolerance).
+
+### The taxonomy came from counting, not from taste
+
+I did not choose four error kinds. I counted:
+
+| | |
+|---|---|
+| `return std::nullopt` sites | 341 |
+| — pure propagation, a callee already failed | 149 (44%) |
+| upstream status checks (`== FAILURE` / `!= SUCCESS`) | **447** |
+| — of those, branching on a *reason* | **0** |
+| upstream `JpmcdsErrMsg` diagnostic sites | 452 |
+
+447 checks, zero reason-branches, 452 messages. Upstream emitted a message per
+failure and never once branched on one — so the payload in this library has
+always been **text for a human**, not a code for a `switch`. That is what sizes
+the taxonomy at four kinds rather than 452, and what rules out the per-site
+enum I would otherwise have built.
+
+And the four kinds are checked against upstream's own messages, which is what
+makes the oracle rung 3 rather than my judgement. `rtbrent.c` already
+distinguishes these cases; it just cannot return the distinction:
+
+| upstream message | kind |
+|---|---|
+| `Lower bound (…) >= higher bound (…)` | `bad_argument` |
+| `Function values at bounds imply no root exists` | `no_root` |
+| `Maximum number of iterations exceeded` | `no_convergence` |
+| `Supplied function failed at point …` (8 sites) | *forwarded unchanged* |
+
+### Two proposals of mine, both rejected
+
+**C++23.** `std::expected` is C++23-only, and I proposed moving the project to
+get it. That was backwards: this is a C++20 port, and a language-version change
+is a decision on its own merits, not a side effect of an error-handling slice.
+`cdsmodel::Expected<T>` is a C++20 mirror whose API is a **strict subset** of
+`std::expected`'s — which is what gives the duplication an end date. A test
+compiles the identical call sequence against both types, so the eventual swap
+is a type alias and a deletion.
+
+**Narrowing to 46 sites.** Measured that only the solver's path destroys
+information today, proposed migrating just that, and was told no. Rightly: the
+mixed API would have been a wart every caller saw, and 341 mechanical
+signatures beat two passes.
+
+### D5, the one decision the wide scope forced
+
+Narrowed to the solver I would only have had to classify its failures. Across
+341 sites every origin has to classify — and doing that surfaced something:
+**propagation is not a kind.** 149 of 341 sites forward a callee's failure, and
+8 of the solver's 12 diagnostics are the same forwarded message. A wrapper kind
+invented at each of 149 layers would bury the one reason the caller needs. So
+forwarding preserves kind and message byte-identically, tested on the real
+`cdsone` → `bootstrap` → `root_find` chain.
+
+### D7 took three attempts
+
+First I wrote the rule as *"no function returns `std::optional`"*. A lambda is a
+function, and `date_from_string`'s `to_month_name` returns `nullopt` to mean
+"not a month name — try reading it as a day". That is a parse alternative, not
+a failure; converting it would have meant inventing error messages for
+non-events.
+
+So I wrote *"function-local lambdas are exempt"*. Then
+`ZeroCurveBuilder::find_exact` falsified that immediately — a lookup miss is
+not a failure, whatever scope it sits at.
+
+The rule that survives is semantic: **`optional` means legitimately absent,
+`Expected` means failed.** Five false positives came out of my mechanical pass,
+every one caught by the compiler rather than review, and every one the same
+mistake — a syntactic rule standing in for a semantic one:
+
+| what the pass did | why it was wrong |
+|---|---|
+| converted `to_month_name`, `to_number` | parse alternatives |
+| converted `find_exact`, `MatchRange::exact` | lookup misses |
+| protected `leg_pv`, `counted` as fields | both are locals of the same name |
+| converted `Outcome::root` | holds the UPSTREAM result, which has no message |
+| rewrote `if (!bracketed)` as `unexpected(bracketed.error())` | it is a `bool` |
+
+### UPSTREAM-39, and the consequence worth seeing
+
+The slice's one correction. The month and day are parsed with a **checked**
+call; eleven lines later the year uses a bare `atol`, which cannot report
+failure. `03/15/aaaa` was accepted as **2000**-03-15. An unparseable month is
+refused, an unparseable day is refused, an unparseable year is *invented*.
+
+That is the exception the reproduce-rule leaves room for: the code disagrees
+with **itself**, so there is no single behaviour to preserve. The payoff is one
+line:
+
+    date_from_string("03/15/aaaa")
+      before:  nullopt
+      after:   bad argument: field 3 of "03/15/aaaa" is not a year
+
+**341 sites, zero behavioural diffs**, proven by the existing suites across
+debug, release and asan.
+
+---
+
+## Decision 49 — The library was finished and could not be installed
+
+`cmake --install` already worked. It staged **52 files: every one GoogleTest or
+gmock, and not a single cdsmodel header.** GoogleTest's `FetchContent` brings
+its own install rules, so anyone installing this library received our test
+framework instead of our library.
+
+| | before | after |
+|---|---|---|
+| `install(...)` rules | 0 | targets + headers + export set |
+| package config / version files | 0 | both, `SameMajorVersion` |
+| headers a consumer must include | up to 45 | **1** |
+| what `cmake --install` stages | 52 gtest files | 46 headers + lib + 3 package files |
+
+The target had been *written* to be exported since the scaffold —
+`$<INSTALL_INTERFACE:include>` and a `cdsmodel::cdsmodel` alias were already
+there. This finished a sentence the build file started.
+
+### The ladder has no rung for "is this installable"
+
+`verification.md` is written for numerical results. So the oracle is to **be
+the consumer**: install into a throwaway prefix, then build a project that
+lives outside the tree and knows nothing but `find_package`, and *run* it.
+Reading the CMake and nodding is not an oracle.
+
+Its check is self-consistency rather than a pinned constant — a CDS whose
+coupon equals its own par spread is worth nothing by definition:
+
+    par spread   0.0059480339
+    price at par -6.939e-18
+    refusal      bad argument: end must be on or after start when protection
+                 starts at start
+
+That last line is Decision 48 paying off across a package boundary: a refused
+call reaches an external consumer with its kind and message intact.
+
+### Two false passes, both mine, both the same mistake
+
+**B3 proved nothing as first written.** It re-ran B2's installed-package
+consumer with `-DCDSMODEL_UPSTREAM_DIR=/nonexistent` — a cache variable that
+project never reads. The same test twice, passing.
+
+**B7 passed over an install tree containing none of our library** — it reported
+*"52 files, none upstream-derived"* while staging gtest and zero cdsmodel
+headers. I found it by asking why debug staged 51 files and release 52.
+
+Both were checks phrased as **prohibitions** rather than expectations.
+"Nothing forbidden is present" is satisfied by an empty tree; "the consumer
+builds" is satisfied by building the wrong thing. That is a failure mode worth
+naming once and watching for forever: a check that cannot fail on the empty
+case is not a check.
+
+---
+
+## Decision 50 — The XLL could not be improved, because it cannot load
+
+The question was whether to upgrade the existing add-in. The answer came from
+four measurements:
+
+| measured in `isda_cds_model_c_v1.8.3/excel/` | value |
+|---|---|
+| build configurations | `win32debug`, `win32release` — **no x64** |
+| `XLOPER` uses / `XLOPER12` uses | **57 / 0** |
+| registered functions | 18, of which **6 manage a global error log** |
+| worst signatures | `UpfrontFlat`, `ParSpreadFlat` — **17 positional arguments** |
+
+**64-bit Excel cannot load a 32-bit XLL**, and `XLOPER` is the pre-2007 API: no
+Unicode, 255-character strings, 65,536-row grids. There is no in-place upgrade
+path from that; there is only a new add-in that keeps the function names. And
+the vendored SDK header is Excel 97-era — `XLOPER12` appears in it **zero**
+times and it declares `int far pascal Excel4v(...)` — so even with permission
+to copy it there was nothing worth taking.
+
+### 111 arguments, 38 concepts
+
+The signature problem has a number. Across upstream's 8 priced functions:
+
+| argument | appears in |
+|---|---|
+| `Holidays` | **8 of 8** |
+| `Coupon Interval`, `Stub Type`, `Payment DCC`, `Bad Day Convention` | **7 of 8** each |
+
+111 arguments covering ~38 distinct concepts. Two-thirds of the parameter
+surface is the same six things retyped per formula — and that block *is* a
+conventions struct. Upstream did not fail to notice: a C API with no aggregate
+feeding a grid with only positional cells leaves nowhere to put it. **The
+17-argument signature is the absence of a type**, which is precisely what a
+C++20 replacement is for.
+
+I had posed compatibility *versus* usability as a blocking question. It is a
+false dichotomy — an XLL registers a table, so it registers both:
+
+    CdsPrice     16 args   upstream's, unchanged
+    CDS.Price     5 args   Valuation · Trade · Conventions · Market · Clean
+
+Both read into the same four structs and then run one code path, so they cannot
+disagree. The test compares them **bitwise**.
+
+### The architecture is not mine
+
+`cpp_fdm_world` had already solved the layering: domain library, SDK wrapper,
+add-in, each its own library, Excel as one interface among others. Three
+techniques I would have got wrong — the whole Excel layer behind
+`#ifdef WIN32`, the `.xll` as a `SHARED` library with a renamed suffix, and no
+import library at all because the SDK's `xlcall.cpp` resolves `MdCallBack12`
+from the running Excel process.
+
+One deviation, and it is the reason this slice has oracles: **the seam sits one
+layer lower.** Guarding the whole Excel layer would put the marshalling, the
+dispatch table and the labelled-range reader on the only machine that cannot
+run CI. With `XlValue` as the boundary, `xl/core` is ordinary C++ tested on
+every platform, and only a thin `XLOPER12` adapter needs Windows. **About 95%
+of the remaining XLL work is macOS work** because of that one choice.
+
+### A bug found by audit, before the code that would have hit it
+
+`is_failure()` treated any string result as a failure — which works in
+`cpp_fdm_world` because every function there returns a number. But
+`IRZeroCurveBuild` and `CleanSpreadCurveBuild` return a curve **handle**, which
+is text. A successful build would have been reported as an error. Caught by
+auditing before those functions existed, which is the only cheap time.
+
+---
+
+## Decision 51 — Coverage was never measured, and the first number was wrong
+
+There was no instrumentation: nothing in the build, the presets, or CI. Test
+*counts* had been quoted for 50 decisions, which is what people quote when they
+have not measured coverage.
+
+The first figures, filtered to our own code:
+
+| | lines | branches |
+|---|---|---|
+| ported library | 86.5% | 82.3% |
+| `xl/core` | 81.4% | **54.1%** |
+
+### The 54.1% was my measurement error
+
+My filter matched `xl/core/`, which includes `xl/core/tests/`. Test files are
+100% line-covered by definition and ~51% *branch*-covered — gtest's
+assertion-failure paths never fire when tests pass — so they dragged the
+aggregate down. I was measuring the framework. The real figure was 60.0%.
+
+The gate now excludes test files for exactly that reason, and the comment says
+so. A measurement that includes its own instrument is not a measurement.
+
+### Against the original
+
+The comparison worth having. **Upstream ships zero tests** — no test directory,
+no regression harness, one example program and two holiday files.
+
+| | upstream C, in-scope | our port |
+|---|---|---|
+| functions | **98.3%** (231/235) | 97.5% |
+| lines | **81.0%** (7,870/9,712) | 85.7% |
+| branches | **74.1%** | 81.3% |
+
+Our differential suite drives 98.3% of upstream's in-scope functions and 81% of
+its lines — a library its authors never tested. That is the tier-2 machinery
+paying off: every sweep runs both implementations side by side, so covering
+ours covers theirs.
+
+And the port expresses the same functionality in **4,498 executable lines
+against upstream's 9,712** — under half, same 163 functions, same numbers to
+the ULP where it matters.
+
+One honest consequence: **Decision 48 lowered line coverage.** 341 new error
+sites are 341 branches a test must construct bad input to reach. The
+alternative — `optional` with no messages — had better coverage and worse
+diagnostics.
+
+### The floors
+
+`verify.py coverage`, per area, because they have different honest ceilings.
+Raise when coverage rises; never lower one to make a run green. It gated the
+very next slice at 88.9% against a 90 floor, which is the gate doing its job on
+the first opportunity it had.
+
+---
+
+## Decision 52 — The last hole, and a dead buffer
+
+`Holidays` appears in 8 of upstream's 8 priced functions. Until this slice the
+add-in refused every calendar but `NONE` — explicitly, rather than silently
+pricing against no holidays, but a desk could not have used it.
+
+It was a hole by decision: `JpmcdsHolidayLoadFromDisk` was a declared non-port
+whose recorded reason was *"reads a holiday file into a process-wide cache"*.
+**The cache was the objection, not the reading** — a distinction the non-port
+table stated and nobody had acted on. `docs/port-notes.md` now says what
+changed rather than quietly losing a row.
+
+### UPSTREAM-41
+
+`JpmcdsHolidayListRead` declares a buffer for an upper-cased copy of each
+comment line, fills it, and compares the **original**. `ucBuffer` is written
+once at line 574 and never read; all seven directive comparisons use `buffer`.
+
+So the weekend directives are case-**sensitive**, while the dead code exists
+for no purpose other than to make them case-insensitive:
+
+| file | Saturday 2024-03-16 |
+|---|---|
+| `# SATURDAY_NOT_ALWAYS_HOLIDAY` | **a business day** |
+| `# saturday_not_always_holiday` | **a holiday** |
+
+Both load. Neither warns. Every date the model adjusts is silently wrong. This
+is the register's worst shape — not a crash, but a confident wrong answer from
+input written in good faith.
+
+**Corrected**, and the reasoning differs from UPSTREAM-39's. There, the code
+disagreed with itself. Here the behaviour is unambiguous — `buffer` is always
+compared — and the dead buffer is evidence of *intent*, not of a second
+behaviour. By the standing rule that means reproduce. But reproducing means
+reproducing a silently wrong calendar, so a comment that case-insensitively
+matches a directive **and is not exactly it** is refused, quoting the line.
+Asserted from both sides, so an upstream fix fails the test instead of hiding.
+
+### A prediction of mine, refuted
+
+I reasoned the same macro had an off-by-one: the loop runs while the offset is
+`<= len`, so the terminator lands at `len + 1`. Tested with a 300-character
+comment line under ASan: **nothing.** `JpmcdsFgets` caps the line at 255, so
+the source is never long enough to push the terminator past the last valid
+index. The macro is unsafe in isolation; at this call site the caller's bound
+protects it.
+
+Recorded because the prediction was wrong and the reason is the useful part —
+the bound lives in the caller, not in the macro.
+
+### Three of my own test bugs, all from the same confusion
+
+This project juggles three epochs — 1601 (ISDA TDate), 1900 (Excel serial),
+1970 (Unix, which is both `cdsmodel::Date`'s and Cellwright's). I hardcoded
+`45366` as a TDate; it is an *Excel* serial, and as a TDate it is a date in
+1725 with a different weekday. The tests were checking the wrong days and only
+one of them disagreed. Everything now computes through `tdate_of(y, m, d)`,
+with a comment saying why hardcoding broke.
+
+That is the third time the epochs have bitten. The lesson is not "be careful";
+it is that a magic number in a date test should be a computation.
+
+### What the slice looks like
+
+The design question was how a calendar should reach a formula, and the answer
+is not upstream's:
+
+| | visible in sheet | travels with workbook | needs a path | add-in does IO |
+|---|---|---|---|---|
+| a range of dates | **yes** | **yes** | no | no |
+| a file on disk | no | no | yes | yes |
+
+A range is primary, and it needed **no new library code** —
+`Calendar::create(dates, weekend)` already existed. The file path stays,
+because desks share `NYC.dat` centrally. And nothing writes a file from a
+worksheet function: Excel recalculates on its own schedule, so a formula with a
+disk side effect fires at times nobody chose.
+
+H1 swept every day of 20 years against the oracle for both shipped files —
+7,305 comparisons each, zero disagreements, with a positive control so a sweep
+finding no holidays could not pass trivially. The date accounting is exact, and
+I verified it independently after chasing what looked like dropped dates:
+`NYC.dat` is 547 dates = 519 kept + 28 falling on a weekend, which
+`Calendar::create` discards as already non-business.
+
+### Where this leaves the upgrade
+
+| | |
+|---|---|
+| C library, in-scope functions | **163/163** + the holiday reader |
+| XLL function surface | **6/13** |
+| defects catalogued | **41** — 39 reproduced, 2 corrected |
+| tests, with the oracle | **827** |
+| tests, without it | **504** |
+| coverage, library | 85.7% lines, 81.3% branches |
+| coverage, `xl/core` | 93.6% lines, 90.1% branches |
+| recorded vector sets | 44 |
+| verify gates | 11 |
+| ratified specs | 4 |
+
+Every remaining XLL function is **marshalling only** — the library function
+exists for each one, differential-tested and with golden vectors behind it. The
+hard half is done. What is left to call the upgrade complete is wiring, and one
+manual run in Excel that only a Windows machine can do.
