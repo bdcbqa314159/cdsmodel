@@ -159,11 +159,11 @@ the add-in.
 
 | ID | Status | Oracle result | Note |
 |----|--------|---------------|------|
-| H1 | todo | | the binding one |
-| H2 | todo | | |
-| H3 | todo | | UPSTREAM-41's correction |
-| H4 | todo | | |
-| H5 | todo | | |
-| H6 | todo | | |
+| H1 | **pass** | `NYC.dat` and `TRG.dat`: every day of 20 years compared, 7,305 per file, zero disagreements. 547 dates -> 519 kept (28 fall on a weekend, dropped as upstream does); 284 -> 232 (52) | the binding one |
+| H2 | **pass** | all seven directives, each on a day of the weekday it names, plus the two combined | |
+| H3 | **pass** | upstream honours `# SATURDAY_NOT_ALWAYS_HOLIDAY` and silently ignores `# saturday_not_always_holiday`; we refuse the latter, quoting the line | UPSTREAM-41, asserted from both sides |
+| H4 | **pass** | out-of-order and duplicate dates refused by both; ours names the line number, which upstream does not | |
+| H5 | **pass** | `abc`, `19960704x`, `1996010`, month 13, 30 February -- all refused; the first two upstream accepts | deliberate, D2 |
+| H6 | **pass** | two reads in one process, different weekend rules, neither affects the other | no state to interfere with |
 | H7 | todo | | |
 | H8 | todo | | |
