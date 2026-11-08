@@ -14,7 +14,6 @@ Run from the repo root:  python3 tools/check_consumer.py
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys
@@ -27,6 +26,27 @@ FAILURES: list[str] = []
 
 def run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None):
     return subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
+
+
+def find_executable(build: Path, stem: str) -> Path | None:
+    """The built binary, across single- and multi-config generators.
+
+    Windows needs care on two counts: the suffix is `.exe`, and MSVC's
+    multi-config generator creates a `<stem>.dir/` DIRECTORY next to it. An
+    earlier revision globbed `consumer*` and found the directory first, then
+    tried to execute it -- `PermissionError: [WinError 5] Access is denied`,
+    which reads like a permissions problem and is not one.
+    """
+    names = [f"{stem}.exe", stem]
+    for name in names:
+        direct = build / name
+        if direct.is_file():
+            return direct
+    for name in names:
+        for found in sorted(build.rglob(name)):
+            if found.is_file():
+                return found
+    return None
 
 
 def check(label: str, ok: bool, detail: str = "") -> bool:
@@ -122,14 +142,17 @@ def consumer_build(prefix: Path, label: str, extra_cache: list[str]) -> None:
                      cfg.stderr or cfg.stdout):
             return
 
-        bld = run(["cmake", "--build", str(build)])
+        # --config matters for multi-config generators and is ignored by the
+        # single-config ones, so it is always safe to pass.
+        bld = run(["cmake", "--build", str(build), "--config", "Release"])
         if not check(f"{label}  builds (-Werror, umbrella only)", bld.returncode == 0,
                      bld.stderr or bld.stdout):
             return
 
-        exe = build / "consumer"
-        if not exe.exists():
-            exe = next(iter(build.rglob("consumer*")), None)  # MSVC layout
+        exe = find_executable(build, "consumer")
+        if not check(f"{label}  produced a runnable binary", exe is not None,
+                     f"nothing named consumer[.exe] under {build}"):
+            return
         got = run([str(exe)])
         ok = got.returncode == 0 and "CONSUMER OK" in got.stdout
         check(f"{label}  runs: a CDS at its own par spread prices to ~0", ok,
@@ -178,13 +201,14 @@ def b3_fetchcontent() -> None:
         gtest_fetched = (build / "_deps" / "googletest-src").exists()
         check("B3  GoogleTest is not downloaded for a consumer", not gtest_fetched)
 
-        bld = run(["cmake", "--build", str(build), "--target", "consumer"])
+        bld = run(["cmake", "--build", str(build), "--target", "consumer",
+                   "--config", "Release"])
         if not check("B3  FetchContent consumer builds", bld.returncode == 0,
                      bld.stderr or bld.stdout):
             return
-        exe = build / "consumer"
-        if not exe.exists():
-            exe = next(iter(build.rglob("consumer*")), None)
+        exe = find_executable(build, "consumer")
+        if not check("B3  produced a runnable binary", exe is not None):
+            return
         got = run([str(exe)])
         check("B3  runs without the oracle present",
               got.returncode == 0 and "CONSUMER OK" in got.stdout, got.stdout + got.stderr)
