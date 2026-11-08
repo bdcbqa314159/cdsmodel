@@ -191,6 +191,7 @@ if(CDSMODEL_BUILD_TESTS)
                  tests/expected_test.cpp
                  xl/core/tests/xl_core_test.cpp
                  xl/core/tests/dispatch_test.cpp
+                 xl/core/tests/error_paths_test.cpp
                  tests/adversarial_test.cpp)
   target_link_libraries(cdsmodel_tests PRIVATE cdsmodel cdsmodel_xl_core GTest::gtest_main)
   target_include_directories(cdsmodel_tests PRIVATE tests)
