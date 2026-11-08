@@ -30,7 +30,7 @@ constexpr long kExcelSerialToUnixDays = -25569;
   return Date{} + std::chrono::days{days};
 }
 
-template <typename T, std::size_t N>
+template <std::size_t N>
 [[nodiscard]] Expected<LabelledRange>
 block_of(const XlValue &block, const std::array<LabelSpec, N> &labels, std::string_view what) {
   const Expected<XlGrid> grid = block.as_grid();
@@ -67,7 +67,7 @@ Expected<Valuation> Valuation::read_positional(std::span<const XlValue> cells) {
 }
 
 Expected<Valuation> Valuation::read_block(const XlValue &block) {
-  const Expected<LabelledRange> rows = block_of<Valuation>(block, kLabels, "the valuation block");
+  const Expected<LabelledRange> rows = block_of(block, kLabels, "the valuation block");
   if (!rows) {
     return unexpected(rows.error());
   }
@@ -105,7 +105,7 @@ Expected<TradeTerms> TradeTerms::read_positional(std::span<const XlValue> cells)
 }
 
 Expected<TradeTerms> TradeTerms::read_block(const XlValue &block) {
-  const Expected<LabelledRange> rows = block_of<TradeTerms>(block, kLabels, "the trade block");
+  const Expected<LabelledRange> rows = block_of(block, kLabels, "the trade block");
   if (!rows) {
     return unexpected(rows.error());
   }
@@ -199,8 +199,7 @@ Expected<Conventions> Conventions::read_positional(std::span<const XlValue> cell
 }
 
 Expected<Conventions> Conventions::read_block(const XlValue &block) {
-  const Expected<LabelledRange> rows =
-      block_of<Conventions>(block, kLabels, "the conventions block");
+  const Expected<LabelledRange> rows = block_of(block, kLabels, "the conventions block");
   if (!rows) {
     return unexpected(rows.error());
   }
@@ -256,7 +255,7 @@ Expected<MarketData> MarketData::read_positional(std::span<const XlValue> cells,
 }
 
 Expected<MarketData> MarketData::read_block(const XlValue &block, const CurveRegistry &curves) {
-  const Expected<LabelledRange> rows = block_of<MarketData>(block, kLabels, "the market block");
+  const Expected<LabelledRange> rows = block_of(block, kLabels, "the market block");
   if (!rows) {
     return unexpected(rows.error());
   }

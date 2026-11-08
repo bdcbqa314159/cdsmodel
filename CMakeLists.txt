@@ -120,6 +120,12 @@ endif()
 # =========================================================================
 add_subdirectory(xl/core)
 
+if(CDSMODEL_XLL_AVAILABLE)
+  add_subdirectory(xl/sdk)
+  add_subdirectory(xl/interface)
+  message(STATUS "cdsmodel: building cdsmodel.xll")
+endif()
+
 # =========================================================================
 # Tests
 # =========================================================================

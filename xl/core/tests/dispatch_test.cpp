@@ -18,10 +18,9 @@ namespace {
 using cdsmodel::xl::all_functions;
 using cdsmodel::xl::CallContext;
 using cdsmodel::xl::CurveRegistry;
-using cdsmodel::xl::failure_text;
 using cdsmodel::xl::find_function;
 using cdsmodel::xl::FunctionSpec;
-using cdsmodel::xl::is_failure;
+using cdsmodel::xl::invoke;
 using cdsmodel::xl::XlGrid;
 using cdsmodel::xl::XlValue;
 
@@ -55,6 +54,29 @@ struct Fixture {
   std::string spread = curves.store("ACME.spread", flat_curve(0.01));
   CallContext ctx{curves};
 };
+
+// The one test that is not circular. Every other date here is built with the
+// helper above, which shares the production constant -- so a wrong offset
+// would shift both sides equally and nothing would fail. These three serials
+// were read off Excel, not computed:
+//
+//     1900-03-01 -> 61      (the first date past Excel's phantom 1900-02-29)
+//     1970-01-01 -> 25569   (the Unix epoch, which is the offset itself)
+//     2024-03-15 -> 45366
+TEST(Registration, TheExcelEpochOffsetIsNotCircular) {
+  struct Known {
+    double excel_serial;
+    int y, m, d;
+  };
+  const Known known[]{{61, 1900, 3, 1}, {25569, 1970, 1, 1}, {45366, 2024, 3, 15}};
+  for (const Known &k : known) {
+    const cdsmodel::Date expected = *cdsmodel::make_date(k.y, k.m, k.d);
+    const double from_helper = serial(k.y, k.m, k.d);
+    EXPECT_EQ(from_helper, k.excel_serial)
+        << k.y << "-" << k.m << "-" << k.d << ": the epoch offset is wrong";
+    EXPECT_EQ(expected.time_since_epoch().count(), static_cast<long>(k.excel_serial) - 25569);
+  }
+}
 
 // ------------------------------------------------------------------- C4
 
@@ -108,8 +130,8 @@ TEST(CdsPriceDispatch, C5TheLegacyFormPricesATrade) {
                                   XlValue{f.spread},
                                   XlValue{0.4},
                                   XlValue{true}};
-  const XlValue got = find_function("CdsPrice")->dispatch(args, f.ctx);
-  ASSERT_FALSE(is_failure(got)) << failure_text(got);
+  const XlValue got = invoke(*find_function("CdsPrice"), args, f.ctx);
+  ASSERT_FALSE(got.as_double().has_value() == false) << got.describe();
   const auto price = got.as_double();
   ASSERT_TRUE(price.has_value()) << got.describe();
   EXPECT_TRUE(std::isfinite(*price));
@@ -151,10 +173,10 @@ TEST(CdsPriceDispatch, C9BothFormsGiveTheIdenticalAnswer) {
                                                  {"Recovery Rate", XlValue{0.4}}}),
                                           XlValue{true}};
 
-  const XlValue a = find_function("CdsPrice")->dispatch(legacy_args, f.ctx);
-  const XlValue b = find_function("CDS.Price")->dispatch(grouped_args, f.ctx);
-  ASSERT_FALSE(is_failure(a)) << failure_text(a);
-  ASSERT_FALSE(is_failure(b)) << failure_text(b);
+  const XlValue a = invoke(*find_function("CdsPrice"), legacy_args, f.ctx);
+  const XlValue b = invoke(*find_function("CDS.Price"), grouped_args, f.ctx);
+  ASSERT_FALSE(a.as_double().has_value() == false) << a.describe();
+  ASSERT_FALSE(b.as_double().has_value() == false) << b.describe();
   // Bitwise, not near: it is one computation reached two ways. Anything other
   // than exact equality means the readers disagree about an input.
   EXPECT_EQ(*a.as_double(), *b.as_double());
@@ -163,9 +185,9 @@ TEST(CdsPriceDispatch, C9BothFormsGiveTheIdenticalAnswer) {
 TEST(CdsPriceDispatch, AWrongArgumentCountIsReportedNotIndexedPast) {
   Fixture f;
   const std::vector<XlValue> too_few{XlValue{1.0}, XlValue{2.0}};
-  const XlValue got = find_function("CdsPrice")->dispatch(too_few, f.ctx);
-  ASSERT_TRUE(is_failure(got));
-  EXPECT_NE(failure_text(got).find("16 arguments"), std::string::npos) << failure_text(got);
+  const XlValue got = invoke(*find_function("CdsPrice"), too_few, f.ctx);
+  ASSERT_TRUE(got.as_double().has_value() == false);
+  EXPECT_NE(got.describe().find("16 arguments"), std::string::npos) << got.describe();
 }
 
 TEST(CdsPriceDispatch, C3AFailedCallArrivesAsTextNamingTheProblem) {
@@ -187,9 +209,9 @@ TEST(CdsPriceDispatch, C3AFailedCallArrivesAsTextNamingTheProblem) {
                             XlValue{0.4},
                             XlValue{true}};
   args[9] = XlValue{"ACT/999"}; // a day count that does not exist
-  const XlValue got = find_function("CdsPrice")->dispatch(args, f.ctx);
-  ASSERT_TRUE(is_failure(got)) << "a bad day count was accepted";
-  const std::string text = failure_text(got);
+  const XlValue got = invoke(*find_function("CdsPrice"), args, f.ctx);
+  ASSERT_TRUE(got.as_double().has_value() == false) << "a bad day count was accepted";
+  const std::string text = got.describe();
   EXPECT_NE(text.find("Payment DCC"), std::string::npos) << text;
   EXPECT_NE(text.find("ACT/999"), std::string::npos)
       << "the cell should quote what the user typed: " << text;

@@ -23,9 +23,8 @@ namespace {
 using cdsmodel::xl::CallContext;
 using cdsmodel::xl::Conventions;
 using cdsmodel::xl::CurveRegistry;
-using cdsmodel::xl::failure_text;
 using cdsmodel::xl::find_function;
-using cdsmodel::xl::is_failure;
+using cdsmodel::xl::invoke;
 using cdsmodel::xl::LabelledRange;
 using cdsmodel::xl::LabelSpec;
 using cdsmodel::xl::MarketData;
@@ -87,8 +86,8 @@ struct Call {
   std::string fails_with(std::size_t index, XlValue bad) const {
     std::vector<XlValue> a = args();
     a[index] = std::move(bad);
-    const XlValue got = find_function("CdsPrice")->dispatch(a, const_cast<CallContext &>(ctx));
-    return is_failure(got) ? failure_text(got) : std::string{};
+    const XlValue got = invoke(*find_function("CdsPrice"), a, const_cast<CallContext &>(ctx));
+    return got.as_double().has_value() == false ? got.describe() : std::string{};
   }
 };
 
@@ -186,8 +185,8 @@ TEST(XlErrorPaths, TheGroupedFormRejectsEachBlockByName) {
                                      {"Recovery Rate", XlValue{0.4}}});
 
   const auto run = [&](std::vector<XlValue> a) {
-    const XlValue got = find_function("CDS.Price")->dispatch(a, c.ctx);
-    return is_failure(got) ? failure_text(got) : std::string{};
+    const XlValue got = invoke(*find_function("CDS.Price"), a, c.ctx);
+    return got.as_double().has_value() == false ? got.describe() : std::string{};
   };
 
   // The control: all four blocks good.
@@ -272,8 +271,10 @@ TEST(XlErrorPaths, AnErrorCellIsRefusedByEveryReader) {
   EXPECT_FALSE(bad.as_bool().has_value());
   EXPECT_FALSE(bad.as_grid().has_value());
   // And is reported as a failure by the dispatcher convention.
-  EXPECT_TRUE(is_failure(bad));
-  EXPECT_EQ(failure_text(bad), "#VALUE!");
+  EXPECT_FALSE(bad.as_double().has_value());
+  // The cell's own error text survives into the description, so a message
+  // built from it tells the user which cell upstream of theirs broke.
+  EXPECT_NE(bad.describe().find("#VALUE!"), std::string::npos) << bad.describe();
 }
 
 TEST(XlErrorPaths, GridsCompareByShapeAndContent) {

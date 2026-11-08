@@ -89,6 +89,92 @@ would pass 341 copies of "invalid input").
 
 Rationale and the measurements behind the four kinds: `specs/01_error_channel.md`.
 
+## The Excel add-in
+
+`cdsmodel.xll` is built **only on Windows, only with the Excel XLL SDK
+present.** A session on any other machine builds and tests everything except
+the add-in itself, and that is by design, not a limitation to work around.
+
+### Four layers, and what may depend on what
+
+    cdsmodel          the domain library            all platforms
+    xl/core           XlValue, dispatch, readers    all platforms
+    xl/sdk            XLOPER12 <-> XlValue          Windows + SDK
+    xl/interface      cdsmodel.xll                  Windows + SDK
+
+Dependencies run **downward only**: `cdsmodel` knows nothing about Excel, and
+`xl/core` knows nothing about `XLOPER12`. **Logic does not belong in `xl/sdk`
+or `xl/interface`** -- those two are the only code CI cannot reach, so anything
+decided there is verified on one machine by hand. If a marshalling rule is
+worth a test, it goes in `xl/core`.
+
+→ enforced by `python verify.py coverage`, whose `xl/core` floor is high
+precisely because that is where the testable logic must live.
+
+### Getting the SDK
+
+The SDK is **Microsoft's**, so it is gitignored and never committed -- the same
+rule as the ISDA oracle, for the same reason, and this repo is public.
+
+1. Download the **Excel 2013 XLL SDK** from Microsoft.
+2. Put it in `xlsdk/`, or point `CDSMODEL_XLSDK_DIR` anywhere else.
+3. Four files are needed, and CMake searches for them rather than assuming a
+   layout: `xlcall.h`, `xlcall.cpp`, `framework.h`, `framework.c`.
+
+There is **no import library**: `xlcall.cpp` resolves the callback with
+`GetProcAddress(hmodule, "MdCallBack12")` from the running Excel process, so
+bitness is the compiler's decision and cannot be mismatched. Build **x64** --
+64-bit Excel cannot load a 32-bit add-in, which is why upstream's `win32`-only
+XLL is unusable rather than merely old.
+
+Configure reports what it found, or names each missing file:
+
+    -- cdsmodel: Excel XLL SDK found
+    -- cdsmodel: building cdsmodel.xll
+
+→ enforced by `python verify.py sdk-absent`.
+
+### Producing and recording the add-in's output
+
+An XLL only truly runs inside Excel, interactively, which is not an oracle. So
+the result is recorded rather than asserted, and the workbook reports its own
+verdict:
+
+    cmake --preset release
+    cmake --build --preset release --target cdsmodel_xll
+    python tools/gen_xll_workbook.py          # writes tests/xll/smoke.xlsx
+
+Then, by hand: load `cdsmodel.xll` in 64-bit Excel, open the workbook, let it
+recalculate. Every row carries the value the C++ library computed and a verdict
+column comparing it to what Excel got.
+
+**Record the result in `specs/reasoning/C8.md`** with the date, the Excel
+version, and the verdict column's contents. That file is the only evidence
+tier 1 has for the add-in, so an empty or stale one means the add-in is
+unverified -- say so plainly rather than implying otherwise.
+
+### What the add-in exposes
+
+Every function is registered **twice**: under its original name and argument
+list, so existing workbooks keep working, and under a grouped form taking
+labelled two-column ranges. Both read into the same four structs and then run
+one code path, so they cannot disagree -- and a test compares them bitwise.
+
+    CdsPrice   16 positional arguments   (upstream's, unchanged)
+    CDS.Price   5 arguments              (Valuation, Trade, Conventions, Market, Clean)
+
+**A failed call returns the library's own message as text in the cell.** Not
+`#VALUE!`, and not a log entry a user has to go and read -- upstream needed six
+of its eighteen functions to manage that log, and all six are gone.
+
+Adding a function means adding a row to the table in `xl/core/src/functions.cpp`
+and a three-line wrapper in `xl/interface/src/exports.cpp`. Registration walks
+the table, so the name, type codes, parameter names, help and category cannot
+drift apart.
+
+→ enforced by `python verify.py coverage` and the `Registration` tests, which
+assert the arity the type codes declare equals the documented parameter count.
+
 ## Formatting
 
 `clang-format` covers `include/`, `src/` and `tests/` only. Upstream C is never

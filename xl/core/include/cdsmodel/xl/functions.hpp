@@ -33,7 +33,16 @@ struct CallContext {
   CurveRegistry &curves;
 };
 
-using Dispatcher = XlValue (*)(std::span<const XlValue>, CallContext &);
+/// Returns `Expected<XlValue>`, not `XlValue`.
+///
+/// An earlier revision returned a bare `XlValue` and treated any string result
+/// as a failure -- the convention `cpp_fdm_world` uses, and it works there
+/// because every function returns a number. It breaks here: upstream's
+/// `IRZeroCurveBuild` and `CleanSpreadCurveBuild` return a curve HANDLE, which
+/// is text, so a successful build would have been reported as an error. Found
+/// by auditing before those functions were written, which is the only cheap
+/// time to find it.
+using Dispatcher = Expected<XlValue> (*)(std::span<const XlValue>, CallContext &);
 
 struct FunctionSpec {
   /// The name as it appears in a cell.
@@ -61,23 +70,18 @@ struct FunctionSpec {
 /// Looks a function up by the name a cell would use.
 [[nodiscard]] const FunctionSpec *find_function(std::string_view name);
 
-/// Turns a failed call into what the cell shows. Artifact #01 reaching the
-/// user: the message the library produced, not `#VALUE!` and not a log entry
-/// somebody has to go and read.
+/// What the cell shows for a failed call. Artifact #01 reaching the user: the
+/// message the library produced, not `#VALUE!` and not a log entry somebody
+/// has to go and read.
 ///
-/// The result is TEXT, not an `XlError`. The two are different directions:
-/// `XlError` is an Excel error value arriving FROM a cell (`#DIV/0!`), while a
-/// function that failed returns a readable sentence. Since every function here
-/// returns a number on success, text in the result IS the failure signal --
-/// the same convention `cpp_fdm_world` uses with `TempStr12("input 1 is not a
-/// matrix")`, and the reason C3 asks for a message rather than an error code.
+/// Called at the EDGE -- by the Windows layer, once -- rather than inside each
+/// dispatcher, so that the error stays typed for as long as possible and a
+/// text result can never be confused with a text error.
 [[nodiscard]] XlValue to_cell(const Error &error);
 
-/// Whether a dispatcher's result is a failure, under the convention above.
-/// Spelled out so a caller never has to remember which way round it is.
-[[nodiscard]] bool is_failure(const XlValue &result);
-
-/// The failure text, or empty if the result is a value.
-[[nodiscard]] std::string failure_text(const XlValue &result);
+/// Runs a function by name and renders the outcome for a cell. This is what
+/// the five entry points call, and the only place an error becomes text.
+[[nodiscard]] XlValue invoke(const FunctionSpec &spec, std::span<const XlValue> args,
+                             CallContext &context);
 
 } // namespace cdsmodel::xl

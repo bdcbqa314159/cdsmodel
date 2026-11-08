@@ -17,31 +17,31 @@ constexpr std::string_view kCategory = "CDS Model";
 // readers over one shape, so they cannot disagree about anything except how
 // the sheet spelled the inputs.
 
-[[nodiscard]] XlValue price_from(const Valuation &v, const TradeTerms &t, const Conventions &c,
-                                 const MarketData &m, bool clean) {
+[[nodiscard]] Expected<XlValue> price_from(const Valuation &v, const TradeTerms &t,
+                                           const Conventions &c, const MarketData &m, bool clean) {
   const Cds cds = make_cds(t, c);
   const Expected<double> price = cds_price(cds, v.today, v.cash_settle, v.step_in, c.holidays,
                                            m.discount, m.spread, m.recovery, clean);
   if (!price) {
-    return to_cell(price.error());
+    return unexpected(price.error());
   }
   return XlValue{*price};
 }
 
 /// The original signature, unchanged, so an existing workbook keeps working.
 /// 16 arguments in upstream's order; see the parameter table below.
-XlValue dispatch_cds_price_legacy(std::span<const XlValue> args, CallContext &ctx) {
+Expected<XlValue> dispatch_cds_price_legacy(std::span<const XlValue> args, CallContext &ctx) {
   if (args.size() != 16) {
-    return to_cell(Error{ErrorKind::bad_argument,
-                         "CdsPrice takes 16 arguments, got " + detail::num(args.size())});
+    return fail(ErrorKind::bad_argument,
+                "CdsPrice takes 16 arguments, got " + detail::num(args.size()));
   }
   const Expected<Valuation> valuation = Valuation::read_positional(args.subspan(0, 3));
   if (!valuation) {
-    return to_cell(valuation.error());
+    return unexpected(valuation.error());
   }
   const Expected<TradeTerms> trade = TradeTerms::read_positional(args.subspan(3, 3));
   if (!trade) {
-    return to_cell(trade.error());
+    return unexpected(trade.error());
   }
   // Upstream's order interleaves: coupon rate sits at 6, then the conventions,
   // then the curves. The subspans below are that order, not a tidier one.
@@ -49,16 +49,16 @@ XlValue dispatch_cds_price_legacy(std::span<const XlValue> args, CallContext &ct
                                                 args[9], args[10], args[11]};
   const Expected<Conventions> conventions = Conventions::read_positional(convention_cells);
   if (!conventions) {
-    return to_cell(conventions.error());
+    return unexpected(conventions.error());
   }
   const std::array<XlValue, 3> market_cells{args[12], args[13], args[14]};
   const Expected<MarketData> market = MarketData::read_positional(market_cells, ctx.curves);
   if (!market) {
-    return to_cell(market.error());
+    return unexpected(market.error());
   }
   const Expected<bool> clean = args[15].as_bool();
   if (!clean) {
-    return to_cell(Error{ErrorKind::bad_argument, "Clean Price: " + clean.error().message});
+    return fail(ErrorKind::bad_argument, "Clean Price: " + clean.error().message);
   }
   return price_from(*valuation, *trade, *conventions, *market, *clean);
 }
@@ -66,30 +66,30 @@ XlValue dispatch_cds_price_legacy(std::span<const XlValue> args, CallContext &ct
 /// The grouped signature: four labelled ranges and a flag. Five arguments
 /// where the original has sixteen, and the six convention cells are written
 /// once per desk rather than once per formula.
-XlValue dispatch_cds_price_grouped(std::span<const XlValue> args, CallContext &ctx) {
+Expected<XlValue> dispatch_cds_price_grouped(std::span<const XlValue> args, CallContext &ctx) {
   if (args.size() != 5) {
-    return to_cell(Error{ErrorKind::bad_argument,
-                         "CDS.Price takes 5 arguments, got " + detail::num(args.size())});
+    return fail(ErrorKind::bad_argument,
+                "CDS.Price takes 5 arguments, got " + detail::num(args.size()));
   }
   const Expected<Valuation> valuation = Valuation::read_block(args[0]);
   if (!valuation) {
-    return to_cell(valuation.error());
+    return unexpected(valuation.error());
   }
   const Expected<TradeTerms> trade = TradeTerms::read_block(args[1]);
   if (!trade) {
-    return to_cell(trade.error());
+    return unexpected(trade.error());
   }
   const Expected<Conventions> conventions = Conventions::read_block(args[2]);
   if (!conventions) {
-    return to_cell(conventions.error());
+    return unexpected(conventions.error());
   }
   const Expected<MarketData> market = MarketData::read_block(args[3], ctx.curves);
   if (!market) {
-    return to_cell(market.error());
+    return unexpected(market.error());
   }
   const Expected<bool> clean = args[4].as_bool();
   if (!clean) {
-    return to_cell(Error{ErrorKind::bad_argument, "Clean Price: " + clean.error().message});
+    return fail(ErrorKind::bad_argument, "Clean Price: " + clean.error().message);
   }
   return price_from(*valuation, *trade, *conventions, *market, *clean);
 }
@@ -143,18 +143,12 @@ const FunctionSpec *find_function(std::string_view name) {
   return found == kFunctions.end() ? nullptr : &*found;
 }
 
-bool is_failure(const XlValue &result) {
-  return std::holds_alternative<std::string>(result.storage()) || result.is_error();
-}
-
-std::string failure_text(const XlValue &result) {
-  if (const auto *s = std::get_if<std::string>(&result.storage())) {
-    return *s;
+XlValue invoke(const FunctionSpec &spec, std::span<const XlValue> args, CallContext &context) {
+  const Expected<XlValue> result = spec.dispatch(args, context);
+  if (!result) {
+    return to_cell(result.error());
   }
-  if (const auto *e = std::get_if<XlError>(&result.storage())) {
-    return e->text;
-  }
-  return {};
+  return *result;
 }
 
 XlValue to_cell(const Error &error) {
