@@ -1,6 +1,6 @@
-# Artifact #3 — the XLL foundation (draft)
+# Artifact #3 — the XLL foundation (ratified)
 
-**Status:** draft
+**Status:** ratified 2026-11-08 (Bernardo Cohen)
 **Governing purpose:** Get a C++20 add-in loading in modern 64-bit Excel with
 one function working end to end, so the pipe is proven before the 12-function
 surface is designed on top of it (artifact #4).
@@ -24,15 +24,13 @@ used this model, so the port is currently only half a replacement.
 | `setjmp.h` | included; `setjmp`/`longjmp` never called |
 
 **64-bit Excel cannot load a 32-bit XLL**, and `XLOPER` is the pre-2007 API:
-no Unicode, 255-character strings, 65,536-row grids. There is no in-place
-upgrade path; there is only a new add-in that keeps the function names.
+no Unicode, 255-char strings, 65,536-row grids. No in-place upgrade exists --
+only a new add-in that keeps the function names.
 
-**Two-thirds of the parameter surface is repetition** -- `Pay Acc On Default`,
-`Coupon Interval`, `Stub Type`, `Payment DCC`, `Bad Day Convention`,
-`Holidays`, retyped per formula. That block is the conventions struct, and
-upstream had nowhere to put it: a C API with no aggregate feeding a grid with
-only positional cells. The 17-argument signature is the absence of a type.
-Fixing it is artifact #4; this slice builds the pipe it runs on.
+**Two-thirds of the parameter surface is repetition**, and that repeated block
+is the conventions struct: upstream had nowhere to put it, with no aggregate in
+C and only positional cells in a grid. The 17-argument signature is the absence
+of a type. Fixing it is artifact #4; this slice builds the pipe it runs on.
 
 ## The SDK: required, never committed
 
@@ -41,38 +39,54 @@ The build uses the **official Microsoft Excel XLL SDK**. Hand-writing the
 byte-exact struct layout whose failure mode is a crash inside Excel, and the
 standard is the standard.
 
-The copy upstream ships is no help regardless -- measured: its `xlcall.h`
-mentions `XLOPER12` **zero** times and declares `int far pascal Excel4v(...)`,
-using 16-bit `far`/`pascal` keywords. It is Excel 97-era and predates the
-modern ABI entirely.
+The SDK is Microsoft's, so it is gitignored exactly like the ISDA oracle, for
+the same reason, and enforced the same way (`verify.py sdk-absent`). It goes in
+`xlsdk/`, or anywhere `CDSMODEL_XLSDK_DIR` points. CMake searches for the four
+files rather than assuming a layout, and names any that are missing.
 
-`xlcall.h` and `xlcall32.lib` are Microsoft's, so they are gitignored exactly
-like the ISDA oracle, for the same reason, and enforced the same way:
+**Same two-tier shape the port already has:** tier 2 needs the licence-gated
+thing locally, tier 1 runs in CI without it.
 
-    xlsdk/                      <- the SDK goes here, gitignored
-    CDSMODEL_XLSDK_DIR          <- or point it elsewhere
+## Architecture
 
-CMake SEARCHES the directory for `xlcall.h` and an **x64** `xlcall32.lib`
-rather than assuming a layout, and reports which it found or which is missing.
+Taken from `cpp_fdm_world`, which already solved this: the domain library knows
+nothing of Excel, the SDK is wrapped in its own library, and the add-in is a
+third layer on top. One change, and it is the reason the Acceptance table below
+has oracles at all.
 
-**Same two-tier shape the port already has.** Tier 2 needs the licence-gated
-thing locally; tier 1 runs in CI without it. The `.xll` is a local build;
-marshalling, the registration table and dispatch are ordinary C++ that run on
-every platform in the matrix.
+| layer | target | platform | role |
+|---|---|---|---|
+| `cdsmodel` | `cdsmodel` | all | the domain library, untouched by this slice |
+| `xl/core` | `cdsmodel_xl_core` | **all** | `XlValue`, the registration table, dispatch, the labelled-range reader, `Expected` -> cell text |
+| `xl/sdk` | `cdsmodel_xl_sdk` | Windows | `XLOPER12` <-> `XlValue`, SDK sources, temp memory |
+| `xl/interface` | `cdsmodel_xll` | Windows | the five entry points; `SUFFIX ".xll"` |
+
+**The seam is `XlValue`, and that is the one deviation from `cpp_fdm_world`.**
+There, the whole Excel layer sits behind `#ifdef WIN32` -- right for that
+project, wrong here, because it would put the marshalling, the dispatch table
+and the labelled-range reader on the only machine that cannot run CI. Moving
+the boundary one layer down means `xl/core` is ordinary C++ that compiles and
+tests on every platform in the matrix, and only a thin adapter needs Windows.
 
 ## MUST — in scope, full discipline
 
-1. `xll/` builds `cdsmodel.xll` for **x64**, MSVC, C++20, as an OPTIONAL target
-   (`CDSMODEL_BUILD_XLL`, defaulting on only for MSVC).
-2. The XLL links the official SDK from `CDSMODEL_XLSDK_DIR`; the SDK itself is
-   never committed, enforced by `verify.py sdk-absent`.
+1. The four layers above. `cdsmodel.xll` is a `SHARED` library with
+   `SUFFIX ".xll"` (as in `cpp_fdm_world`), built only when the SDK is present
+   and only on Windows.
+2. The SDK's **four source files** are compiled from `CDSMODEL_XLSDK_DIR`
+   (`xlcall.h/.cpp`, `framework.h/.c`) -- no import library, because
+   `xlcall.cpp` resolves `MdCallBack12` from the running Excel process, so
+   bitness is the compiler's decision and cannot be mismatched. The SDK is
+   never committed: `verify.py sdk-absent`.
 3. The five entry points, and **nothing else that touches Excel**.
 4. A pure marshalling layer: `XLOPER12` <-> `Date`, `double`, `std::wstring`,
    2-D ranges, the missing/empty argument, and `Expected<T>` -> error text in
    the cell.
-5. A declarative registration table carrying name, parameter names,
-   per-parameter help, and category -- the one genuinely good idea in the
-   original, kept.
+5. A **declarative** registration table carrying name, type codes, parameter
+   names, per-parameter help and category. Upstream's `TFuncDef` had this right
+   and `cpp_fdm_world` hand-writes each `Excel12f(xlfRegister, 0, 11, ...)`
+   call instead -- fine for six functions, copy-paste for twenty-four. The
+   table is the one genuinely good idea in the original XLL.
 6. **One** function end to end -- `CdsPrice`, the original 16-argument form --
    proving registration, marshalling and dispatch work against real Excel
    before 11 more are built on the same pipe.
@@ -113,7 +127,8 @@ Excel is a real oracle; opening the real one and looking is not.
 
 | ID | Criterion | Oracle | Rung |
 |----|-----------|--------|------|
-| C1 | THE XLL SHALL build for x64 under MSVC with `/W4 /WX` when the SDK is present, and the build SHALL be skipped with a clear message when it is absent or 32-bit-only | local build with the SDK; CI proves the skip path on all three OSes, since no runner has the SDK | 3 |
+| C1 | THE XLL SHALL build for x64 under MSVC with `/W4 /WX` when the SDK is present; the SDK probe SHALL name every missing file when it is incomplete, on every platform | local build with the SDK; the probe's three branches (absent, partial, complete) are exercised in CI, which is why it runs even where no XLL can be built | 3 |
+| C0 | `xl/core` SHALL compile and its tests pass on Windows, macOS and Linux with no SDK and no Excel | `ctest` in the existing matrix -- this is what D8 buys | 3 |
 | C2 | `XLOPER12` round-trips every supported type without loss: `Date`, `double`, `std::string` (including >255 chars and non-ASCII), 2-D ranges, and the empty/missing argument | unit tests against the stub host; the >255-char and Unicode cases are exactly what `XLOPER` could not do | — |
 | C3 | WHEN a library call returns an error, THE cell SHALL receive that error's own message as text, not `#VALUE!` and not a log entry | unit test asserting the string reaching the stub host equals `Expected`'s message | — |
 | C4 | THE registration table SHALL describe every exported function, and its arity SHALL equal the dispatcher's | gate: table vs dispatch signatures compared mechanically, as `verify.py claims` does for the port | — |
@@ -126,10 +141,13 @@ Excel is a real oracle; opening the real one and looking is not.
 
 | # | Decision | Alternatives | Why this | Revisit when |
 |---|----------|--------------|----------|--------------|
-| D1 | Use the official Microsoft Excel XLL SDK, gitignored at `xlsdk/` | hand-write the `XLOPER12` ABI and resolve `MdCallBack12` dynamically; vendor the SDK | **User's call, 2026-11-08.** Hand-writing the ABI saves a setup step and costs a byte-exact struct layout whose failure mode is a crash inside Excel, not a failed assert -- and upstream's own vendored header is Excel 97-era (`XLOPER12`: 0 matches, `far pascal` declarations), so there was nothing to inherit either way. Use the standard | Microsoft stops shipping the SDK |
+| D8 | `XlValue` splits the logic from the `XLOPER12` adapter | follow `cpp_fdm_world` and guard the whole Excel layer with `#ifdef WIN32` | Behind the guard, every decision the add-in makes would be verified on one machine by hand -- the situation `CLAUDE.md`'s two-tier contract exists to prevent. Costs one adapter, buys CI coverage | `XlValue` cannot carry some `XLOPER12` detail |
+| D9 | Headers declare, sources define; no `using namespace std;` in a header | follow `cpp_fdm_world`'s `xlOper.h` | It works there because one TU includes it; across several TUs it is an ODR violation whose symptom is a duplicate-symbol link error pointing nowhere useful | -- |
+| D10 | Explicit `XCHAR` conversion, not `mbstowcs` | `mbstowcs`, as `cpp_fdm_world` uses | Locale-dependent: the same workbook could marshal a path differently on two machines | -- |
+| D1 | Use the official Excel XLL SDK, gitignored at `xlsdk/` | hand-write the `XLOPER12` ABI; vendor the SDK | **User's call, 2026-11-08.** Hand-writing it trades a setup step for a byte-exact layout whose failure mode is a crash in Excel. Upstream's vendored header is Excel 97-era anyway (`XLOPER12`: 0 matches, `far pascal`), so there was nothing to inherit | Microsoft stops shipping it |
 | D2 | `XLOPER12` only; x64 only | support `XLOPER` and 32-bit too | Supporting the legacy pair doubles the marshalling surface to serve Excel versions out of support. The original's limits -- 255-char strings, 65k rows -- came from exactly that choice | someone needs 32-bit Excel |
 | D3 | Five thin entry points; everything else pure and testable | a conventional XLL where logic lives in the `xlAuto*` functions | This is what makes C2-C7 runnable without Excel. It is the only reason this slice has an oracle at all | — |
-| D4 | The 6 error-log functions are dropped, not ported | reproduce them over a new log | They exist because a failed call could only say FAILURE. `Expected<T>` carries the reason to the cell that asked, which is strictly better than a shared log a user must go and read | a user needs an audit trail across calls |
+| D4 | The 6 error-log functions are dropped | reproduce them over a new log | They exist because a failed call could only say FAILURE. `Expected<T>` carries the reason to the cell that asked | a user needs an audit trail across calls |
 | D5 | Function names kept identical to the original | rename for clarity | Existing workbooks reference `CdsPrice`, `ParSpreads`. Keeping names is most of what "a complete replacement" means; the arguments change, the names must not | — |
 
 ## Open questions before ratification
@@ -155,7 +173,8 @@ Excel is a real oracle; opening the real one and looking is not.
 
 | ID | Status | Oracle result | Note |
 |----|--------|---------------|------|
-| C1 | todo | | |
+| C0 | todo | | the point of D8 |
+| C1 | todo | | probe branches, all three |
 | C2 | todo | | the ABI risk D1 takes on |
 | C3 | todo | | artifact #01 reaching the cell |
 | C4 | todo | | |

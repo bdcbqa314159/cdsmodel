@@ -296,37 +296,63 @@ endif()
 # the two files it needs rather than assuming a path, and says what it found.
 # =========================================================================
 set(CDSMODEL_XLSDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/xlsdk"
-    CACHE PATH "Microsoft Excel XLL SDK (xlcall.h + x64 xlcall32.lib)")
+    CACHE PATH "Microsoft Excel XLL SDK (xlcall.h/.cpp + framework.h/.c)")
 
+# Four SOURCE files, no import library. The SDK's own xlcall.cpp resolves the
+# callback with GetProcAddress(hmodule, "MdCallBack12") from the running Excel
+# process, so there is no xlcall32.lib to link and therefore no 32/64-bit
+# mismatch to get wrong -- the compiler decides the bitness.
+set(CDSMODEL_XLSDK_NEEDS xlcall.h xlcall.cpp framework.h framework.c)
+
+# The SDK probe runs on EVERY platform, even though only Windows can build the
+# add-in. Keeping "is the SDK usable?" separate from "can we build an XLL?"
+# means the diagnostic below is exercised by the macOS and Linux CI jobs too --
+# otherwise the only machine that ever sees it is the one trying to use it.
+set(CDSMODEL_XLSDK_USABLE OFF)
 set(CDSMODEL_XLL_AVAILABLE OFF)
-if(WIN32 AND EXISTS "${CDSMODEL_XLSDK_DIR}")
-  file(GLOB_RECURSE CDSMODEL_XLCALL_H "${CDSMODEL_XLSDK_DIR}/*xlcall.h"
-                                      "${CDSMODEL_XLSDK_DIR}/*XLCALL.H")
-  # x64 only: a 32-bit XLL cannot load in the Excel anyone runs (artifact #3 D2).
-  file(GLOB_RECURSE CDSMODEL_XLCALL_LIB "${CDSMODEL_XLSDK_DIR}/*x64/*xlcall32.lib"
-                                        "${CDSMODEL_XLSDK_DIR}/*x64/*XLCALL32.LIB"
-                                        "${CDSMODEL_XLSDK_DIR}/*X64/*XLCALL32.LIB")
-  list(GET CDSMODEL_XLCALL_H 0 CDSMODEL_XLCALL_H_FIRST)
-  if(CDSMODEL_XLCALL_H AND CDSMODEL_XLCALL_LIB)
-    list(GET CDSMODEL_XLCALL_LIB 0 CDSMODEL_XLCALL_LIB_FIRST)
-    get_filename_component(CDSMODEL_XLSDK_INCLUDE "${CDSMODEL_XLCALL_H_FIRST}" DIRECTORY)
-    set(CDSMODEL_XLL_AVAILABLE ON)
-    message(STATUS "cdsmodel: Excel XLL SDK found")
-    message(STATUS "  header : ${CDSMODEL_XLCALL_H_FIRST}")
-    message(STATUS "  library: ${CDSMODEL_XLCALL_LIB_FIRST}")
-  else()
-    message(STATUS "cdsmodel: ${CDSMODEL_XLSDK_DIR} exists but is not a usable SDK")
-    if(NOT CDSMODEL_XLCALL_H)
-      message(STATUS "  MISSING xlcall.h anywhere under it")
-    endif()
-    if(NOT CDSMODEL_XLCALL_LIB)
-      message(STATUS "  MISSING an x64 xlcall32.lib (a 32-bit one is not enough)")
-    endif()
-  endif()
-elseif(NOT WIN32)
-  message(STATUS "cdsmodel: not Windows, so no XLL (the marshalling tests still run)")
+if(NOT EXISTS "${CDSMODEL_XLSDK_DIR}")
+  message(STATUS "cdsmodel: no Excel XLL SDK at ${CDSMODEL_XLSDK_DIR}")
 else()
-  message(STATUS "cdsmodel: no Excel XLL SDK at ${CDSMODEL_XLSDK_DIR}; XLL skipped")
+  # Search rather than assume: the SDK's internal layout and file casing have
+  # both varied across releases.
+  set(CDSMODEL_XLSDK_FOUND "")
+  set(CDSMODEL_XLSDK_MISSING "")
+  foreach(want ${CDSMODEL_XLSDK_NEEDS})
+    file(GLOB_RECURSE hits "${CDSMODEL_XLSDK_DIR}/${want}")
+    if(NOT hits)
+      string(TOUPPER "${want}" want_upper)
+      file(GLOB_RECURSE hits "${CDSMODEL_XLSDK_DIR}/${want_upper}")
+    endif()
+    if(hits)
+      list(GET hits 0 hit)
+      list(APPEND CDSMODEL_XLSDK_FOUND "${hit}")
+    else()
+      list(APPEND CDSMODEL_XLSDK_MISSING "${want}")
+    endif()
+  endforeach()
+
+  if(CDSMODEL_XLSDK_MISSING)
+    message(STATUS "cdsmodel: ${CDSMODEL_XLSDK_DIR} is not a usable Excel XLL SDK")
+    foreach(m ${CDSMODEL_XLSDK_MISSING})
+      message(STATUS "  MISSING ${m}")
+    endforeach()
+    message(STATUS "  (expected the Excel 2013 XLL SDK: INCLUDE/ and SRC/)")
+  else()
+    set(CDSMODEL_XLSDK_USABLE ON)
+    message(STATUS "cdsmodel: Excel XLL SDK found")
+    foreach(f ${CDSMODEL_XLSDK_FOUND})
+      message(STATUS "  ${f}")
+    endforeach()
+  endif()
+endif()
+
+if(CDSMODEL_XLSDK_USABLE AND WIN32)
+  set(CDSMODEL_XLL_AVAILABLE ON)
+  message(STATUS "cdsmodel: XLL enabled")
+elseif(CDSMODEL_XLSDK_USABLE)
+  message(STATUS "cdsmodel: SDK is usable but this is not Windows, so no XLL")
+else()
+  message(STATUS "cdsmodel: XLL skipped")
 endif()
 
 # =========================================================================
