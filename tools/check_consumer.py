@@ -179,7 +179,11 @@ def b3_fetchcontent() -> None:
             "cmake_minimum_required(VERSION 3.20)\n"
             "project(cdsmodel_fc_consumer LANGUAGES CXX)\n"
             "include(FetchContent)\n"
-            f'FetchContent_Declare(cdsmodel SOURCE_DIR "{ROOT}")\n'
+            # as_posix(): CMake accepts forward slashes everywhere, and a
+            # Windows path interpolated raw makes `D:\a\cdsmodel` -- where
+            # CMake reads `\a` as an invalid character escape and refuses to
+            # parse the file.
+            f'FetchContent_Declare(cdsmodel SOURCE_DIR "{ROOT.as_posix()}")\n'
             "FetchContent_MakeAvailable(cdsmodel)\n"
             "add_executable(consumer main.cpp)\n"
             "target_link_libraries(consumer PRIVATE cdsmodel::cdsmodel)\n"
