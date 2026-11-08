@@ -12,6 +12,8 @@
 // region, a kink, a function that cannot be evaluated above a threshold, and
 // one with two roots where a one-ULP change decides which you get.
 
+#include <cdsmodel/expected.hpp>
+
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -44,7 +46,7 @@ struct Objective {
   int perturb = 0;
   int calls = 0;
 
-  std::optional<double> operator()(double x) {
+  cdsmodel::Expected<double> operator()(double x) {
     ++calls;
     double v = 0.0;
     switch (which) {
@@ -74,7 +76,8 @@ struct Objective {
       break;
     case Which::FailsAbove:
       if (x > 3.0) {
-        return std::nullopt;
+        return cdsmodel::fail(cdsmodel::ErrorKind::bad_argument,
+                              "the objective is undefined at x = " + cdsmodel::detail::num(x));
       }
       v = x - 2.0;
       break;

@@ -88,7 +88,7 @@ struct Benchmarks {
     for (std::size_t i = 0; i < data.size(); ++i) {
       dates.push_back(cdsmodel::to_tdate(data[i].first));
       rates.push_back(data[i].second);
-      const std::optional<cdsmodel::InstrumentKind> kind =
+      const cdsmodel::Expected<cdsmodel::InstrumentKind> kind =
           cdsmodel::instrument_kind_from_code(codes[i]);
       quotes.push_back(cdsmodel::InstrumentQuote{
           kind.value_or(cdsmodel::InstrumentKind::MoneyMarket), data[i].first, data[i].second});
@@ -133,7 +133,7 @@ TEST_F(IrZeroCurveDifferential, MatchesAcrossInstrumentMixesAndConventions) {
               JPMCDS_ACT_360, JPMCDS_ACT_360, cdsmodel::to_upstream_code(conv),
               const_cast<char *>("NONE")));
 
-          const std::optional<cdsmodel::ZeroCurve> got =
+          const cdsmodel::Expected<cdsmodel::ZeroCurve> got =
               cdsmodel::build_ir_zero_curve(value_date, bench.quotes, mm_dcc,
                                             {.fixed_frequency = freq,
                                              .float_frequency = freq,
@@ -207,7 +207,7 @@ TEST_F(IrZeroCurveDifferential, AMoneyMarketOnlyCurveMatchesToUlps) {
                                      rates.data(), 3, cdsmodel::to_upstream_code(dcc), 2, 2,
                                      JPMCDS_ACT_360, JPMCDS_ACT_360, JPMCDS_BAD_DAY_NONE,
                                      const_cast<char *>("NONE")));
-    const std::optional<cdsmodel::ZeroCurve> got = cdsmodel::build_ir_zero_curve(
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> got = cdsmodel::build_ir_zero_curve(
         value_date, bench.quotes, dcc, {.interp = cdsmodel::InterpType::FlatForwards},
         cdsmodel::Calendar::none());
     ASSERT_EQ(static_cast<bool>(out), got.has_value());
@@ -287,7 +287,8 @@ TEST_F(IrZeroCurveDifferential, Upstream35ToupperReceivesANegativeChar) {
   EXPECT_FALSE(cdsmodel::instrument_kind_from_code(static_cast<char>(0xE9)).has_value());
   for (int byte = 0; byte < 256; ++byte) {
     const char code = static_cast<char>(byte);
-    const std::optional<cdsmodel::InstrumentKind> kind = cdsmodel::instrument_kind_from_code(code);
+    const cdsmodel::Expected<cdsmodel::InstrumentKind> kind =
+        cdsmodel::instrument_kind_from_code(code);
     const bool expected = code == 'M' || code == 'm' || code == 'S' || code == 's';
     EXPECT_EQ(kind.has_value(), expected) << "byte " << byte;
   }

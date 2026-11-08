@@ -69,15 +69,15 @@ TEST(CurveRates, AForwardRateReproducesItsOwnDiscountRatio) {
       for (const long quote_basis : {0L, 1L, 2L, 4L}) {
         for (const auto &[from, to] :
              {std::pair{d(2025, 1, 1), d(2026, 1, 1)}, std::pair{d(2026, 7, 1), d(2029, 3, 15)}}) {
-          const std::optional<double> forward = cdsmodel::forward_from_curve(
+          const cdsmodel::Expected<double> forward = cdsmodel::forward_from_curve(
               curve, interp, from, to, cdsmodel::DayCount::Act365Fixed, quote_basis);
           ASSERT_TRUE(forward.has_value()) << basis << " " << quote_basis;
-          const std::optional<double> back = cdsmodel::rate_to_discount(
+          const cdsmodel::Expected<double> back = cdsmodel::rate_to_discount(
               *forward, from, to, cdsmodel::DayCount::Act365Fixed, quote_basis);
           ASSERT_TRUE(back.has_value());
 
-          const std::optional<double> at_start = cdsmodel::discount_date(curve, from, interp);
-          const std::optional<double> at_end = cdsmodel::discount_date(curve, to, interp);
+          const cdsmodel::Expected<double> at_start = cdsmodel::discount_date(curve, from, interp);
+          const cdsmodel::Expected<double> at_end = cdsmodel::discount_date(curve, to, interp);
           ASSERT_TRUE(at_start.has_value());
           ASSERT_TRUE(at_end.has_value());
           const double ratio = *at_end / *at_start;
@@ -101,7 +101,7 @@ TEST(CurveRates, AForwardOverNoTimeAndTheBackwardOfAForward) {
                    .has_value());
   // A backward forward is legitimate -- upstream's comment says curve
   // construction needs it -- so it must produce a value, not a refusal.
-  const std::optional<double> backward =
+  const cdsmodel::Expected<double> backward =
       cdsmodel::forward_from_curve(curve, InterpType::FlatForwards, d(2029, 1, 1), d(2026, 1, 1),
                                    cdsmodel::DayCount::Act365Fixed, 0);
   EXPECT_TRUE(backward.has_value()) << "a backward forward is a legitimate request";
@@ -112,13 +112,13 @@ TEST(CurveRates, AForwardOnAFlatCurveIsTheCurveRate) {
   // level. Checked against the level rather than against upstream.
   const std::vector<RatePoint> flat{
       {d(2025, 1, 1), 0.04}, {d(2027, 1, 1), 0.04}, {d(2031, 1, 1), 0.04}};
-  const std::optional<cdsmodel::ZeroCurve> curve = cdsmodel::ZeroCurve::create(
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> curve = cdsmodel::ZeroCurve::create(
       d(2024, 1, 1), flat, cdsmodel::kContinuousBasis, cdsmodel::DayCount::Act365Fixed);
   ASSERT_TRUE(curve.has_value());
   for (const auto &[from, to] :
        {std::pair{d(2025, 1, 1), d(2026, 1, 1)}, std::pair{d(2026, 1, 1), d(2030, 1, 1)},
         std::pair{d(2025, 6, 1), d(2027, 9, 9)}}) {
-    const std::optional<double> forward = cdsmodel::forward_from_curve(
+    const cdsmodel::Expected<double> forward = cdsmodel::forward_from_curve(
         *curve, InterpType::FlatForwards, from, to, cdsmodel::DayCount::Act365Fixed,
         static_cast<long>(cdsmodel::kContinuousBasis));
     ASSERT_TRUE(forward.has_value());
@@ -145,7 +145,7 @@ TEST(CurveRates, AParCouponPricesItsOwnInstrumentAtPar) {
           for (const auto &[start, maturity] : {std::pair{d(2024, 1, 1), d(2029, 1, 1)},
                                                 std::pair{d(2024, 2, 20), d(2030, 5, 10)}}) {
             const DateInterval iv{periods, PeriodUnit::Months};
-            const std::optional<double> coupon = cdsmodel::par_coupon_rate(
+            const cdsmodel::Expected<double> coupon = cdsmodel::par_coupon_rate(
                 curve, interp, start, iv, maturity, cdsmodel::DayCount::Act365Fixed, stub,
                 cdsmodel::BadDayConv::None, cdsmodel::BadDayConv::None, weekdays());
             ASSERT_TRUE(coupon.has_value()) << basis << " " << periods;
@@ -154,12 +154,14 @@ TEST(CurveRates, AParCouponPricesItsOwnInstrumentAtPar) {
             const cdsmodel::CashFlowConventions terms{.rate = *coupon,
                                                       .day_count = cdsmodel::DayCount::Act365Fixed,
                                                       .stub_length = cdsmodel::StubLength::Short};
-            const std::optional<std::vector<CashFlow>> flows = cdsmodel::cash_flows_from_schedule(
-                start, maturity, iv, terms, stub, {.add_final = true}, weekdays());
+            const cdsmodel::Expected<std::vector<CashFlow>> flows =
+                cdsmodel::cash_flows_from_schedule(start, maturity, iv, terms, stub,
+                                                   {.add_final = true}, weekdays());
             ASSERT_TRUE(flows.has_value());
-            const std::optional<double> priced = cdsmodel::cash_flow_pv(curve, *flows, interp);
+            const cdsmodel::Expected<double> priced = cdsmodel::cash_flow_pv(curve, *flows, interp);
             ASSERT_TRUE(priced.has_value());
-            const std::optional<double> at_start = cdsmodel::discount_date(curve, start, interp);
+            const cdsmodel::Expected<double> at_start =
+                cdsmodel::discount_date(curve, start, interp);
             ASSERT_TRUE(at_start.has_value());
 
             const std::string where = "basis " + std::to_string(basis) + " iv " +
@@ -191,14 +193,14 @@ TEST(CurveRates, AParCouponOnAFlatCurveIsTheCompoundingEquivalentOfTheLevel) {
   const double level = 0.04;
   const std::vector<RatePoint> flat{
       {d(2025, 1, 1), level}, {d(2027, 1, 1), level}, {d(2031, 1, 1), level}};
-  const std::optional<cdsmodel::ZeroCurve> curve =
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> curve =
       cdsmodel::ZeroCurve::create(d(2024, 1, 1), flat, 1.0, cdsmodel::DayCount::Act365Fixed);
   ASSERT_TRUE(curve.has_value());
 
   for (const int periods : {12, 6, 3}) {
     const double frequency = 12.0 / static_cast<double>(periods);
     const double equivalent = frequency * (std::pow(1.0 + level, 1.0 / frequency) - 1.0);
-    const std::optional<double> coupon = cdsmodel::par_coupon_rate(
+    const cdsmodel::Expected<double> coupon = cdsmodel::par_coupon_rate(
         *curve, InterpType::FlatForwards, d(2025, 1, 1), DateInterval{periods, PeriodUnit::Months},
         d(2030, 1, 1), cdsmodel::DayCount::Act365Fixed, StubPosition::Front,
         cdsmodel::BadDayConv::None, cdsmodel::BadDayConv::None, weekdays());
@@ -224,10 +226,10 @@ TEST(CurveRates, AHigherCurveImpliesAHigherParCoupon) {
   for (const double level : {0.01, 0.02, 0.04, 0.06, 0.09}) {
     const std::vector<RatePoint> flat{
         {d(2025, 1, 1), level}, {d(2027, 1, 1), level}, {d(2031, 1, 1), level}};
-    const std::optional<cdsmodel::ZeroCurve> curve =
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> curve =
         cdsmodel::ZeroCurve::create(d(2024, 1, 1), flat, 1.0, cdsmodel::DayCount::Act365Fixed);
     ASSERT_TRUE(curve.has_value()) << level;
-    const std::optional<double> coupon = cdsmodel::par_coupon_rate(
+    const cdsmodel::Expected<double> coupon = cdsmodel::par_coupon_rate(
         *curve, InterpType::FlatForwards, d(2025, 1, 1), DateInterval{6, PeriodUnit::Months},
         d(2030, 1, 1), cdsmodel::DayCount::Act365Fixed, StubPosition::Front,
         cdsmodel::BadDayConv::None, cdsmodel::BadDayConv::None, weekdays());
@@ -235,7 +237,7 @@ TEST(CurveRates, AHigherCurveImpliesAHigherParCoupon) {
     if (previous) {
       EXPECT_GT(*coupon, *previous) << "level " << level;
     }
-    previous = coupon;
+    previous = *coupon;
   }
 }
 
@@ -276,13 +278,13 @@ TEST(CurveRates, NothingProducesANaN) {
   for (const double rate : {-30.0, -24.0, -1.0, 0.0, 0.05, 24.0, 25.0, 30.0}) {
     for (const double basis : {1.0, 2.0, cdsmodel::kContinuousBasis}) {
       const std::vector<RatePoint> points{{d(2054, 1, 1), rate}, {d(2055, 1, 1), rate}};
-      const std::optional<cdsmodel::ZeroCurve> curve = cdsmodel::ZeroCurve::create(
+      const cdsmodel::Expected<cdsmodel::ZeroCurve> curve = cdsmodel::ZeroCurve::create(
           d(2024, 1, 1), points, basis, cdsmodel::DayCount::Act365Fixed);
       if (!curve) {
         continue; // refused on the way in, which is also an answer
       }
       for (const InterpType interp : {InterpType::Linear, InterpType::FlatForwards}) {
-        const std::optional<double> forward = cdsmodel::forward_from_curve(
+        const cdsmodel::Expected<double> forward = cdsmodel::forward_from_curve(
             *curve, interp, d(2054, 1, 1), d(2055, 1, 1), cdsmodel::DayCount::Act365Fixed, 0);
         if (forward) {
           EXPECT_FALSE(std::isnan(*forward)) << "rate " << rate << " basis " << basis;
@@ -301,7 +303,7 @@ TEST(CurveRates, NothingProducesANaN) {
 namespace {
 
 cdsmodel::ZeroCurve recorded_curve(double basis, long day_count) {
-  const std::optional<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(day_count);
+  const cdsmodel::Expected<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(day_count);
   std::vector<RatePoint> points;
   for (std::size_t i = 0; i < cdsmodel::golden::kCurveRatesPoints; ++i) {
     points.push_back(RatePoint{cdsmodel::from_tdate(cdsmodel::golden::kCurveRatesDates[i]),
@@ -316,12 +318,12 @@ cdsmodel::ZeroCurve recorded_curve(double basis, long day_count) {
 TEST(CurveRates, MatchesRecordedForwardRates) {
   int checked = 0;
   for (const auto &c : cdsmodel::golden::kForwardRateCases) {
-    const std::optional<cdsmodel::DayCount> quote_dcc =
+    const cdsmodel::Expected<cdsmodel::DayCount> quote_dcc =
         cdsmodel::from_upstream_code(c.quote_day_count);
     ASSERT_TRUE(quote_dcc.has_value()) << c.quote_day_count;
     const cdsmodel::ZeroCurve curve = recorded_curve(c.basis, c.curve_day_count);
     const InterpType interp = c.interp == 0 ? InterpType::Linear : InterpType::FlatForwards;
-    const std::optional<double> got =
+    const cdsmodel::Expected<double> got =
         cdsmodel::forward_from_curve(curve, interp, cdsmodel::from_tdate(c.start),
                                      cdsmodel::from_tdate(c.end), *quote_dcc, c.quote_basis);
     const std::string where = "basis " + std::to_string(c.basis) + " interp " +
@@ -341,15 +343,16 @@ TEST(CurveRates, MatchesRecordedForwardRates) {
 TEST(CurveRates, MatchesRecordedParCouponRates) {
   int checked = 0;
   for (const auto &c : cdsmodel::golden::kParCouponCases) {
-    const std::optional<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.coupon_day_count);
+    const cdsmodel::Expected<cdsmodel::DayCount> dcc =
+        cdsmodel::from_upstream_code(c.coupon_day_count);
     ASSERT_TRUE(dcc.has_value()) << c.coupon_day_count;
-    const std::optional<cdsmodel::BadDayConv> conv =
+    const cdsmodel::Expected<cdsmodel::BadDayConv> conv =
         cdsmodel::bad_day_conv_from_upstream(c.bad_day);
     ASSERT_TRUE(conv.has_value()) << c.bad_day;
     const cdsmodel::ZeroCurve curve =
         recorded_curve(c.basis, cdsmodel::to_upstream_code(cdsmodel::DayCount::Act365Fixed));
     const InterpType interp = c.interp == 0 ? InterpType::Linear : InterpType::FlatForwards;
-    const std::optional<double> got = cdsmodel::par_coupon_rate(
+    const cdsmodel::Expected<double> got = cdsmodel::par_coupon_rate(
         curve, interp, cdsmodel::from_tdate(c.start), DateInterval{c.periods, PeriodUnit::Months},
         cdsmodel::from_tdate(c.maturity), *dcc,
         c.stub_at_end ? StubPosition::Back : StubPosition::Front, *conv, *conv,

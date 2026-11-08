@@ -31,7 +31,7 @@ cdsmodel::ZeroCurve curve_from(const cdsmodel::golden::CurveSpec &spec) {
   for (std::size_t i = 0; i < spec.n; ++i) {
     pts.push_back({cdsmodel::from_tdate(spec.dates[i]), spec.rates[i]});
   }
-  const std::optional<cdsmodel::ZeroCurve> c = cdsmodel::ZeroCurve::create(
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> c = cdsmodel::ZeroCurve::create(
       cdsmodel::from_tdate(spec.base), pts, 1.0, cdsmodel::DayCount::Act365Fixed);
   return *c;
 }
@@ -57,7 +57,7 @@ struct Fixture {
     cds.day_count = cdsmodel::DayCount::Act360;
   }
 
-  std::optional<double> price(double coupon) {
+  cdsmodel::Expected<double> price(double coupon) {
     cdsmodel::Cds c = cds;
     c.coupon_rate = coupon;
     return cdsmodel::cds_price(c, today, today, today, cals, discount, hazard, 0.4, true);
@@ -82,17 +82,17 @@ TEST(Cds, MatchesRecordedPrices) {
     cds.stub = cdsmodel::StubMethod{
         c.stub_pos == 1 ? cdsmodel::StubPosition::Back : cdsmodel::StubPosition::Front,
         c.stub_len == 1 ? cdsmodel::StubLength::Long : cdsmodel::StubLength::Short};
-    const std::optional<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.dcc);
+    const cdsmodel::Expected<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.dcc);
     ASSERT_TRUE(dcc.has_value()) << c.dcc;
     cds.day_count = *dcc;
-    const std::optional<cdsmodel::BadDayConv> bdc =
+    const cdsmodel::Expected<cdsmodel::BadDayConv> bdc =
         cdsmodel::bad_day_conv_from_upstream(static_cast<long>(c.bad_day));
     ASSERT_TRUE(bdc.has_value()) << c.bad_day;
     cds.bad_day = *bdc;
     cds.pay_accrual_on_default = c.pay_accrual_on_default;
 
     const std::vector<cdsmodel::Calendar> cals = calendars_for(c.weekend);
-    const std::optional<double> got =
+    const cdsmodel::Expected<double> got =
         cdsmodel::cds_price(cds, today, today + std::chrono::days{c.settle_offset},
                             today + std::chrono::days{c.stepin_offset}, cals, discount,
                             hazards[static_cast<std::size_t>(c.hazard)], c.recovery, c.clean);
@@ -127,7 +127,7 @@ TEST(Cds, MatchesRecordedParSpreads) {
     cds.end = cdsmodel::from_tdate(c.end);
     cds.day_count = *cdsmodel::from_upstream_code(c.dcc);
     cds.pay_accrual_on_default = c.pay_accrual_on_default;
-    const std::optional<double> got = cdsmodel::cds_par_spread(
+    const cdsmodel::Expected<double> got = cdsmodel::cds_par_spread(
         cds, today, today, cals, discount, hazards[static_cast<std::size_t>(c.hazard)], 0.4);
     ASSERT_TRUE(got.has_value()) << "case " << checked;
     EXPECT_NEAR(*got, c.spread, 1.0e-12 * std::max(1.0, std::fabs(c.spread))) << "case " << checked;
@@ -142,12 +142,12 @@ TEST(Cds, PriceDecreasesInTheCoupon) {
   Fixture f;
   std::optional<double> previous;
   for (double coupon : {0.0, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1}) {
-    const std::optional<double> p = f.price(coupon);
+    const cdsmodel::Expected<double> p = f.price(coupon);
     ASSERT_TRUE(p.has_value()) << coupon;
     if (previous) {
       EXPECT_LT(*p, *previous) << "coupon " << coupon << " did not reduce the price";
     }
-    previous = p;
+    previous = *p;
   }
 }
 
@@ -158,10 +158,10 @@ TEST(Cds, ParSpreadIsTheCouponThatPricesToZero) {
   Fixture f;
   for (std::size_t h = 0; h < cdsmodel::golden::kCdsHazardCurves.size(); ++h) {
     f.hazard = curve_from(cdsmodel::golden::kCdsHazardCurves[h]);
-    const std::optional<double> par =
+    const cdsmodel::Expected<double> par =
         cdsmodel::cds_par_spread(f.cds, f.today, f.today, f.cals, f.discount, f.hazard, 0.4);
     ASSERT_TRUE(par.has_value()) << h;
-    const std::optional<double> at_par = f.price(*par);
+    const cdsmodel::Expected<double> at_par = f.price(*par);
     ASSERT_TRUE(at_par.has_value()) << h;
     // Both legs are O(1) in size here, so the residual is rounding on a
     // difference of two numbers near the annuity's magnitude.
@@ -192,14 +192,14 @@ TEST(Cds, FeeLegLastAccrualEndIsUnadjustedAndPayDateIsNot) {
   cds.bad_day = cdsmodel::BadDayConv::Follow;
   const std::vector<cdsmodel::Calendar> cals = calendars_for(0x60);
 
-  const std::optional<cdsmodel::FeeLeg> leg = cdsmodel::cds_fee_leg(cds, 1.0, cals);
+  const cdsmodel::Expected<cdsmodel::FeeLeg> leg = cdsmodel::cds_fee_leg(cds, 1.0, cals);
   ASSERT_TRUE(leg.has_value());
   EXPECT_EQ(leg->payments.back().accrual_end, cds.end + std::chrono::days{1});
   EXPECT_TRUE(leg->observe_start_of_day);
 
   // Without protect_start the extra day goes away and so does the flag.
   cds.protect_start = false;
-  const std::optional<cdsmodel::FeeLeg> plain = cdsmodel::cds_fee_leg(cds, 1.0, cals);
+  const cdsmodel::Expected<cdsmodel::FeeLeg> plain = cdsmodel::cds_fee_leg(cds, 1.0, cals);
   ASSERT_TRUE(plain.has_value());
   EXPECT_EQ(plain->payments.back().accrual_end, cds.end);
   EXPECT_FALSE(plain->observe_start_of_day);
@@ -212,7 +212,7 @@ TEST(Cds, FeeLegFirstDateIsNeverBadDayAdjusted) {
   cds.bad_day = cdsmodel::BadDayConv::Follow;
   const std::vector<cdsmodel::Calendar> cals = calendars_for(0x60);
 
-  const std::optional<cdsmodel::FeeLeg> leg = cdsmodel::cds_fee_leg(cds, 1.0, cals);
+  const cdsmodel::Expected<cdsmodel::FeeLeg> leg = cdsmodel::cds_fee_leg(cds, 1.0, cals);
   ASSERT_TRUE(leg.has_value());
   EXPECT_EQ(leg->payments.front().accrual_start, cds.start) << "the first date was adjusted";
   // Every later boundary IS adjusted, so none of them lands on a weekend --
@@ -230,7 +230,7 @@ TEST(Cds, ZeroLengthIsLegalOnlyWithProtectStart) {
   cds.end = d(2024, 6, 20);
   const std::vector<cdsmodel::Calendar> cals = calendars_for(0x60);
 
-  const std::optional<cdsmodel::FeeLeg> with = cdsmodel::cds_fee_leg(cds, 1.0, cals);
+  const cdsmodel::Expected<cdsmodel::FeeLeg> with = cdsmodel::cds_fee_leg(cds, 1.0, cals);
   ASSERT_TRUE(with.has_value());
   EXPECT_EQ(with->payments.size(), 1u);
   EXPECT_EQ(with->payments[0].accrual_end, cds.start + std::chrono::days{1});
@@ -265,10 +265,10 @@ TEST(Cds, StepInAfterMaturityPricesAsMinusThePremiumLeg) {
   // of the premium leg.
   Fixture f;
   const Date stepin = f.cds.end + std::chrono::days{1};
-  const std::optional<double> price =
+  const cdsmodel::Expected<double> price =
       cdsmodel::cds_price(f.cds, f.today, f.today, stepin, f.cals, f.discount, f.hazard, 0.4, true);
-  const std::optional<double> fee = cdsmodel::cds_fee_leg_pv(f.cds, f.today, f.today, stepin, 1.0,
-                                                             f.cals, f.discount, f.hazard, true);
+  const cdsmodel::Expected<double> fee = cdsmodel::cds_fee_leg_pv(
+      f.cds, f.today, f.today, stepin, 1.0, f.cals, f.discount, f.hazard, true);
   ASSERT_TRUE(price.has_value());
   ASSERT_TRUE(fee.has_value());
   EXPECT_EQ(*price, -*fee);

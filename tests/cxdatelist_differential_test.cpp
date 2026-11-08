@@ -124,7 +124,7 @@ TEST_F(CxDateListDifferential, TheThreeParameterAddIsTheFourParameterOneWithTheF
         EXPECT_EQ(cx.dl->fArray[i], dt.dl->fArray[i]) << i;
       }
       // Then the port against both.
-      const std::optional<std::vector<cdsmodel::Date>> got =
+      const cdsmodel::Expected<std::vector<cdsmodel::Date>> got =
           cdsmodel::add_dates(a, b, /*allow_duplicates=*/false);
       ASSERT_TRUE(got.has_value());
       expect_same(cx.dl, *got, "add_dates(false)");
@@ -170,7 +170,7 @@ TEST_F(CxDateListDifferential, WithTheFlagOnTheTwoUpstreamFunctionsDiffer) {
   EXPECT_NE(keep.dl->fNumItems, drop.dl->fNumItems)
       << "the flag changed nothing, so the equivalence claim is vacuous";
 
-  const std::optional<std::vector<cdsmodel::Date>> port_keep = cdsmodel::add_dates(a, b, true);
+  const cdsmodel::Expected<std::vector<cdsmodel::Date>> port_keep = cdsmodel::add_dates(a, b, true);
   ASSERT_TRUE(port_keep.has_value());
   expect_same(keep.dl, *port_keep, "add_dates(true)");
 }
@@ -213,7 +213,7 @@ TEST_F(CxDateListDifferential, BothCurveDateExtractorsAgreeWithDates) {
   RefDL from_datelist(JpmcdsNewDateListFromTCurve(tc));
   ASSERT_TRUE(static_cast<bool>(from_datelist));
 
-  const std::optional<cdsmodel::ZeroCurve> curve =
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> curve =
       cdsmodel::ZeroCurve::create(base, points, 1.0, cdsmodel::DayCount::Act365Fixed);
   ASSERT_TRUE(curve.has_value());
   expect_same(from_datelist.dl, curve->dates(), "NewDateListFromTCurve");

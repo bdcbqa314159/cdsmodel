@@ -26,7 +26,7 @@ ROOT = pathlib.Path(__file__).parent.resolve()
 # Calibrated to the CI case -- tier 1 only, no oracle present -- because that
 # is the binding one. A local run with the oracle executes strictly more.
 # Bump it when a module lands; never lower it to make a red run green.
-TEST_FLOOR_WITHOUT_ORACLE = 438
+TEST_FLOOR_WITHOUT_ORACLE = 445
 
 
 def fail(msg: str) -> None:
@@ -73,8 +73,13 @@ def gate_provenance() -> None:
     original, and in six months nobody will remember which 2009 file a given
     function answers to.
     """
-    exempt = {"version.hpp"}  # not a port of anything
+    # Not ports of anything: nothing upstream to name.
+    exempt = {
+        "version.hpp",
+        "expected.hpp",  # the error channel -- specs/01_error_channel.md
+    }
     headers = sorted((ROOT / "include" / "cdsmodel").glob("*.hpp"))
+
     if not headers:
         fail("no headers found under include/cdsmodel")
     missing = []
@@ -109,6 +114,7 @@ def gate_claims() -> None:
     satisfied twice over.
     """
     headers = sorted((ROOT / "include" / "cdsmodel").glob("*.hpp"))
+
     claims: dict[str, list[str]] = {}
     for h in headers:
         text = h.read_text(encoding="utf-8")
@@ -292,6 +298,98 @@ def gate_write_manifest() -> None:
     ok(f"wrote {len(lines)} hashes to {out.relative_to(ROOT)}")
 
 
+def gate_error_channel() -> None:
+    """A5 + A7 from specs/01_error_channel.md.
+
+    A5 -- no namespace-scope function in include/cdsmodel/ RETURNS
+    std::optional. Parameters, fields, and function-local lambdas are out of
+    scope by D7: `optional` still means "legitimately absent", and the error
+    channel governs only failure. The two are distinguished semantically, so
+    this gate checks the one thing that is mechanical -- a return type.
+
+    A7 -- every Error carries a message, and the messages are not boilerplate.
+    An empty message would let a 341-site migration produce errors that
+    type-check and say nothing; a handful of messages repeated everywhere
+    would do the same while passing a non-empty check. So the DISTINCT count
+    is asserted, not just the non-empty one.
+    """
+    headers = sorted((ROOT / "include" / "cdsmodel").glob("*.hpp"))
+
+
+    # D7 exemptions, named individually and never as a pattern. Each returns
+    # "legitimately absent", the answer `map::find` gives -- a lookup miss, not
+    # a failure. Listed here so adding a third is a deliberate act with a
+    # reason, in the spirit of the no-silent-debt bar item.
+    d7_exempt = {
+        ("match_range.hpp", "exact"): "nothing matched the search key",
+        ("zero_curve_builder.hpp", "find_exact"): "no curve point sits on this date",
+    }
+
+    # A5. A return type is a declaration whose optional<> precedes a function
+    # name and an open paren, or sits alone on the line above one.
+    offenders: list[str] = []
+    for h in headers:
+        lines = h.read_text(encoding="utf-8").split("\n")
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if "std::optional<" not in stripped or stripped.startswith("//"):
+                continue
+            # a lambda is not a namespace-scope function (D7)
+            if "[](" in line or "[&](" in line or "= [" in line:
+                continue
+            decl = re.match(
+                r"^(\[\[nodiscard\]\]\s*)?(inline\s+|static\s+|constexpr\s+)*"
+                r"std::optional<.+>\s*(\w+\s*\(|$)",
+                stripped,
+            )
+            if decl:
+                nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+                # on its own line, the next line must open a function
+                if decl.group(3) or re.match(r"^\w+\s*\(", nxt):
+                    name_src = decl.group(3) or nxt
+                    fn = re.match(r"^(\w+)", name_src)
+                    if fn and (h.name, fn.group(1)) in d7_exempt:
+                        continue
+                    offenders.append(f"{h.name}:{i + 1}: {stripped[:72]}")
+    if offenders:
+        fail(
+            "A5: these namespace-scope functions still return std::optional:\n  "
+            + "\n  ".join(offenders)
+        )
+
+    # A7. Count Error constructions and their messages.
+    empty: list[str] = []
+    messages: list[str] = []
+    for h in headers:
+        text = h.read_text(encoding="utf-8")
+        for m in re.finditer(r"fail\(ErrorKind::\w+,\s*(.*?)\);", text, re.S):
+            body = " ".join(m.group(1).split())
+            if body in ('""', "''") or not body:
+                empty.append(f"{h.name}: {m.group(0)[:60]}")
+            else:
+                messages.append(body)
+    if empty:
+        fail("A7: these errors carry no message:\n  " + "\n  ".join(empty))
+
+    distinct = len(set(messages))
+    # Derived from the slice: 198 origin sites were authored by hand. Some
+    # messages legitimately repeat (several functions refuse an empty curve
+    # the same way), so the floor is below the total -- but boilerplate must
+    # not dominate, which a ratio near 1.0 would hide.
+    floor = 120
+    if distinct < floor:
+        fail(
+            f"A7: only {distinct} distinct error messages across {len(messages)} "
+            f"sites (floor {floor}); boilerplate is taking over"
+        )
+
+    print(
+        f"ok: no namespace-scope function returns std::optional "
+        f"({len(d7_exempt)} named D7 exemptions); "
+        f"{len(messages)} errors, {distinct} distinct messages"
+    )
+
+
 def gate_tests(preset: str) -> None:
     """Run ctest and enforce a floor on how many tests actually ran."""
     proc = subprocess.run(
@@ -329,6 +427,7 @@ GATES = {
     "upstream-absent": gate_upstream_absent,
     "provenance": gate_provenance,
     "claims": gate_claims,
+    "error-channel": gate_error_channel,
     "golden": gate_golden_generated,
     "reports": gate_reports,
     "upstream-unmodified": gate_upstream_unmodified,

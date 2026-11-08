@@ -75,7 +75,7 @@ TEST(RootFind, MatchesRecordedRoots) {
     opt.f_tolerance = c.f_tolerance;
 
     Objective obj{kAllObjectives[static_cast<std::size_t>(c.objective)]};
-    const std::optional<double> got = root_find_brent(obj, opt);
+    const cdsmodel::Expected<double> got = root_find_brent(obj, opt);
     const std::string where = std::string(name_of(obj.which)) + " case " + std::to_string(checked);
 
     if (has_single_root(obj.which)) {
@@ -101,7 +101,7 @@ TEST(RootFind, MatchesRecordedRoots) {
       // Converged here, not where this was recorded. Nothing to compare the
       // root against, but it still has to be a root.
       Objective probe{obj.which};
-      const std::optional<double> value = probe(*got);
+      const cdsmodel::Expected<double> value = probe(*got);
       ASSERT_TRUE(value.has_value()) << where;
       EXPECT_LE(std::fabs(*value), opt.f_tolerance)
           << where << " -- converged where the recording did not, to a non-root";
@@ -160,12 +160,12 @@ TEST(RootFind, EveryReturnedRootSatisfiesTheSolversOwnContract) {
 
     const Which which = kAllObjectives[static_cast<std::size_t>(c.objective)];
     Objective obj{which};
-    const std::optional<double> root = root_find_brent(obj, opt);
+    const cdsmodel::Expected<double> root = root_find_brent(obj, opt);
     if (!root) {
       continue; // a platform that did not converge is covered by the test above
     }
     Objective probe{which};
-    const std::optional<double> value = probe(*root);
+    const cdsmodel::Expected<double> value = probe(*root);
     ASSERT_TRUE(value.has_value()) << name_of(which) << " root is outside its own domain";
     EXPECT_LE(std::fabs(*value), opt.f_tolerance)
         << name_of(which) << " returned " << *root << " where f = " << *value
@@ -214,13 +214,13 @@ TEST(RootFind, OneUlpPerturbationOfTheReturnValueDoesNotAmplify) {
       continue; // see MultipleRootsArePathDependent
     }
     Objective base{which};
-    const std::optional<double> unperturbed = root_find_brent(base, opt);
+    const cdsmodel::Expected<double> unperturbed = root_find_brent(base, opt);
     if (!unperturbed) {
       continue; // NoRoot and FailsAbove are not solvable from this guess
     }
     for (int direction : {-1, 1}) {
       Objective shifted{which, direction};
-      const std::optional<double> root = root_find_brent(shifted, opt);
+      const cdsmodel::Expected<double> root = root_find_brent(shifted, opt);
       ASSERT_TRUE(root.has_value())
           << name_of(which) << " perturbed by " << direction << " ULP stopped converging";
       const double tolerance = 1.0e-12 * std::max(1.0, std::fabs(*unperturbed));
@@ -247,18 +247,18 @@ TEST(RootFind, MultipleRootsArePathDependent) {
   // single-rooted objectives, and the unqualified claim would be false.
   const RootFindOptions opt = cdsone_options();
   Objective base{Which::TwoRoots};
-  const std::optional<double> unperturbed = root_find_brent(base, opt);
+  const cdsmodel::Expected<double> unperturbed = root_find_brent(base, opt);
   ASSERT_TRUE(unperturbed.has_value());
   EXPECT_EQ(*unperturbed, 0.0) << "expected the root sitting on the lower bound";
 
   Objective shifted{Which::TwoRoots, 1};
-  const std::optional<double> moved = root_find_brent(shifted, opt);
+  const cdsmodel::Expected<double> moved = root_find_brent(shifted, opt);
   ASSERT_TRUE(moved.has_value());
   EXPECT_GT(std::fabs(*moved - *unperturbed), 1.0)
       << "expected the search to find the far root once x=0 was disqualified";
   // And whichever it returns really is a root of the perturbed function.
   Objective probe{Which::TwoRoots, 1};
-  const std::optional<double> value = probe(*moved);
+  const cdsmodel::Expected<double> value = probe(*moved);
   ASSERT_TRUE(value.has_value());
   EXPECT_LT(std::fabs(*value), 1.0e-8) << "returned a point that is not a root";
 }
@@ -277,7 +277,7 @@ TEST(RootFind, SolvesEachObjectiveToItsKnownRoot) {
                       {Which::CdsMonotone, 2.0 / 3.0}};
   for (const Known &k : known) {
     Objective obj{k.which};
-    const std::optional<double> got = root_find_brent(obj, opt);
+    const cdsmodel::Expected<double> got = root_find_brent(obj, opt);
     ASSERT_TRUE(got.has_value()) << name_of(k.which);
     // The finder's own contract is |f| <= f_tolerance, which near a steep
     // root is much tighter in x than near a flat one. 1e-6 covers both.
@@ -349,8 +349,8 @@ TEST(RootFind, GuessAcceptanceDependsOnProximityToABound) {
 
   Objective a{Which::Linear};
   Objective b{Which::Linear};
-  const std::optional<double> from_wide = root_find_brent(a, wide);
-  const std::optional<double> from_tight = root_find_brent(b, tight);
+  const cdsmodel::Expected<double> from_wide = root_find_brent(a, wide);
+  const cdsmodel::Expected<double> from_tight = root_find_brent(b, tight);
   ASSERT_TRUE(from_wide.has_value());
   ASSERT_TRUE(from_tight.has_value());
 

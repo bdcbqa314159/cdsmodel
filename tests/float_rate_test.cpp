@@ -56,7 +56,7 @@ TEST(FloatRateGolden, ACalendarSpotOffsetDoesNotAvoidWeekends) {
   const cdsmodel::Calendar calendar = cdsmodel::Calendar::none();
   // Friday 2024-03-15 plus two calendar days is Sunday the 17th. A business
   // offset would give Tuesday the 19th. This is the whole distinction.
-  const std::optional<cdsmodel::Date> spot = cdsmodel::advance_adjusted(
+  const cdsmodel::Expected<cdsmodel::Date> spot = cdsmodel::advance_adjusted(
       *cdsmodel::make_date(2024, 3, 15), calendar_day_offset(2), calendar);
   ASSERT_TRUE(spot.has_value());
   EXPECT_EQ(*spot, *cdsmodel::make_date(2024, 3, 17));
@@ -67,7 +67,7 @@ TEST(FloatRateGolden, ASpotOffsetOfZeroIsTheResetDate) {
   const cdsmodel::Calendar calendar = cdsmodel::Calendar::none();
   for (int day = 11; day <= 24; ++day) {
     const cdsmodel::Date reset = *cdsmodel::make_date(2024, 3, day);
-    const std::optional<cdsmodel::Date> spot =
+    const cdsmodel::Expected<cdsmodel::Date> spot =
         cdsmodel::advance_adjusted(reset, calendar_day_offset(0), calendar);
     ASSERT_TRUE(spot.has_value());
     EXPECT_EQ(*spot, reset) << "day " << day;
@@ -82,7 +82,7 @@ TEST(FloatRateGolden, EveryWeekdayAdvancesByExactlyTheCalendarCount) {
   for (const int days : {0, 1, 2, 3, 7, 30}) {
     for (int day = 1; day <= 31; ++day) {
       const cdsmodel::Date reset = *cdsmodel::make_date(2024, 3, day);
-      const std::optional<cdsmodel::Date> spot =
+      const cdsmodel::Expected<cdsmodel::Date> spot =
           cdsmodel::advance_adjusted(reset, calendar_day_offset(days), calendar);
       ASSERT_TRUE(spot.has_value()) << "day " << day << " + " << days;
       EXPECT_EQ((*spot - reset).count(), days) << "day " << day << " + " << days;

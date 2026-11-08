@@ -89,7 +89,8 @@ TEST_F(MatchRangeDifferential, MatchesExhaustivelyOverEveryShortArray) {
     for_each_array(length, 5, [&](std::vector<long> &xs) {
       for (long desired = -1; desired <= 5; ++desired) {
         const RefResult ref = reference(desired, xs);
-        const std::optional<cdsmodel::MatchRange> got = cdsmodel::match_range<long>(desired, xs);
+        const cdsmodel::Expected<cdsmodel::MatchRange> got =
+            cdsmodel::match_range<long>(desired, xs);
 
         ASSERT_EQ(ref.accepted, got.has_value())
             << "acceptance differs, length " << length << " seek " << desired;
@@ -142,7 +143,7 @@ TEST_F(MatchRangeDifferential, UpstreamsExactIsNotNecessarilyTheFirstMatch) {
   EXPECT_EQ(ref.exact, 1) << "upstream's exact became the first match; the "
                              "comparison in this file could be tightened";
 
-  const std::optional<cdsmodel::MatchRange> got = cdsmodel::match_range<long>(10, xs);
+  const cdsmodel::Expected<cdsmodel::MatchRange> got = cdsmodel::match_range<long>(10, xs);
   ASSERT_TRUE(got.has_value());
   EXPECT_EQ(got->first, 0u) << "the port must report the FIRST match";
   EXPECT_EQ(got->count, 2u);
@@ -160,7 +161,7 @@ TEST_F(MatchRangeDifferential, HiBoundIsArraySizeNotMinusOne) {
   EXPECT_EQ(ref.lo, 4);
   EXPECT_EQ(ref.exact, -1);
 
-  const std::optional<cdsmodel::MatchRange> got = cdsmodel::match_range<long>(99, xs);
+  const cdsmodel::Expected<cdsmodel::MatchRange> got = cdsmodel::match_range<long>(99, xs);
   ASSERT_TRUE(got.has_value());
   EXPECT_EQ(got->first, 5u) << "past the end, the insertion point is the size";
   EXPECT_EQ(got->count, 0u);
@@ -205,7 +206,7 @@ TEST_F(MatchRangeDifferential, AnUnsortedArrayProducesAgreementNotRefusal) {
         for (long desired = -1; desired <= 4; ++desired) {
           std::vector<long> copy = xs;
           const RefResult ref = reference(desired, copy);
-          const std::optional<cdsmodel::MatchRange> got =
+          const cdsmodel::Expected<cdsmodel::MatchRange> got =
               cdsmodel::match_range<long>(desired, copy);
           ASSERT_EQ(ref.accepted, got.has_value())
               << "the two sides disagree about an unsorted array";
@@ -266,10 +267,10 @@ TEST_F(MatchRangeDifferential, Upstream37NullOutputsAreHonouredOnTheMainPathOnly
   // Not called here -- see the DISABLED tests below.
 
   // The port has no output pointers at all, so every path behaves the same.
-  const std::optional<cdsmodel::MatchRange> below = cdsmodel::match_range<long>(5, xs);
-  const std::optional<cdsmodel::MatchRange> above = cdsmodel::match_range<long>(99, xs);
+  const cdsmodel::Expected<cdsmodel::MatchRange> below = cdsmodel::match_range<long>(5, xs);
+  const cdsmodel::Expected<cdsmodel::MatchRange> above = cdsmodel::match_range<long>(99, xs);
   std::vector<long> one{10};
-  const std::optional<cdsmodel::MatchRange> single = cdsmodel::match_range<long>(10, one);
+  const cdsmodel::Expected<cdsmodel::MatchRange> single = cdsmodel::match_range<long>(10, one);
   ASSERT_TRUE(below.has_value());
   ASSERT_TRUE(above.has_value());
   ASSERT_TRUE(single.has_value());

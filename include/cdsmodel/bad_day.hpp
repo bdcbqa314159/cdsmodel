@@ -14,6 +14,7 @@
 
 #include <cdsmodel/calendar.hpp>
 #include <cdsmodel/date.hpp>
+#include <cdsmodel/expected.hpp>
 
 #include <chrono>
 #include <cstddef>
@@ -37,7 +38,7 @@ enum class BadDayConv : char {
 }
 
 /// Replaces `JpmcdsBadDayConvValid`.
-[[nodiscard]] constexpr std::optional<BadDayConv> bad_day_conv_from_upstream(long code) noexcept {
+[[nodiscard]] constexpr Expected<BadDayConv> bad_day_conv_from_upstream(long code) noexcept {
   switch (code) {
   case 'F':
     return BadDayConv::Follow;
@@ -48,7 +49,7 @@ enum class BadDayConv : char {
   case 'M':
     return BadDayConv::Modified;
   default:
-    return std::nullopt;
+    return fail(ErrorKind::unsupported, "unrecognised bad day convention character");
   }
 }
 
@@ -74,16 +75,18 @@ enum class BadDayConv : char {
 ///
 /// So `7 * (total holidays + 2)` is a safe ceiling. Exceeding it means the
 /// precondition was violated, not that the search needs longer.
-[[nodiscard]] inline std::optional<Date>
+[[nodiscard]] inline Expected<Date>
 roll_to_business_day(Date start, int direction, std::span<const Calendar> calendars) noexcept {
   if (direction != 1 && direction != -1) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument,
+                "direction must be +1 or -1, got " + detail::num(direction));
   }
 
   std::size_t total_holidays = 0;
   for (const Calendar &cal : calendars) {
     if (!cal.allows_business_days()) {
-      return std::nullopt; // no business day exists in this calendar, ever
+      return fail(ErrorKind::unsupported,
+                  "the calendar has no business weekday, so no date can be adjusted");
     }
     total_holidays += cal.holidays().size();
   }
@@ -105,11 +108,11 @@ roll_to_business_day(Date start, int direction, std::span<const Calendar> calend
     }
     const long long next = static_cast<long long>(to_tdate(d)) + direction;
     if (next < static_cast<long long>(kMinTDate) || next > static_cast<long long>(kMaxTDate)) {
-      return std::nullopt; // rolled off the representable range
+      return fail(ErrorKind::bad_argument, "adjusting forward leaves the representable date range");
     }
     d = from_tdate(static_cast<TDate>(next));
   }
-  return std::nullopt; // unreachable for a calendar that allows business days
+  return fail(ErrorKind::bad_argument, "adjusting backward leaves the representable date range");
 }
 
 /// Adjust a date onto a business day under the given convention.
@@ -127,34 +130,37 @@ roll_to_business_day(Date start, int direction, std::span<const Calendar> calend
 /// `Modified` follows first and, if that lands in a different month, goes
 /// back instead -- comparing month only, as upstream does. A year boundary is
 /// covered incidentally, since crossing one also changes the month.
-[[nodiscard]] inline std::optional<Date> adjust(Date date, BadDayConv conv,
-                                                std::span<const Calendar> calendars) noexcept {
+[[nodiscard]] inline Expected<Date> adjust(Date date, BadDayConv conv,
+                                           std::span<const Calendar> calendars) noexcept {
   if (conv == BadDayConv::None) {
     return date; // upstream returns the input untouched, business day or not
   }
   if (calendars.empty()) {
-    return std::nullopt; // upstream rejects a null holiday list array
+    return fail(ErrorKind::bad_argument, "at least one calendar is required");
   }
 
   if (conv == BadDayConv::Previous) {
     return roll_to_business_day(date, -1, calendars);
   }
 
-  const std::optional<Date> forward = roll_to_business_day(date, +1, calendars);
-  if (conv == BadDayConv::Follow || !forward) {
-    return forward;
+  const Expected<Date> forward = roll_to_business_day(date, +1, calendars);
+  if (!forward) {
+    return unexpected(forward.error());
+  }
+  if (conv == BadDayConv::Follow) {
+    return *forward;
   }
 
   // Modified: only fall back to rolling backwards if following left the month.
   if (to_ymd(*forward).month() == to_ymd(date).month()) {
-    return forward;
+    return *forward;
   }
   return roll_to_business_day(date, -1, calendars);
 }
 
 /// Single-calendar convenience, the common case.
-[[nodiscard]] inline std::optional<Date> adjust(Date date, BadDayConv conv,
-                                                const Calendar &calendar) noexcept {
+[[nodiscard]] inline Expected<Date> adjust(Date date, BadDayConv conv,
+                                           const Calendar &calendar) noexcept {
   return adjust(date, conv, std::span<const Calendar>{&calendar, 1});
 }
 

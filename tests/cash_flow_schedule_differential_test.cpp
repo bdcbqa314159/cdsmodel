@@ -144,7 +144,7 @@ TEST_F(CashFlowScheduleDifferential, MakeCflMatchesAcrossFlagsStubsAndSchedules)
                 .stub_length = length,
                 .accrual_bad_day = cdsmodel::BadDayConv::None,
                 .pay_bad_day = cdsmodel::BadDayConv::None};
-            const std::optional<std::vector<cdsmodel::CashFlow>> got =
+            const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got =
                 cdsmodel::cash_flows_from_schedule(start, maturity, iv, conventions, position,
                                                    flags, {});
 
@@ -194,8 +194,9 @@ TEST_F(CashFlowScheduleDifferential, MakeCflMatchesUnderBusinessDayAdjustment) {
                                                       .stub_length = cdsmodel::StubLength::Short,
                                                       .accrual_bad_day = conv,
                                                       .pay_bad_day = conv};
-      const std::optional<std::vector<cdsmodel::CashFlow>> got = cdsmodel::cash_flows_from_schedule(
-          d(2024, 1, 6), d(2026, 7, 4), iv, conventions, position, {.add_final = true}, calendars);
+      const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got =
+          cdsmodel::cash_flows_from_schedule(d(2024, 1, 6), d(2026, 7, 4), iv, conventions,
+                                             position, {.add_final = true}, calendars);
       const std::string where = std::string{static_cast<char>(conv)} + " stub " +
                                 std::to_string(static_cast<int>(position));
       ASSERT_EQ(got.has_value(), static_cast<bool>(ref)) << where;
@@ -244,8 +245,9 @@ TEST_F(CashFlowScheduleDifferential, FromDatesMatchesForGridsThatOverhangEitherE
             .stub_length = length,
             .accrual_bad_day = cdsmodel::BadDayConv::None,
             .pay_bad_day = cdsmodel::BadDayConv::None};
-        const std::optional<std::vector<cdsmodel::CashFlow>> got = cdsmodel::cash_flows_from_dates(
-            grid, start, maturity, conventions, {}, {}, use_pre_start);
+        const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got =
+            cdsmodel::cash_flows_from_dates(grid, start, maturity, conventions, {}, {},
+                                            use_pre_start);
         const std::string where = "grid " + std::to_string(grid.size()) + " long " +
                                   std::to_string(static_cast<int>(length)) + " pre " +
                                   std::to_string(use_pre_start);
@@ -271,7 +273,7 @@ TEST_F(CashFlowScheduleDifferential, AnEmptyGridGivesAnEmptyStreamOnBothSides) {
   ASSERT_TRUE(ref);
   EXPECT_EQ(ref.cfl->fNumItems, 0);
 
-  const std::optional<std::vector<cdsmodel::CashFlow>> got = cdsmodel::cash_flows_from_dates(
+  const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got = cdsmodel::cash_flows_from_dates(
       {}, d(2024, 1, 15), d(2027, 1, 15), {.rate = 0.05}, {}, {}, false);
   ASSERT_TRUE(got.has_value()) << "an empty grid is not an error";
   EXPECT_TRUE(got->empty());
@@ -315,7 +317,7 @@ TEST_F(CashFlowScheduleDifferential, Upstream25_ThePortRefusesAOneDateGridWithAS
                                     JPMCDS_BAD_DAY_NONE, JPMCDS_BAD_DAY_NONE,
                                     const_cast<char *>("NONE"), const_cast<char *>("NONE"), FALSE));
   JpmcdsFreeDateList(dl);
-  const std::optional<std::vector<cdsmodel::CashFlow>> got = cdsmodel::cash_flows_from_dates(
+  const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got = cdsmodel::cash_flows_from_dates(
       one, d(2024, 1, 1), d(2024, 1, 1), conventions, {}, {}, false);
   ASSERT_EQ(got.has_value(), static_cast<bool>(ref));
   if (got) {
@@ -351,7 +353,7 @@ TEST_F(CashFlowScheduleDifferential, TheLongStubCoalescingMatchesWhereBothStubsE
 
     const cdsmodel::CashFlowConventions conventions{
         .rate = 0.05, .day_count = cdsmodel::DayCount::Act365Fixed, .stub_length = length};
-    const std::optional<std::vector<cdsmodel::CashFlow>> got =
+    const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got =
         cdsmodel::cash_flows_from_dates(grid, start, maturity, conventions, {}, {}, false);
     ASSERT_TRUE(got.has_value()) << static_cast<int>(length);
     EXPECT_EQ(*got, as_flows(ref.cfl)) << static_cast<int>(length);

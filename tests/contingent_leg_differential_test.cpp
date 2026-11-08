@@ -293,7 +293,7 @@ TEST_F(ContingentLegDifferential, LegConstructionMatchesIncludingTheProtectStart
                                   PROT_PAY_DEF, protect_start ? TRUE : FALSE);
       ASSERT_NE(ref, nullptr);
 
-      const std::optional<cdsmodel::ContingentLeg> maybe =
+      const cdsmodel::Expected<cdsmodel::ContingentLeg> maybe =
           cdsmodel::cds_contingent_leg(start, end, notional, protect_start);
       ASSERT_TRUE(maybe.has_value()) << "protect_start=" << protect_start;
       const cdsmodel::ContingentLeg got = *maybe;

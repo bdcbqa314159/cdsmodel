@@ -55,7 +55,7 @@ TEST(DateSchedule, EverySchedulePlacesTheBoundaryDatesWhereItsContractSays) {
                                   (stub_at_end ? "1" : "0");
 
         // date_list: both boundaries present, and they are the ends.
-        const std::optional<std::vector<cdsmodel::Date>> plain =
+        const cdsmodel::Expected<std::vector<cdsmodel::Date>> plain =
             cdsmodel::date_list(start, maturity, iv, stub_at_end);
         ASSERT_TRUE(plain.has_value()) << where;
         ASSERT_FALSE(plain->empty()) << where;
@@ -68,7 +68,7 @@ TEST(DateSchedule, EverySchedulePlacesTheBoundaryDatesWhereItsContractSays) {
 
         // date_list_extended: the far boundary is pushed OFF the grid when
         // there is a stub, and present when there is not.
-        const std::optional<std::vector<cdsmodel::Date>> extended =
+        const cdsmodel::Expected<std::vector<cdsmodel::Date>> extended =
             cdsmodel::date_list_extended(start, maturity, iv, stub_at_end);
         ASSERT_TRUE(extended.has_value()) << where;
         ASSERT_FALSE(extended->empty()) << where;
@@ -110,13 +110,14 @@ TEST(DateSchedule, TheTwoGeneratorsDifferOnlyAtTheStubBoundary) {
   for (const auto &[start, maturity] : spans()) {
     for (const DateInterval iv : intervals()) {
       for (const bool stub_at_end : {false, true}) {
-        const std::optional<cdsmodel::DateCount> span = cdsmodel::count_dates(start, maturity, iv);
+        const cdsmodel::Expected<cdsmodel::DateCount> span =
+            cdsmodel::count_dates(start, maturity, iv);
         if (!span || span->extra_days != 0) {
           continue; // with a stub the lists are genuinely different lengths
         }
-        const std::optional<std::vector<cdsmodel::Date>> plain =
+        const cdsmodel::Expected<std::vector<cdsmodel::Date>> plain =
             cdsmodel::date_list(start, maturity, iv, stub_at_end);
-        const std::optional<std::vector<cdsmodel::Date>> extended =
+        const cdsmodel::Expected<std::vector<cdsmodel::Date>> extended =
             cdsmodel::date_list_extended(start, maturity, iv, stub_at_end);
         ASSERT_TRUE(plain.has_value());
         ASSERT_TRUE(extended.has_value());
@@ -154,9 +155,9 @@ TEST(DateSchedule, PayDatesIsTheScheduleWithoutItsFirstDate) {
   for (const auto &[start, maturity] : spans()) {
     for (const DateInterval iv : intervals()) {
       for (const bool stub_at_end : {false, true}) {
-        const std::optional<std::vector<cdsmodel::Date>> full =
+        const cdsmodel::Expected<std::vector<cdsmodel::Date>> full =
             cdsmodel::date_list(start, maturity, iv, stub_at_end);
-        const std::optional<std::vector<cdsmodel::Date>> pay =
+        const cdsmodel::Expected<std::vector<cdsmodel::Date>> pay =
             cdsmodel::pay_dates(start, maturity, iv, stub_at_end);
         ASSERT_TRUE(full.has_value());
         ASSERT_TRUE(pay.has_value());
@@ -178,11 +179,11 @@ TEST(DateSchedule, RemovingTheStartFromAOneDateScheduleLeavesNothing) {
   // start == maturity gives a single-date list, and taking the start out of it
   // leaves an empty schedule rather than an error. Upstream decrements a count
   // to zero and returns the list; a vector erases to empty.
-  const std::optional<std::vector<cdsmodel::Date>> one =
+  const cdsmodel::Expected<std::vector<cdsmodel::Date>> one =
       cdsmodel::date_list(d(2024, 1, 15), d(2024, 1, 15), {3, PeriodUnit::Months}, true);
   ASSERT_TRUE(one.has_value());
   ASSERT_EQ(one->size(), 1u);
-  const std::optional<std::vector<cdsmodel::Date>> none =
+  const cdsmodel::Expected<std::vector<cdsmodel::Date>> none =
       cdsmodel::pay_dates(d(2024, 1, 15), d(2024, 1, 15), {3, PeriodUnit::Months}, true);
   ASSERT_TRUE(none.has_value());
   EXPECT_TRUE(none->empty());
@@ -192,9 +193,9 @@ TEST(DateSchedule, NoRollDateIsPlainExtendedGeneration) {
   for (const auto &[start, maturity] : spans()) {
     for (const DateInterval iv : intervals()) {
       for (const bool stub_at_end : {false, true}) {
-        const std::optional<std::vector<cdsmodel::Date>> rolled =
+        const cdsmodel::Expected<std::vector<cdsmodel::Date>> rolled =
             cdsmodel::date_list_extended_roll(start, maturity, std::nullopt, iv, stub_at_end);
-        const std::optional<std::vector<cdsmodel::Date>> plain =
+        const cdsmodel::Expected<std::vector<cdsmodel::Date>> plain =
             cdsmodel::date_list_extended(start, maturity, iv, stub_at_end);
         ASSERT_EQ(rolled.has_value(), plain.has_value());
         if (rolled) {
@@ -211,10 +212,10 @@ TEST(DateSchedule, AStubAtTheEndMakesTheRollDateIrrelevant) {
   // whatever roll date is supplied.
   for (const auto &[start, maturity] : spans()) {
     for (const DateInterval iv : intervals()) {
-      const std::optional<std::vector<cdsmodel::Date>> plain =
+      const cdsmodel::Expected<std::vector<cdsmodel::Date>> plain =
           cdsmodel::date_list_extended(start, maturity, iv, true);
       for (const cdsmodel::Date roll : {d(2020, 3, 31), d(2023, 7, 1), start}) {
-        const std::optional<std::vector<cdsmodel::Date>> rolled =
+        const cdsmodel::Expected<std::vector<cdsmodel::Date>> rolled =
             cdsmodel::date_list_extended_roll(start, maturity, roll, iv, true);
         ASSERT_EQ(rolled.has_value(), plain.has_value());
         if (rolled) {
@@ -245,7 +246,7 @@ TEST(DateSchedule, ARollDateAfterTheStartIsRefused) {
 // =====================================================================
 
 TEST(DateSchedule, AdjustmentLandsEveryDateOnABusinessDayAndIsIdempotent) {
-  const std::optional<std::vector<cdsmodel::Date>> schedule =
+  const cdsmodel::Expected<std::vector<cdsmodel::Date>> schedule =
       cdsmodel::date_list(d(2024, 1, 6), d(2027, 1, 6), {1, PeriodUnit::Months}, true);
   ASSERT_TRUE(schedule.has_value());
   const std::vector<cdsmodel::Calendar> calendars{cdsmodel::Calendar::none()};
@@ -253,7 +254,7 @@ TEST(DateSchedule, AdjustmentLandsEveryDateOnABusinessDayAndIsIdempotent) {
   for (const cdsmodel::BadDayConv conv :
        {cdsmodel::BadDayConv::Follow, cdsmodel::BadDayConv::Previous,
         cdsmodel::BadDayConv::Modified}) {
-    const std::optional<std::vector<cdsmodel::Date>> adjusted =
+    const cdsmodel::Expected<std::vector<cdsmodel::Date>> adjusted =
         cdsmodel::adjust_date_list(*schedule, conv, calendars);
     ASSERT_TRUE(adjusted.has_value()) << static_cast<char>(conv);
     ASSERT_EQ(adjusted->size(), schedule->size());
@@ -263,7 +264,7 @@ TEST(DateSchedule, AdjustmentLandsEveryDateOnABusinessDayAndIsIdempotent) {
           << " off a business day";
     }
     // Adjusting again must change nothing: the result is already adjusted.
-    const std::optional<std::vector<cdsmodel::Date>> again =
+    const cdsmodel::Expected<std::vector<cdsmodel::Date>> again =
         cdsmodel::adjust_date_list(*adjusted, conv, calendars);
     ASSERT_TRUE(again.has_value());
     EXPECT_EQ(*again, *adjusted) << static_cast<char>(conv) << " is not idempotent";
@@ -274,13 +275,13 @@ TEST(DateSchedule, AdjustmentLandsEveryDateOnABusinessDayAndIsIdempotent) {
   }
 
   // None leaves the schedule exactly as it was, business day or not.
-  const std::optional<std::vector<cdsmodel::Date>> untouched =
+  const cdsmodel::Expected<std::vector<cdsmodel::Date>> untouched =
       cdsmodel::adjust_date_list(*schedule, cdsmodel::BadDayConv::None, calendars);
   ASSERT_TRUE(untouched.has_value());
   EXPECT_EQ(*untouched, *schedule);
 
   // And an empty schedule adjusts to an empty schedule.
-  const std::optional<std::vector<cdsmodel::Date>> nothing = cdsmodel::adjust_date_list(
+  const cdsmodel::Expected<std::vector<cdsmodel::Date>> nothing = cdsmodel::adjust_date_list(
       std::span<const cdsmodel::Date>{}, cdsmodel::BadDayConv::Follow, calendars);
   ASSERT_TRUE(nothing.has_value());
   EXPECT_TRUE(nothing->empty());
@@ -296,7 +297,8 @@ TEST(DateSchedule, MatchesRecordedSchedules) {
     const DateInterval iv{c.periods, c.unit == 'M' ? PeriodUnit::Months : PeriodUnit::Days};
     const cdsmodel::Date start = cdsmodel::from_tdate(c.start);
     const cdsmodel::Date maturity = cdsmodel::from_tdate(c.maturity);
-    std::optional<std::vector<cdsmodel::Date>> got;
+    cdsmodel::Expected<std::vector<cdsmodel::Date>> got =
+        cdsmodel::fail(cdsmodel::ErrorKind::bad_argument, "no case ran");
     switch (c.which) {
     case 0:
       got = cdsmodel::date_list(start, maturity, iv, c.stub_at_end);
@@ -309,6 +311,8 @@ TEST(DateSchedule, MatchesRecordedSchedules) {
       break;
     default: {
       // Upstream's roll sentinel is TDate 0; the port's is nullopt.
+      // The roll date is a genuine optional PARAMETER -- upstream's sentinel
+      // is TDate 0, the port's is nullopt. Not an error channel.
       const std::optional<cdsmodel::Date> roll =
           c.roll == 0 ? std::nullopt : std::optional{cdsmodel::from_tdate(c.roll)};
       got = cdsmodel::date_list_extended_roll(start, maturity, roll, iv, c.stub_at_end);

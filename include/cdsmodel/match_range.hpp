@@ -77,6 +77,8 @@
 // files side by side will notice, and the reason for the omission should be
 // written down rather than inferred.
 
+#include <cdsmodel/expected.hpp>
+
 #include <cstddef>
 #include <optional>
 #include <span>
@@ -94,6 +96,9 @@ struct MatchRange {
   [[nodiscard]] constexpr bool empty() const noexcept { return count == 0; }
 
   /// The index of the first equal element, if there is one.
+  ///
+  /// D7: `optional`, not `Expected`. "Nothing matched" is the answer to a
+  /// question, not a failure to report.
   [[nodiscard]] constexpr std::optional<std::size_t> exact() const noexcept {
     return count > 0 ? std::optional<std::size_t>{first} : std::nullopt;
   }
@@ -147,10 +152,10 @@ struct MatchRange {
 /// Returning a value removes the question. There are no output pointers, so
 /// there is nothing to guard on any path.
 template <typename T, typename R, typename Proj>
-[[nodiscard]] constexpr std::optional<MatchRange> match_range(T desired, std::span<const R> items,
-                                                              Proj key) noexcept {
+[[nodiscard]] constexpr Expected<MatchRange> match_range(T desired, std::span<const R> items,
+                                                         Proj key) noexcept {
   if (items.empty()) {
-    return std::nullopt; // upstream's REQUIRE(arraySize > 0)
+    return fail(ErrorKind::bad_argument, "the array is empty");
   }
   const std::size_t size = items.size();
   const auto at = [&](std::size_t i) { return key(items[i]); };
@@ -190,7 +195,8 @@ template <typename T, typename R, typename Proj>
     }
   }
   if (!bracketed) {
-    return std::nullopt; // upstream: "x array not in increasing order"
+    // upstream: "x array not in increasing order"
+    return fail(ErrorKind::bad_argument, "the domain array is not in increasing order");
   }
 
   // Walk out of the run of equal values in both directions. Upstream does this
@@ -217,8 +223,8 @@ template <typename T, typename R, typename Proj>
 /// distance in bytes -- so a caller cannot get it wrong by passing the size of
 /// the wrong type.
 template <typename T>
-[[nodiscard]] constexpr std::optional<MatchRange> match_range(T desired,
-                                                              std::span<const T> xs) noexcept {
+[[nodiscard]] constexpr Expected<MatchRange> match_range(T desired,
+                                                         std::span<const T> xs) noexcept {
   return match_range(desired, xs, [](const T &x) { return x; });
 }
 

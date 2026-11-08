@@ -31,6 +31,7 @@
 // sorted nor a union.
 
 #include <cdsmodel/date.hpp>
+#include <cdsmodel/expected.hpp>
 
 #include <algorithm>
 #include <functional>
@@ -74,10 +75,10 @@ namespace cdsmodel {
 ///
 /// Returns nullopt when either input is not strictly increasing. Upstream
 /// documents the same requirement and does not enforce it.
-[[nodiscard]] inline std::optional<std::vector<Date>> merge_date_lists(std::span<const Date> a,
-                                                                       std::span<const Date> b) {
+[[nodiscard]] inline Expected<std::vector<Date>> merge_date_lists(std::span<const Date> a,
+                                                                  std::span<const Date> b) {
   if (!is_strictly_increasing_dates(a) || !is_strictly_increasing_dates(b)) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "both date lists must be strictly increasing");
   }
   std::vector<Date> out;
   out.reserve(a.size() + b.size());
@@ -128,10 +129,10 @@ namespace cdsmodel {
 /// Both inputs must be strictly increasing, as upstream documents.
 /// `allow_duplicates` keeps a date that is already present, matching
 /// upstream's flag of the same name.
-[[nodiscard]] inline std::optional<std::vector<Date>>
+[[nodiscard]] inline Expected<std::vector<Date>>
 add_dates(std::span<const Date> dates, std::span<const Date> extra, bool allow_duplicates) {
   if (!is_strictly_increasing_dates(dates) || !is_strictly_increasing_dates(extra)) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "both date lists must be strictly increasing");
   }
   std::vector<Date> out;
   out.reserve(dates.size() + extra.size());
@@ -211,10 +212,10 @@ enum class Keep {
 /// and with this function whenever two or more elements survive.
 ///
 /// Requires a strictly increasing input, as upstream documents.
-[[nodiscard]] inline std::optional<std::vector<Date>>
+[[nodiscard]] inline Expected<std::vector<Date>>
 truncate_date_list(std::span<const Date> dates, Date cut, Keep side, bool inclusive) {
   if (!is_strictly_increasing_dates(dates)) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the date list must be strictly increasing");
   }
   std::vector<Date> out;
   out.reserve(dates.size());

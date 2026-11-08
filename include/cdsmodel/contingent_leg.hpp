@@ -22,6 +22,7 @@
 // tolerance.
 
 #include <cdsmodel/date.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/timeline.hpp>
 #include <cdsmodel/zero_curve.hpp>
 
@@ -88,13 +89,13 @@ struct ContingentLeg {
 /// earlier date rather than an invalid one, and there is no sentinel to
 /// collide with. The port therefore has nothing to refuse here and does not
 /// pretend otherwise.
-[[nodiscard]] inline std::optional<ContingentLeg> make_contingent_leg(Date start, Date end,
-                                                                      double notional,
-                                                                      ProtectionPayment pay,
-                                                                      bool protect_start) {
+[[nodiscard]] inline Expected<ContingentLeg> make_contingent_leg(Date start, Date end,
+                                                                 double notional,
+                                                                 ProtectionPayment pay,
+                                                                 bool protect_start) {
   const Date stored_start = protect_start ? start - std::chrono::days{1} : start;
   if (!(end > stored_start)) {
-    return std::nullopt; // upstream's REQUIRE, applied to the shifted date
+    return fail(ErrorKind::bad_argument, "the leg end must be strictly after its start");
   }
   return ContingentLeg{stored_start, end, notional, pay, protect_start};
 }
@@ -115,17 +116,17 @@ namespace detail {
 ///     fix absorbed the divisions it became dead. Not reproduced here, since
 ///     an unused variable is not behaviour -- but worth knowing it is in the
 ///     original, where it would warn under `-Wall`.
-[[nodiscard]] inline std::optional<double> one_period_integral(Date today, Date start, Date end,
-                                                               const ZeroCurve &discount,
-                                                               const ZeroCurve &spread,
-                                                               double recovery) {
+[[nodiscard]] inline Expected<double> one_period_integral(Date today, Date start, Date end,
+                                                          const ZeroCurve &discount,
+                                                          const ZeroCurve &spread,
+                                                          double recovery) {
   if (today > end) {
     return 0.0;
   }
 
-  const std::optional<std::vector<Date>> timeline = risky_timeline(start, end, discount, spread);
+  const Expected<std::vector<Date>> timeline = risky_timeline(start, end, discount, spread);
   if (!timeline) {
-    return std::nullopt;
+    return unexpected(timeline.error());
   }
 
   // Note the asymmetry, which is upstream's: the survival factor is taken to
@@ -171,12 +172,13 @@ namespace detail {
 
 /// One segment with the payment made at a fixed date. Upstream's
 /// `onePeriodIntegralAtPayDate`, which its own comment calls trivial.
-[[nodiscard]] inline std::optional<double>
-one_period_integral_at_pay_date(Date today, Date start, Date end, Date pay_date,
-                                const ZeroCurve &discount, const ZeroCurve &spread,
-                                double recovery) {
+[[nodiscard]] inline Expected<double> one_period_integral_at_pay_date(Date today, Date start,
+                                                                      Date end, Date pay_date,
+                                                                      const ZeroCurve &discount,
+                                                                      const ZeroCurve &spread,
+                                                                      double recovery) {
   if (end <= start) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "end must be strictly after start");
   }
   if (today > end) {
     return 0.0;
@@ -212,25 +214,28 @@ one_period_integral_at_pay_date(Date today, Date start, Date end, Date pay_date,
 /// produces `log(0) = -inf` and hence a NaN, and that is the one case both
 /// upstream and this port reject. So the port and upstream agree everywhere,
 /// and the port's guard is honest about why.
-[[nodiscard]] inline std::optional<double>
-contingent_leg_pv(const ContingentLeg &leg, Date today, Date value_date, Date stepin_date,
-                  const ZeroCurve &discount, const ZeroCurve &spread, double recovery) {
+[[nodiscard]] inline Expected<double> contingent_leg_pv(const ContingentLeg &leg, Date today,
+                                                        Date value_date, Date stepin_date,
+                                                        const ZeroCurve &discount,
+                                                        const ZeroCurve &spread, double recovery) {
   const int offset = leg.protect_start ? 1 : 0;
   Date start = std::max(leg.start, stepin_date - std::chrono::days{offset});
   start = std::max(start, today - std::chrono::days{offset});
 
-  std::optional<double> leg_pv;
-  switch (leg.pay) {
-  case ProtectionPayment::AtMaturity:
-    leg_pv = detail::one_period_integral_at_pay_date(today, start, leg.end, leg.end, discount,
+  // Assigned from the switch through a lambda rather than declared-then-set:
+  // `Expected` has no empty state to declare, which is the point of it.
+  const Expected<double> leg_pv = [&]() -> Expected<double> {
+    switch (leg.pay) {
+    case ProtectionPayment::AtMaturity:
+      return detail::one_period_integral_at_pay_date(today, start, leg.end, leg.end, discount,
                                                      spread, recovery);
-    break;
-  case ProtectionPayment::AtDefault:
-    leg_pv = detail::one_period_integral(today, start, leg.end, discount, spread, recovery);
-    break;
-  }
+    case ProtectionPayment::AtDefault:
+      return detail::one_period_integral(today, start, leg.end, discount, spread, recovery);
+    }
+    return fail(ErrorKind::unsupported, "unrecognised protection payment timing");
+  }();
   if (!leg_pv) {
-    return std::nullopt;
+    return unexpected(leg_pv.error());
   }
 
   // Computed as at `today`; restate at the value date.
@@ -239,7 +244,7 @@ contingent_leg_pv(const ContingentLeg &leg, Date today, Date value_date, Date st
   const double result = pv / value_date_df;
 
   if (!std::isfinite(result)) {
-    return std::nullopt; // the real failure the 1e-100 threshold stood in for
+    return fail(ErrorKind::bad_argument, "the contingent leg integral is not finite");
   }
   return result;
 }

@@ -75,7 +75,7 @@ TEST_F(InterpolationDifferential, PointInterpolationMatchesWithTheDefaultMetric)
       const bool ref_ok =
           JpmcdsLinInterpLongPoint1(x.data(), sizeof(long), static_cast<int>(x.size()), f.data(),
                                     sizeof(double), desired, nullptr, &expected) == SUCCESS;
-      const std::optional<double> got = cdsmodel::linear_interpolate(x, f, desired);
+      const cdsmodel::Expected<double> got = cdsmodel::linear_interpolate(x, f, desired);
       const std::string where = "n=" + std::to_string(x.size()) + " at " + std::to_string(desired);
       ASSERT_EQ(got.has_value(), ref_ok) << where;
       if (ref_ok) {
@@ -117,7 +117,7 @@ TEST_F(InterpolationDifferential, NullAndActualDaysAgreeOnlyWhileTheBracketHasWi
                                         << with_null << " vs " << with_metric;
       // And the port agrees with both, through either metric.
       for (cdsmodel::Metric m : {cdsmodel::Metric::Direct, cdsmodel::Metric::ActualDays}) {
-        const std::optional<double> port = cdsmodel::linear_interpolate(x, f, desired, m);
+        const cdsmodel::Expected<double> port = cdsmodel::linear_interpolate(x, f, desired, m);
         ASSERT_TRUE(port.has_value());
         EXPECT_EQ(*port, with_null) << desired << " metric " << static_cast<int>(m);
       }
@@ -161,9 +161,9 @@ TEST_F(InterpolationDifferential, NullAndActualDaysDisagreeOnAZeroWidthBracket) 
     EXPECT_LT(with_metric, 0.0) << desired;
 
     // The port reproduces each path under its own name.
-    const std::optional<double> direct = cdsmodel::linear_interpolate_discontinuous(
+    const cdsmodel::Expected<double> direct = cdsmodel::linear_interpolate_discontinuous(
         x, f, desired, cdsmodel::Limit::Right, cdsmodel::Metric::Direct);
-    const std::optional<double> actual = cdsmodel::linear_interpolate_discontinuous(
+    const cdsmodel::Expected<double> actual = cdsmodel::linear_interpolate_discontinuous(
         x, f, desired, cdsmodel::Limit::Right, cdsmodel::Metric::ActualDays);
     ASSERT_TRUE(direct.has_value());
     ASSERT_TRUE(actual.has_value());
@@ -187,9 +187,9 @@ TEST_F(InterpolationDifferential, BondMetricsMatch) {
                         Case{JPMCDS_ACT_360, cdsmodel::Metric::ActualDays},
                         Case{JPMCDS_ACT_365, cdsmodel::Metric::ActualDays}}) {
     // The port's own mapping must agree with upstream's dispatch.
-    const std::optional<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(k.dcc);
+    const cdsmodel::Expected<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(k.dcc);
     ASSERT_TRUE(dcc.has_value()) << k.dcc;
-    const std::optional<cdsmodel::Metric> mapped = cdsmodel::metric_for_day_count(*dcc);
+    const cdsmodel::Expected<cdsmodel::Metric> mapped = cdsmodel::metric_for_day_count(*dcc);
     ASSERT_TRUE(mapped.has_value()) << k.dcc;
     EXPECT_EQ(*mapped, k.metric) << k.dcc;
 
@@ -199,7 +199,7 @@ TEST_F(InterpolationDifferential, BondMetricsMatch) {
           JpmcdsLinInterpLongPoint1(x.data(), sizeof(long), static_cast<int>(x.size()), f.data(),
                                     sizeof(double), desired, JpmcdsDayCountToMetricFunc(k.dcc),
                                     &expected) == SUCCESS;
-      const std::optional<double> got = cdsmodel::linear_interpolate(x, f, desired, k.metric);
+      const cdsmodel::Expected<double> got = cdsmodel::linear_interpolate(x, f, desired, k.metric);
       ASSERT_EQ(got.has_value(), ref_ok) << k.dcc << " at " << desired;
       if (ref_ok) {
         EXPECT_EQ(*got, expected) << k.dcc << " at " << desired;
@@ -221,7 +221,8 @@ TEST_F(InterpolationDifferential, ArrayInterpolationMatches) {
                                 static_cast<int>(desired.size()), nullptr, sizeof(double),
                                 expected.data()) == SUCCESS;
   ASSERT_TRUE(ref_ok);
-  const std::optional<std::vector<double>> got = cdsmodel::linear_interpolate_many(x, f, desired);
+  const cdsmodel::Expected<std::vector<double>> got =
+      cdsmodel::linear_interpolate_many(x, f, desired);
   ASSERT_TRUE(got.has_value());
   ASSERT_EQ(got->size(), expected.size());
   for (std::size_t i = 0; i < expected.size(); ++i) {
@@ -255,7 +256,7 @@ TEST_F(InterpolationDifferential, DiscontinuousInterpolationMatchesIncludingRepe
                 x.data(), sizeof(long), static_cast<int>(x.size()), f.data(), sizeof(double),
                 desired, nullptr, right ? TRUE : FALSE, &expected) == SUCCESS;
         JpmcdsBSearchCheckOrder(TRUE); // undo any leak before the next call
-        const std::optional<double> got = cdsmodel::linear_interpolate_discontinuous(
+        const cdsmodel::Expected<double> got = cdsmodel::linear_interpolate_discontinuous(
             x, f, desired, right ? cdsmodel::Limit::Right : cdsmodel::Limit::Left);
         const std::string where =
             std::string(dsc.what) + " at " + std::to_string(desired) + (right ? " right" : " left");
@@ -315,7 +316,7 @@ TEST_F(InterpolationDifferential, Upstream14_BondMetricsReturnStackGarbageBefore
   // The port returns a defined extrapolation, because metric_distance checks
   // the status it is given. std::chrono has no 1601 epoch, so a pre-epoch
   // abscissa is simply a date in 1600 and the 30/360 difference is real.
-  const std::optional<double> ported =
+  const cdsmodel::Expected<double> ported =
       cdsmodel::linear_interpolate(x, f, -50.0, cdsmodel::Metric::Bond30_360);
   ASSERT_TRUE(ported.has_value());
   EXPECT_LT(*ported, 0.01) << "extrapolating below the first node should fall below its value";

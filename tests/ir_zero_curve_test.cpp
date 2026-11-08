@@ -46,14 +46,15 @@ TEST(IrZeroCurveGolden, ReplaysRecordedCurves) {
   int matched = 0;
   int exact_cases = 0;
   for (const IrCurveCase &c : kIrCurveCases) {
-    const std::optional<cdsmodel::DayCount> mm_dcc =
+    const cdsmodel::Expected<cdsmodel::DayCount> mm_dcc =
         cdsmodel::from_upstream_code(c.money_market_day_count);
-    const std::optional<cdsmodel::BadDayConv> conv = cdsmodel::bad_day_conv_from_upstream(c.conv);
+    const cdsmodel::Expected<cdsmodel::BadDayConv> conv =
+        cdsmodel::bad_day_conv_from_upstream(c.conv);
     ASSERT_TRUE(mm_dcc.has_value());
     ASSERT_TRUE(conv.has_value());
 
     const std::vector<cdsmodel::InstrumentQuote> quotes = quotes_of(c.cash_count);
-    const std::optional<cdsmodel::ZeroCurve> got =
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> got =
         cdsmodel::build_ir_zero_curve(cdsmodel::from_tdate(kIrCurveValueDate), quotes, *mm_dcc,
                                       {.fixed_frequency = c.frequency,
                                        .float_frequency = c.frequency,
@@ -154,9 +155,9 @@ TEST(IrZeroCurveGolden, ADecreasingBenchmarkListIsRefused) {
   }
   ASSERT_NE(chosen, nullptr);
 
-  const std::optional<cdsmodel::DayCount> mm_dcc =
+  const cdsmodel::Expected<cdsmodel::DayCount> mm_dcc =
       cdsmodel::from_upstream_code(chosen->money_market_day_count);
-  const std::optional<cdsmodel::BadDayConv> conv =
+  const cdsmodel::Expected<cdsmodel::BadDayConv> conv =
       cdsmodel::bad_day_conv_from_upstream(chosen->conv);
   ASSERT_TRUE(mm_dcc.has_value());
   ASSERT_TRUE(conv.has_value());
@@ -170,10 +171,10 @@ TEST(IrZeroCurveGolden, ADecreasingBenchmarkListIsRefused) {
   // once sorted out, which is all either stage requires.
   std::vector<cdsmodel::InstrumentQuote> reversed(grouped.rbegin(), grouped.rend());
 
-  const std::optional<cdsmodel::ZeroCurve> a =
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> a =
       cdsmodel::build_ir_zero_curve(cdsmodel::from_tdate(kIrCurveValueDate), grouped, *mm_dcc,
                                     conventions, cdsmodel::Calendar::none());
-  const std::optional<cdsmodel::ZeroCurve> b =
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> b =
       cdsmodel::build_ir_zero_curve(cdsmodel::from_tdate(kIrCurveValueDate), reversed, *mm_dcc,
                                     conventions, cdsmodel::Calendar::none());
   ASSERT_TRUE(a.has_value());
@@ -191,7 +192,8 @@ TEST(IrZeroCurveGolden, Upstream35TheParserIsDefinedForEveryByte) {
   int accepted = 0;
   for (int byte = 0; byte < 256; ++byte) {
     const char code = static_cast<char>(byte);
-    const std::optional<cdsmodel::InstrumentKind> kind = cdsmodel::instrument_kind_from_code(code);
+    const cdsmodel::Expected<cdsmodel::InstrumentKind> kind =
+        cdsmodel::instrument_kind_from_code(code);
     const bool expected = code == 'M' || code == 'm' || code == 'S' || code == 's';
     EXPECT_EQ(kind.has_value(), expected) << "byte " << byte;
     if (kind) {

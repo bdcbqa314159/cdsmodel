@@ -32,7 +32,7 @@ cdsmodel::Date d(int y, int m, int day) { return *cdsmodel::make_date(y, m, day)
 std::vector<cdsmodel::Date> yearly(int day, int count = 5) {
   std::vector<cdsmodel::Date> out;
   for (int years = 1; years <= count; ++years) {
-    const std::optional<cdsmodel::Date> date = cdsmodel::make_date(2024 + years, 1, day);
+    const cdsmodel::Expected<cdsmodel::Date> date = cdsmodel::make_date(2024 + years, 1, day);
     if (date) {
       out.push_back(*date);
     }
@@ -47,14 +47,14 @@ std::vector<cdsmodel::Date> yearly(int day, int count = 5) {
 TEST(SwapDates, ThePreviousCouponAlwaysPrecedesTheMaturity) {
   int checked = 0;
   for (const int value_day : {1, 15, 28, 29, 31}) {
-    const std::optional<cdsmodel::Date> value_date = cdsmodel::make_date(2024, 1, value_day);
+    const cdsmodel::Expected<cdsmodel::Date> value_date = cdsmodel::make_date(2024, 1, value_day);
     if (!value_date) {
       continue;
     }
     for (const int maturity_day : {15, 28, 31}) {
       const std::vector<cdsmodel::Date> mats = yearly(maturity_day);
       for (const long freq : {1L, 2L, 4L, 12L}) {
-        const std::optional<std::vector<SwapDate>> got =
+        const cdsmodel::Expected<std::vector<SwapDate>> got =
             cdsmodel::swap_dates_from_adjusted(*value_date, freq, mats, std::nullopt);
         ASSERT_TRUE(got.has_value()) << value_day << " " << freq;
         for (const SwapDate &entry : *got) {
@@ -64,10 +64,10 @@ TEST(SwapDates, ThePreviousCouponAlwaysPrecedesTheMaturity) {
           EXPECT_LT(entry.previous, entry.original)
               << where << ": the previous coupon must come before the maturity";
           // And by no more than one interval, since it IS the previous one.
-          const std::optional<cdsmodel::DateInterval> interval =
+          const cdsmodel::Expected<cdsmodel::DateInterval> interval =
               cdsmodel::frequency_to_interval(freq);
           ASSERT_TRUE(interval.has_value());
-          const std::optional<cdsmodel::Date> two_back =
+          const cdsmodel::Expected<cdsmodel::Date> two_back =
               cdsmodel::date_from_date_and_offset(entry.original, *interval, -2);
           ASSERT_TRUE(two_back.has_value());
           EXPECT_GT(entry.previous, *two_back) << where << ": and by less than two intervals";
@@ -83,7 +83,7 @@ TEST(SwapDates, WithoutATableOrAConventionEveryDateIsItsOwnAdjustment) {
   // No substitution table and the None convention: nothing can move, so all
   // three dates derived from the input must agree where they should.
   const std::vector<cdsmodel::Date> mats = yearly(15);
-  const std::optional<std::vector<SwapDate>> got = cdsmodel::swap_dates_from_original(
+  const cdsmodel::Expected<std::vector<SwapDate>> got = cdsmodel::swap_dates_from_original(
       d(2024, 1, 15), 4, mats, std::nullopt, cdsmodel::BadDayConv::None, {});
   ASSERT_TRUE(got.has_value());
   ASSERT_EQ(got->size(), mats.size());
@@ -100,10 +100,11 @@ TEST(SwapDates, TheTwoConstructorsAgreeWhenNothingNeedsAdjusting) {
   // cycle from the same date.
   const std::vector<cdsmodel::Date> mats = yearly(15);
   for (const long freq : {1L, 2L, 4L}) {
-    const std::optional<std::vector<SwapDate>> from_adjusted =
+    const cdsmodel::Expected<std::vector<SwapDate>> from_adjusted =
         cdsmodel::swap_dates_from_adjusted(d(2024, 1, 15), freq, mats, std::nullopt);
-    const std::optional<std::vector<SwapDate>> from_original = cdsmodel::swap_dates_from_original(
-        d(2024, 1, 15), freq, mats, std::nullopt, cdsmodel::BadDayConv::None, {});
+    const cdsmodel::Expected<std::vector<SwapDate>> from_original =
+        cdsmodel::swap_dates_from_original(d(2024, 1, 15), freq, mats, std::nullopt,
+                                           cdsmodel::BadDayConv::None, {});
     ASSERT_TRUE(from_adjusted.has_value());
     ASSERT_TRUE(from_original.has_value());
     EXPECT_EQ(*from_adjusted, *from_original) << "freq " << freq;
@@ -117,13 +118,14 @@ TEST(SwapDates, AnOnCycleMaturityIsAWholeNumberOfIntervalsFromTheValueDate) {
   // UPSTREAM-27, and the next test is the other half.
   int on_cycle_seen = 0;
   for (const int day : {1, 15, 28}) {
-    const std::optional<cdsmodel::Date> value_date = cdsmodel::make_date(2024, 1, day);
+    const cdsmodel::Expected<cdsmodel::Date> value_date = cdsmodel::make_date(2024, 1, day);
     ASSERT_TRUE(value_date.has_value());
     for (const long freq : {1L, 2L, 4L, 12L}) {
-      const std::optional<cdsmodel::DateInterval> interval = cdsmodel::frequency_to_interval(freq);
+      const cdsmodel::Expected<cdsmodel::DateInterval> interval =
+          cdsmodel::frequency_to_interval(freq);
       ASSERT_TRUE(interval.has_value());
       const std::vector<cdsmodel::Date> mats = yearly(day);
-      const std::optional<std::vector<SwapDate>> got =
+      const cdsmodel::Expected<std::vector<SwapDate>> got =
           cdsmodel::swap_dates_from_adjusted(*value_date, freq, mats, std::nullopt);
       ASSERT_TRUE(got.has_value());
       for (const SwapDate &entry : *got) {
@@ -131,14 +133,14 @@ TEST(SwapDates, AnOnCycleMaturityIsAWholeNumberOfIntervalsFromTheValueDate) {
           continue;
         }
         ++on_cycle_seen;
-        const std::optional<cdsmodel::DateCount> counted =
+        const cdsmodel::Expected<cdsmodel::DateCount> counted =
             cdsmodel::count_dates(*value_date, entry.original, *interval);
         ASSERT_TRUE(counted.has_value());
         EXPECT_EQ(counted->extra_days, 0)
             << "on_cycle claimed for a maturity that is not a whole number of intervals away";
         // And the previous coupon is then one interval short of the maturity,
         // counted from the value date.
-        const std::optional<cdsmodel::Date> expected =
+        const cdsmodel::Expected<cdsmodel::Date> expected =
             cdsmodel::date_from_date_and_offset(*value_date, *interval, counted->intervals - 1);
         ASSERT_TRUE(expected.has_value());
         EXPECT_EQ(entry.previous, *expected);
@@ -155,12 +157,12 @@ TEST(SwapDates, AFalseFlagDoesNotImplyOffCycle) {
   const cdsmodel::Date value_date = d(2024, 1, 31);
   const cdsmodel::Date maturity = d(2027, 1, 31);
   const cdsmodel::DateInterval quarterly{3, cdsmodel::PeriodUnit::Months};
-  const std::optional<cdsmodel::DateCount> counted =
+  const cdsmodel::Expected<cdsmodel::DateCount> counted =
       cdsmodel::count_dates(value_date, maturity, quarterly);
   ASSERT_TRUE(counted.has_value());
   ASSERT_EQ(counted->extra_days, 0) << "the premise: genuinely on cycle";
 
-  const std::optional<std::vector<SwapDate>> got =
+  const cdsmodel::Expected<std::vector<SwapDate>> got =
       cdsmodel::swap_dates_from_adjusted(value_date, 4, {{maturity}}, std::nullopt);
   ASSERT_TRUE(got.has_value());
   EXPECT_FALSE(got->front().on_cycle)
@@ -168,7 +170,7 @@ TEST(SwapDates, AFalseFlagDoesNotImplyOffCycle) {
 
   // Below the 29th the same shape is reported on cycle, which is what makes
   // the heuristic a day-of-month rule rather than a schedule one.
-  const std::optional<std::vector<SwapDate>> inside =
+  const cdsmodel::Expected<std::vector<SwapDate>> inside =
       cdsmodel::swap_dates_from_adjusted(d(2024, 1, 28), 4, {{d(2027, 1, 28)}}, std::nullopt);
   ASSERT_TRUE(inside.has_value());
   EXPECT_TRUE(inside->front().on_cycle);
@@ -185,13 +187,13 @@ TEST(SwapDates, NoTableAndAnEmptyTableAreDifferentInputs) {
   const cdsmodel::Date saturday = d(2024, 1, 6);
   const std::vector<cdsmodel::Calendar> calendars{cdsmodel::Calendar::none()};
 
-  const std::optional<cdsmodel::Date> by_convention =
+  const cdsmodel::Expected<cdsmodel::Date> by_convention =
       cdsmodel::zc_adjust_date(saturday, std::nullopt, cdsmodel::BadDayConv::Follow, calendars);
   ASSERT_TRUE(by_convention.has_value());
   EXPECT_NE(*by_convention, saturday);
   EXPECT_TRUE(calendars.front().is_business_day(*by_convention));
 
-  const std::optional<cdsmodel::Date> by_empty_table = cdsmodel::zc_adjust_date(
+  const cdsmodel::Expected<cdsmodel::Date> by_empty_table = cdsmodel::zc_adjust_date(
       saturday, std::span<const BadDayPair>{}, cdsmodel::BadDayConv::Follow, calendars);
   ASSERT_TRUE(by_empty_table.has_value());
   EXPECT_EQ(*by_empty_table, saturday) << "an empty table adjusts nothing";
@@ -208,27 +210,27 @@ TEST(SwapDates, ATableTakesPrecedenceOverTheConventionEvenWhereItSaysNothing) {
   const std::span<const BadDayPair> as_span{table};
 
   EXPECT_EQ(cdsmodel::zc_adjust_date(listed, as_span, cdsmodel::BadDayConv::Follow, calendars),
-            std::optional{monday});
+            monday);
   EXPECT_EQ(cdsmodel::zc_adjust_date(unlisted, as_span, cdsmodel::BadDayConv::Follow, calendars),
-            std::optional{unlisted})
+            unlisted)
       << "absent from the table, so untouched -- the convention is not consulted";
   // A date that needs no adjustment is unaffected either way.
   EXPECT_EQ(cdsmodel::zc_adjust_date(monday, as_span, cdsmodel::BadDayConv::Follow, calendars),
-            std::optional{monday});
+            monday);
 }
 
 TEST(SwapDates, TheOriginalIsRecoveredByReverseLookup) {
   const cdsmodel::Date adjusted = d(2025, 1, 15);
   const cdsmodel::Date unadjusted = d(2025, 1, 13);
   const std::vector<BadDayPair> table{{unadjusted, adjusted}};
-  const std::optional<std::vector<SwapDate>> got = cdsmodel::swap_dates_from_adjusted(
+  const cdsmodel::Expected<std::vector<SwapDate>> got = cdsmodel::swap_dates_from_adjusted(
       d(2024, 1, 15), 4, {{adjusted}}, std::span<const BadDayPair>{table});
   ASSERT_TRUE(got.has_value());
   ASSERT_EQ(got->size(), 1u);
   EXPECT_EQ(got->front().adjusted, adjusted);
   EXPECT_EQ(got->front().original, unadjusted) << "recovered through good_to_bad";
   // Without the table the original is the adjusted date itself.
-  const std::optional<std::vector<SwapDate>> plain =
+  const cdsmodel::Expected<std::vector<SwapDate>> plain =
       cdsmodel::swap_dates_from_adjusted(d(2024, 1, 15), 4, {{adjusted}}, std::nullopt);
   ASSERT_TRUE(plain.has_value());
   EXPECT_EQ(plain->front().original, adjusted);
@@ -243,7 +245,7 @@ TEST(SwapDates, AnInvalidFrequencyIsRefusedAndAnEmptyInputIsNot) {
   }
   // No maturities is an empty result, not an error -- there is nothing to
   // derive and nothing wrong with asking.
-  const std::optional<std::vector<SwapDate>> none =
+  const cdsmodel::Expected<std::vector<SwapDate>> none =
       cdsmodel::swap_dates_from_adjusted(d(2024, 1, 15), 4, {}, std::nullopt);
   ASSERT_TRUE(none.has_value());
   EXPECT_TRUE(none->empty());
@@ -263,11 +265,12 @@ TEST(SwapDates, MatchesRecordedSwapDateSets) {
       input.push_back(cdsmodel::from_tdate(c.input[i]));
     }
     const cdsmodel::Date value_date = cdsmodel::from_tdate(c.value_date);
-    std::optional<std::vector<SwapDate>> got;
+    cdsmodel::Expected<std::vector<SwapDate>> got =
+        cdsmodel::fail(cdsmodel::ErrorKind::bad_argument, "no case ran");
     if (c.source == 0) {
       got = cdsmodel::swap_dates_from_adjusted(value_date, c.freq, input, std::nullopt);
     } else {
-      const std::optional<cdsmodel::BadDayConv> conv =
+      const cdsmodel::Expected<cdsmodel::BadDayConv> conv =
           cdsmodel::bad_day_conv_from_upstream(c.bad_day);
       ASSERT_TRUE(conv.has_value()) << c.bad_day;
       got = cdsmodel::swap_dates_from_original(value_date, c.freq, input, std::nullopt, *conv,

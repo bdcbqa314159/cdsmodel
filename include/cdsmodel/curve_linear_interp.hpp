@@ -54,6 +54,7 @@
 
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/interpolation.hpp>
 #include <cdsmodel/zero_curve.hpp>
 
@@ -103,17 +104,17 @@ namespace cdsmodel {
 ///
 /// The port cannot express the input: `ZeroCurve` is non-empty by
 /// construction, so `points().front()` and `points().back()` are total.
-[[nodiscard]] inline std::optional<ZeroCurve>
-linear_interp_curve(std::span<const Date> desired_dates, const ZeroCurve &old_curve) {
+[[nodiscard]] inline Expected<ZeroCurve> linear_interp_curve(std::span<const Date> desired_dates,
+                                                             const ZeroCurve &old_curve) {
   if (desired_dates.empty()) {
     // Upstream reaches NEW_ARRAY(TDate, 0), which is JpmcdsMallocSafe(0), and
     // that returns NULL by design -- so it refuses this too, as an allocation
     // error rather than as an empty request.
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "no dates were requested");
   }
-  const std::optional<Metric> metric = metric_for_day_count(old_curve.day_count());
+  const Expected<Metric> metric = metric_for_day_count(old_curve.day_count());
   if (!metric) {
-    return std::nullopt;
+    return unexpected(metric.error());
   }
 
   const std::span<const RatePoint> points = old_curve.points();
@@ -137,10 +138,9 @@ linear_interp_curve(std::span<const Date> desired_dates, const ZeroCurve &old_cu
     clamped.push_back(to_tdate(std::clamp(date, first, last)));
   }
 
-  const std::optional<std::vector<double>> rates =
-      linear_interpolate_many(xs, fs, clamped, *metric);
+  const Expected<std::vector<double>> rates = linear_interpolate_many(xs, fs, clamped, *metric);
   if (!rates) {
-    return std::nullopt;
+    return unexpected(rates.error());
   }
 
   std::vector<RatePoint> result;

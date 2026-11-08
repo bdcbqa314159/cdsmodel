@@ -28,6 +28,7 @@
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_interval.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/fee_leg.hpp>
 #include <cdsmodel/schedule.hpp>
 #include <cdsmodel/stub.hpp>
@@ -89,7 +90,7 @@ struct Cds {
 /// Omitting this shift costs exactly one day of protection, which on a
 /// five-year contract is a relative price error around 2e-5 -- small enough to
 /// look like rounding and far too large to be rounding.
-[[nodiscard]] inline std::optional<ContingentLeg>
+[[nodiscard]] inline Expected<ContingentLeg>
 cds_contingent_leg(Date start, Date end, double notional, bool protect_start) {
   return make_contingent_leg(start, end, notional, ProtectionPayment::AtDefault, protect_start);
 }
@@ -101,13 +102,14 @@ cds_contingent_leg(Date start, Date end, double notional, bool protect_start) {
 /// `JpmcdsContingentLegPV` and upstream deliberately ties them together, so
 /// the port ties them together too rather than exposing a step-in argument
 /// that upstream never lets a caller set independently.
-[[nodiscard]] inline std::optional<double>
-cds_contingent_leg_pv(Date today, Date value_date, Date start, Date end, double notional,
-                      const ZeroCurve &discount, const ZeroCurve &spread, double recovery,
-                      bool protect_start) {
-  const std::optional<ContingentLeg> leg = cds_contingent_leg(start, end, notional, protect_start);
+[[nodiscard]] inline Expected<double> cds_contingent_leg_pv(Date today, Date value_date, Date start,
+                                                            Date end, double notional,
+                                                            const ZeroCurve &discount,
+                                                            const ZeroCurve &spread,
+                                                            double recovery, bool protect_start) {
+  const Expected<ContingentLeg> leg = cds_contingent_leg(start, end, notional, protect_start);
   if (!leg) {
-    return std::nullopt; // upstream's JpmcdsCdsContingentLegMake returns NULL
+    return unexpected(leg.error()); // upstream's JpmcdsCdsContingentLegMake returns NULL
   }
   return contingent_leg_pv(*leg, today, value_date, /*stepin_date=*/start, discount, spread,
                            recovery);
@@ -138,20 +140,23 @@ cds_contingent_leg_pv(Date today, Date value_date, Date start, Date end, double 
 /// Returns nullopt where upstream fails: `end` before `start` (or equal to it
 /// without `protect_start`), an unbuildable schedule, or a bad-day adjustment
 /// that cannot land on a business day.
-[[nodiscard]] inline std::optional<FeeLeg> cds_fee_leg(const Cds &cds, double notional,
-                                                       std::span<const Calendar> calendars) {
+[[nodiscard]] inline Expected<FeeLeg> cds_fee_leg(const Cds &cds, double notional,
+                                                  std::span<const Calendar> calendars) {
   if (cds.protect_start ? cds.end < cds.start : cds.end <= cds.start) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument,
+                cds.protect_start
+                    ? std::string("end must be on or after start when protection starts at start")
+                    : std::string("end must be after start"));
   }
 
   std::vector<Date> dates;
   if (cds.protect_start && cds.end == cds.start) {
     dates = {cds.start, cds.end};
   } else {
-    std::optional<std::vector<Date>> schedule =
+    Expected<std::vector<Date>> schedule =
         make_regular_date_list(cds.start, cds.end, cds.coupon_interval, cds.stub);
     if (!schedule) {
-      return std::nullopt;
+      return unexpected(schedule.error());
     }
     dates = std::move(*schedule);
   }
@@ -170,9 +175,9 @@ cds_contingent_leg_pv(Date today, Date value_date, Date start, Date end, double 
 
   Date previous_adjusted = dates.front(); // the first date is never adjusted
   for (std::size_t i = 1; i < dates.size(); ++i) {
-    const std::optional<Date> adjusted = adjust(dates[i], cds.bad_day, calendars);
+    const Expected<Date> adjusted = adjust(dates[i], cds.bad_day, calendars);
     if (!adjusted) {
-      return std::nullopt;
+      return unexpected(adjusted.error());
     }
     leg.payments.push_back(FeePayment{previous_adjusted, *adjusted, *adjusted});
     previous_adjusted = *adjusted;
@@ -201,23 +206,24 @@ cds_contingent_leg_pv(Date today, Date value_date, Date start, Date end, double 
 /// are the flows that occur when there is no default, so the accrual
 /// convention never comes into play. It is part of the leg because the leg
 /// carries it for pricing, not because this function reads it.
-[[nodiscard]] inline std::optional<std::vector<CashFlow>>
+[[nodiscard]] inline Expected<std::vector<CashFlow>>
 cds_fee_leg_flows(const Cds &cds, double notional, std::span<const Calendar> calendars) {
-  const std::optional<FeeLeg> leg = cds_fee_leg(cds, notional, calendars);
+  const Expected<FeeLeg> leg = cds_fee_leg(cds, notional, calendars);
   if (!leg) {
-    return std::nullopt;
+    return unexpected(leg.error());
   }
   return fee_leg_flows(*leg);
 }
 
 /// PV of the premium leg. Replaces `JpmcdsCdsFeeLegPV`.
-[[nodiscard]] inline std::optional<double>
-cds_fee_leg_pv(const Cds &cds, Date today, Date value_date, Date stepin, double notional,
-               std::span<const Calendar> calendars, const ZeroCurve &discount,
-               const ZeroCurve &spread, bool clean) {
-  const std::optional<FeeLeg> leg = cds_fee_leg(cds, notional, calendars);
+[[nodiscard]] inline Expected<double> cds_fee_leg_pv(const Cds &cds, Date today, Date value_date,
+                                                     Date stepin, double notional,
+                                                     std::span<const Calendar> calendars,
+                                                     const ZeroCurve &discount,
+                                                     const ZeroCurve &spread, bool clean) {
+  const Expected<FeeLeg> leg = cds_fee_leg(cds, notional, calendars);
   if (!leg) {
-    return std::nullopt;
+    return unexpected(leg.error());
   }
   return fee_leg_pv(*leg, today, stepin, value_date, discount, spread, clean);
 }
@@ -244,11 +250,12 @@ cds_fee_leg_pv(const Cds &cds, Date today, Date value_date, Date stepin, double 
 ///
 /// `protect_start` is forced true, as upstream forces it, regardless of what
 /// `cds` carries -- the pricing entry point never exposed it.
-[[nodiscard]] inline std::optional<double>
-cds_price(const Cds &cds, Date today, Date settle, Date stepin, std::span<const Calendar> calendars,
-          const ZeroCurve &discount, const ZeroCurve &spread, double recovery, bool clean) {
+[[nodiscard]] inline Expected<double> cds_price(const Cds &cds, Date today, Date settle,
+                                                Date stepin, std::span<const Calendar> calendars,
+                                                const ZeroCurve &discount, const ZeroCurve &spread,
+                                                double recovery, bool clean) {
   if (stepin < today) {
-    return std::nullopt; // upstream: REQUIRE(stepinDate >= today)
+    return fail(ErrorKind::bad_argument, "step-in date is before today");
   }
   // Everything else is left to the routines called, which is what upstream's
   // own comment says it relies on.
@@ -256,20 +263,20 @@ cds_price(const Cds &cds, Date today, Date settle, Date stepin, std::span<const 
   terms.protect_start = true;
 
   const Date value_date = settle;
-  const std::optional<double> fee =
+  const Expected<double> fee =
       cds_fee_leg_pv(terms, today, value_date, stepin, 1.0, calendars, discount, spread, clean);
   if (!fee) {
-    return std::nullopt;
+    return unexpected(fee.error());
   }
 
   double contingent = 0.0;
   const Date protection_start = std::max(stepin, terms.start);
   if (protection_start <= terms.end) {
-    const std::optional<double> pv =
+    const Expected<double> pv =
         cds_contingent_leg_pv(today, value_date, protection_start, terms.end, 1.0, discount, spread,
                               recovery, terms.protect_start);
     if (!pv) {
-      return std::nullopt;
+      return unexpected(pv.error());
     }
     contingent = *pv;
   }
@@ -302,29 +309,30 @@ cds_price(const Cds &cds, Date today, Date settle, Date stepin, std::span<const 
 /// `end == start` with `protect_start`, still accrues one day. So this is a
 /// guard against a shape that cannot currently occur, not a fix for a
 /// demonstrated defect -- and it is not counted as one.
-[[nodiscard]] inline std::optional<double>
-cds_par_spread(const Cds &cds, Date today, Date stepin, std::span<const Calendar> calendars,
-               const ZeroCurve &discount, const ZeroCurve &spread, double recovery) {
+[[nodiscard]] inline Expected<double> cds_par_spread(const Cds &cds, Date today, Date stepin,
+                                                     std::span<const Calendar> calendars,
+                                                     const ZeroCurve &discount,
+                                                     const ZeroCurve &spread, double recovery) {
   if (stepin < today) {
-    return std::nullopt; // upstream: REQUIRE(stepinDate >= today)
+    return fail(ErrorKind::bad_argument, "step-in date is before today");
   }
   Cds annuity = cds;
   annuity.protect_start = true;
   annuity.coupon_rate = 1.0;
 
-  const std::optional<double> fee = cds_fee_leg_pv(annuity, today, /*value_date=*/stepin, stepin,
-                                                   1.0, calendars, discount, spread, true);
+  const Expected<double> fee = cds_fee_leg_pv(annuity, today, /*value_date=*/stepin, stepin, 1.0,
+                                              calendars, discount, spread, true);
   if (!fee) {
-    return std::nullopt;
+    return unexpected(fee.error());
   }
-  const std::optional<double> protection =
+  const Expected<double> protection =
       cds_contingent_leg_pv(today, /*value_date=*/stepin, std::max(stepin, annuity.start),
                             annuity.end, 1.0, discount, spread, recovery, true);
   if (!protection) {
-    return std::nullopt;
+    return unexpected(protection.error());
   }
   if (*fee == 0.0) {
-    return std::nullopt; // upstream divides anyway and returns inf or NaN
+    return fail(ErrorKind::no_root, "the fee leg values to zero, so no par spread exists");
   }
   return *protection / *fee;
 }

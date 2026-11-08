@@ -60,7 +60,7 @@ TEST_F(StubDifferential, StubPaymentMatchesAcrossTheWholeAcceptanceBoundary) {
           const int rc = JpmcdsStubPayment(
               cdsmodel::to_tdate(prev), cdsmodel::to_tdate(next), cdsmodel::to_tdate(stub_start),
               cdsmodel::to_tdate(stub_end), rate, cdsmodel::to_upstream_code(dcc), &want);
-          const std::optional<double> got =
+          const cdsmodel::Expected<double> got =
               cdsmodel::stub_payment(prev, next, stub_start, stub_end, rate, dcc);
           const std::string where = std::to_string(cdsmodel::to_tdate(stub_start)) + ".." +
                                     std::to_string(cdsmodel::to_tdate(stub_end)) + " dcc " +
@@ -117,10 +117,10 @@ TEST_F(StubDifferential, IsEndStubMatchesForEveryPositionAndSchedule) {
         TBoolean want = FALSE;
         const int rc = JpmcdsIsEndStub(cdsmodel::to_tdate(start), cdsmodel::to_tdate(maturity),
                                        &raw, static_cast<TStubPos>(position), &want);
-        const std::optional<cdsmodel::StubPosDefault> ported =
+        const cdsmodel::Expected<cdsmodel::StubPosDefault> ported =
             cdsmodel::stub_pos_from_upstream(position);
         ASSERT_TRUE(ported.has_value()) << position;
-        const std::optional<bool> got = cdsmodel::is_end_stub(start, maturity, iv, *ported);
+        const cdsmodel::Expected<bool> got = cdsmodel::is_end_stub(start, maturity, iv, *ported);
         const std::string where = std::to_string(cdsmodel::to_tdate(start)) + " iv " +
                                   std::to_string(periods) + " pos " + std::to_string(position);
         ASSERT_EQ(got.has_value(), rc == SUCCESS) << where;
@@ -151,7 +151,7 @@ TEST_F(StubDifferential, AnUnknownStubPositionIsRefusedByBoth) {
   }
   // And the three real values round-trip.
   for (const long code : {0L, 1L, 2L}) {
-    const std::optional<cdsmodel::StubPosDefault> pos = cdsmodel::stub_pos_from_upstream(code);
+    const cdsmodel::Expected<cdsmodel::StubPosDefault> pos = cdsmodel::stub_pos_from_upstream(code);
     ASSERT_TRUE(pos.has_value()) << code;
     EXPECT_EQ(cdsmodel::to_upstream_code(*pos), code);
     TStubPos reference{};
@@ -171,7 +171,7 @@ TEST_F(StubDifferential, Upstream_TheSplitValidatesOnlyOneOfItsTwoOutputs) {
     TStubPos position{};
     const int rc =
         JpmcdsBadDayAndStubPosSplit(static_cast<TBadDayAndStubPos>(packed), &conv, &position);
-    const std::optional<std::pair<cdsmodel::BadDayConv, cdsmodel::StubPosDefault>> got =
+    const cdsmodel::Expected<std::pair<cdsmodel::BadDayConv, cdsmodel::StubPosDefault>> got =
         cdsmodel::split_bad_day_and_stub_pos(packed);
     const std::string where = std::to_string(packed);
 
@@ -246,8 +246,8 @@ TEST_F(StubDifferential, TheCouponPeriodDoesNotEnterTheAnswerOnEitherSide) {
                                 cdsmodel::to_tdate(stub_start), cdsmodel::to_tdate(stub_end), 0.05,
                                 JPMCDS_ACT_365F, &want),
               SUCCESS);
-    const std::optional<double> got = cdsmodel::stub_payment(prev, next, stub_start, stub_end, 0.05,
-                                                             cdsmodel::DayCount::Act365Fixed);
+    const cdsmodel::Expected<double> got = cdsmodel::stub_payment(
+        prev, next, stub_start, stub_end, 0.05, cdsmodel::DayCount::Act365Fixed);
     ASSERT_TRUE(got.has_value());
     EXPECT_EQ(*got, want);
     if (!first_upstream) {

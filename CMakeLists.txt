@@ -174,6 +174,7 @@ if(CDSMODEL_BUILD_TESTS)
                  tests/ldate_year_test.cpp
                  tests/fee_leg_flows_test.cpp
                  tests/date_from_string_test.cpp
+                 tests/expected_test.cpp
                  tests/adversarial_test.cpp)
   target_link_libraries(cdsmodel_tests PRIVATE cdsmodel GTest::gtest_main)
   target_include_directories(cdsmodel_tests PRIVATE tests)
@@ -230,7 +231,8 @@ if(CDSMODEL_BUILD_TESTS)
                    tests/ldate_year_differential_test.cpp
                    tests/cxdatelist_differential_test.cpp
                    tests/fee_leg_flows_differential_test.cpp
-                   tests/date_from_string_differential_test.cpp)
+                   tests/date_from_string_differential_test.cpp
+                   tests/error_channel_differential_test.cpp)
     target_link_libraries(cdsmodel_differential_tests
                           PRIVATE cdsmodel cds_reference GTest::gtest_main)
     target_include_directories(cdsmodel_differential_tests PRIVATE tests)

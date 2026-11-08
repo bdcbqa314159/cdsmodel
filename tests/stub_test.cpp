@@ -114,22 +114,23 @@ TEST(Stub, APaymentScalesLinearlyInTheRateAndIsZeroOverNoTime) {
   const cdsmodel::Date next = sd(2024, 7, 15);
   for (const cdsmodel::DayCount dcc : {cdsmodel::DayCount::Act365Fixed, cdsmodel::DayCount::Act360,
                                        cdsmodel::DayCount::Thirty360}) {
-    const std::optional<double> single =
+    const cdsmodel::Expected<double> single =
         cdsmodel::stub_payment(prev, next, prev, sd(2024, 4, 15), 0.05, dcc);
-    const std::optional<double> doubled =
+    const cdsmodel::Expected<double> doubled =
         cdsmodel::stub_payment(prev, next, prev, sd(2024, 4, 15), 0.10, dcc);
     ASSERT_TRUE(single.has_value());
     ASSERT_TRUE(doubled.has_value());
     EXPECT_EQ(*doubled, 2.0 * *single) << static_cast<int>(dcc);
 
     // Zero rate, zero payment.
-    const std::optional<double> free =
+    const cdsmodel::Expected<double> free =
         cdsmodel::stub_payment(prev, next, prev, sd(2024, 4, 15), 0.0, dcc);
     ASSERT_TRUE(free.has_value());
     EXPECT_EQ(*free, 0.0) << static_cast<int>(dcc);
 
     // Zero-length stub at the period start: no time, no accrual.
-    const std::optional<double> instant = cdsmodel::stub_payment(prev, next, prev, prev, 0.05, dcc);
+    const cdsmodel::Expected<double> instant =
+        cdsmodel::stub_payment(prev, next, prev, prev, 0.05, dcc);
     ASSERT_TRUE(instant.has_value()) << "touching prevCoupon at both ends is accepted";
     EXPECT_EQ(*instant, 0.0) << static_cast<int>(dcc);
   }
@@ -166,27 +167,27 @@ TEST(Stub, TheEndStubDecisionFollowsTheDefaultOrTheSchedule) {
   // Front and Back answer without looking at anything.
   for (const cdsmodel::Date maturity : {sd(2027, 1, 15), sd(2024, 2, 20), sd(2029, 11, 30)}) {
     EXPECT_EQ(cdsmodel::is_end_stub(start, maturity, quarterly, cdsmodel::StubPosDefault::Back),
-              std::optional{true});
+              true);
     EXPECT_EQ(cdsmodel::is_end_stub(start, maturity, quarterly, cdsmodel::StubPosDefault::Front),
-              std::optional{false});
+              false);
   }
 
   // Auto: an evenly divided span has no stub, so true; otherwise false.
   EXPECT_EQ(
       cdsmodel::is_end_stub(start, sd(2027, 1, 15), quarterly, cdsmodel::StubPosDefault::Auto),
-      std::optional{true})
+      true)
       << "twelve whole quarters, so no stub";
   EXPECT_EQ(
       cdsmodel::is_end_stub(start, sd(2024, 2, 20), quarterly, cdsmodel::StubPosDefault::Auto),
-      std::optional{false})
+      false)
       << "shorter than one quarter, so a stub, and it goes to the front";
 
   // And the Auto answer must agree with count_dates, which is what decides it.
   for (const cdsmodel::Date maturity :
        {sd(2027, 1, 15), sd(2024, 2, 20), sd(2029, 11, 30), sd(2026, 7, 15)}) {
-    const std::optional<cdsmodel::DateCount> span =
+    const cdsmodel::Expected<cdsmodel::DateCount> span =
         cdsmodel::count_dates(start, maturity, quarterly);
-    const std::optional<bool> decision =
+    const cdsmodel::Expected<bool> decision =
         cdsmodel::is_end_stub(start, maturity, quarterly, cdsmodel::StubPosDefault::Auto);
     ASSERT_EQ(decision.has_value(), span.has_value());
     if (decision) {
@@ -205,7 +206,7 @@ TEST(Stub, TheSplitRoundTripsEveryRepresentablePairing) {
           cdsmodel::StubPosDefault::Back}) {
       const long packed =
           (cdsmodel::to_upstream_code(position) << 8) | cdsmodel::to_upstream_code(conv);
-      const std::optional<std::pair<cdsmodel::BadDayConv, cdsmodel::StubPosDefault>> split =
+      const cdsmodel::Expected<std::pair<cdsmodel::BadDayConv, cdsmodel::StubPosDefault>> split =
           cdsmodel::split_bad_day_and_stub_pos(packed);
       ASSERT_TRUE(split.has_value()) << packed;
       EXPECT_EQ(split->first, conv) << packed;
@@ -230,11 +231,11 @@ TEST(Stub, MatchesRecordedStubPayments) {
   int checked = 0;
   int refused = 0;
   for (const auto &c : cdsmodel::golden::kStubPaymentCases) {
-    const std::optional<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
+    const cdsmodel::Expected<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
     if (!dcc) {
       continue;
     }
-    const std::optional<double> got = cdsmodel::stub_payment(
+    const cdsmodel::Expected<double> got = cdsmodel::stub_payment(
         cdsmodel::from_tdate(c.prev_coupon), cdsmodel::from_tdate(c.next_coupon),
         cdsmodel::from_tdate(c.stub_start), cdsmodel::from_tdate(c.stub_end), c.rate, *dcc);
     const std::string where = std::to_string(c.stub_start) + ".." + std::to_string(c.stub_end) +
@@ -256,11 +257,11 @@ TEST(Stub, MatchesRecordedStubPayments) {
 TEST(Stub, MatchesRecordedEndStubDecisions) {
   int checked = 0;
   for (const auto &c : cdsmodel::golden::kEndStubCases) {
-    const std::optional<cdsmodel::StubPosDefault> position =
+    const cdsmodel::Expected<cdsmodel::StubPosDefault> position =
         cdsmodel::stub_pos_from_upstream(c.position);
     ASSERT_TRUE(position.has_value()) << c.position;
     const cdsmodel::DateInterval iv{c.periods, cdsmodel::PeriodUnit::Months};
-    const std::optional<bool> got = cdsmodel::is_end_stub(
+    const cdsmodel::Expected<bool> got = cdsmodel::is_end_stub(
         cdsmodel::from_tdate(c.start), cdsmodel::from_tdate(c.maturity), iv, *position);
     const std::string where = std::to_string(c.start) + " iv " + std::to_string(c.periods) +
                               " pos " + std::to_string(c.position);
@@ -277,7 +278,7 @@ TEST(Stub, MatchesRecordedSplitsIncludingTheDeliberateDivergence) {
   int agreed = 0;
   int diverged = 0;
   for (const auto &c : cdsmodel::golden::kSplitCases) {
-    const std::optional<std::pair<cdsmodel::BadDayConv, cdsmodel::StubPosDefault>> got =
+    const cdsmodel::Expected<std::pair<cdsmodel::BadDayConv, cdsmodel::StubPosDefault>> got =
         cdsmodel::split_bad_day_and_stub_pos(c.packed);
     const std::string where = std::to_string(c.packed);
     if (c.accepted && c.conv_valid) {

@@ -30,6 +30,7 @@
 
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_interval.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/stub.hpp>
 
 #include <algorithm>
@@ -57,10 +58,11 @@ namespace cdsmodel {
 /// range. `interval.periods > 0` is also what makes the loop terminate -- the
 /// date moves monotonically away from its anchor only while the period is
 /// positive -- so it is a precondition on correctness, not just on taste.
-[[nodiscard]] inline std::optional<std::vector<Date>>
+[[nodiscard]] inline Expected<std::vector<Date>>
 make_regular_date_list(Date start, Date end, DateInterval interval, StubMethod stub) {
   if (interval.periods <= 0 || end <= start) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument,
+                "a schedule needs a positive interval and an end after its start");
   }
 
   std::vector<Date> dates;
@@ -71,9 +73,9 @@ make_regular_date_list(Date start, Date end, DateInterval interval, StubMethod s
     while (date > start) {
       dates.push_back(date);
       --count;
-      const std::optional<Date> next = detail::advance_multiple(end, interval, count);
+      const Expected<Date> next = detail::advance_multiple(end, interval, count);
       if (!next) {
-        return std::nullopt;
+        return unexpected(next.error());
       }
       date = *next;
     }
@@ -92,9 +94,9 @@ make_regular_date_list(Date start, Date end, DateInterval interval, StubMethod s
     while (date < end) {
       dates.push_back(date);
       ++count;
-      const std::optional<Date> next = detail::advance_multiple(start, interval, count);
+      const Expected<Date> next = detail::advance_multiple(start, interval, count);
       if (!next) {
-        return std::nullopt;
+        return unexpected(next.error());
       }
       date = *next;
     }

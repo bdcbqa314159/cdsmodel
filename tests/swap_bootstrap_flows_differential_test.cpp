@@ -140,7 +140,7 @@ TEST_F(SwapBootstrapFlowsDifferential, CouponDatesMatchAcrossSpansAndConventions
                                       stub_at_end ? TRUE : FALSE, &raw, nullptr,
                                       cdsmodel::to_upstream_code(conv), const_cast<char *>("NONE"));
 
-          const std::optional<std::vector<cdsmodel::Date>> got = cdsmodel::swap_coupon_dates(
+          const cdsmodel::Expected<std::vector<cdsmodel::Date>> got = cdsmodel::swap_coupon_dates(
               value_date, maturity, {months, cdsmodel::PeriodUnit::Months}, stub_at_end,
               {.conv = conv}, calendars);
 
@@ -184,9 +184,10 @@ TEST_F(SwapBootstrapFlowsDifferential, CashFlowsMatchAcrossSpansRatesAndConventi
                   stub_at_end ? TRUE : FALSE, rate, &raw, cdsmodel::to_upstream_code(dcc), nullptr,
                   cdsmodel::to_upstream_code(conv), const_cast<char *>("NONE"));
 
-              const std::optional<std::vector<cdsmodel::CashFlow>> got = cdsmodel::swap_cash_flows(
-                  value_date, maturity, stub_at_end, rate, {months, cdsmodel::PeriodUnit::Months},
-                  dcc, {.conv = conv}, calendars);
+              const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got =
+                  cdsmodel::swap_cash_flows(value_date, maturity, stub_at_end, rate,
+                                            {months, cdsmodel::PeriodUnit::Months}, dcc,
+                                            {.conv = conv}, calendars);
 
               // UPSTREAM-32: upstream writes through fArray[-1] rather than
               // refusing, so this input is covered by its own test and must
@@ -236,7 +237,7 @@ TEST_F(SwapBootstrapFlowsDifferential, MatchesWithASubstitutionTable) {
         ref.cfl = JpmcdsZCGetSwapCFL(cdsmodel::to_tdate(value_date), cdsmodel::to_tdate(maturity),
                                      TRUE, rate, &raw, JPMCDS_ACT_360, &ref_table.list,
                                      cdsmodel::to_upstream_code(conv), const_cast<char *>("NONE"));
-        const std::optional<std::vector<cdsmodel::CashFlow>> got = cdsmodel::swap_cash_flows(
+        const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got = cdsmodel::swap_cash_flows(
             value_date, maturity, true, rate, {12, cdsmodel::PeriodUnit::Months},
             cdsmodel::DayCount::Act360,
             {.substitutions = std::span<const cdsmodel::BadDayPair>{table}, .conv = conv},
@@ -269,7 +270,7 @@ TEST_F(SwapBootstrapFlowsDifferential, TheZeroRatePathIsASingleRedemption) {
       EXPECT_EQ(ref.cfl->fNumItems, 1);
       EXPECT_DOUBLE_EQ(ref.cfl->fArray[0].fAmount, 1.0);
 
-      const std::optional<std::vector<cdsmodel::CashFlow>> got = cdsmodel::swap_cash_flows(
+      const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got = cdsmodel::swap_cash_flows(
           value_date, maturity, true, 0.0, {6, cdsmodel::PeriodUnit::Months},
           cdsmodel::DayCount::Act360, {.conv = conv}, calendars);
       ASSERT_TRUE(got.has_value());
@@ -281,7 +282,7 @@ TEST_F(SwapBootstrapFlowsDifferential, TheZeroRatePathIsASingleRedemption) {
   // Even the degenerate maturity is safe here, which is the irony of
   // UPSTREAM-32: the bizarre RATE got a special path and the bizarre MATURITY
   // did not.
-  const std::optional<std::vector<cdsmodel::CashFlow>> degenerate = cdsmodel::swap_cash_flows(
+  const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> degenerate = cdsmodel::swap_cash_flows(
       d(2024, 1, 15), d(2024, 1, 15), true, 0.0, {6, cdsmodel::PeriodUnit::Months},
       cdsmodel::DayCount::Act360, {}, calendars);
   ASSERT_TRUE(degenerate.has_value());
@@ -319,7 +320,7 @@ TEST_F(SwapBootstrapFlowsDifferential, Upstream32AnEmptyPayDateListWithANullArra
   // swap_cash_flows, guarding on the OUTCOME rather than on
   // `maturity == value_date`.
   const std::vector<cdsmodel::Calendar> calendars{cdsmodel::Calendar::none()};
-  const std::optional<std::vector<cdsmodel::Date>> port_dates = cdsmodel::swap_coupon_dates(
+  const cdsmodel::Expected<std::vector<cdsmodel::Date>> port_dates = cdsmodel::swap_coupon_dates(
       d(2024, 1, 15), d(2024, 1, 15), {6, cdsmodel::PeriodUnit::Months}, true, {}, calendars);
   ASSERT_TRUE(port_dates.has_value()) << "the date generation itself does not fail";
   EXPECT_TRUE(port_dates->empty()) << "and it reaches the same empty list upstream does";

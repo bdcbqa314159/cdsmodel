@@ -24,6 +24,7 @@
 
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/expected.hpp>
 
 #include <cfloat>
 #include <cmath>
@@ -90,17 +91,17 @@ namespace detail {
 /// semantic statement, since those are the only two formulas where `t`
 /// appears. Reproduced, including the consequence: a bad day count convention
 /// is detected for those two bases and ignored for the others.
-[[nodiscard]] inline std::optional<bool> rate_valid(double rate, Date start, Date end,
-                                                    DayCount day_count, double basis) {
+[[nodiscard]] inline Expected<bool> rate_valid(double rate, Date start, Date end,
+                                               DayCount day_count, double basis) {
   // Named `t` rather than `year_fraction`, which would shadow the function of
   // that name -- as the first draft of this file did, and the compiler caught.
   double t = 1.0;
   const long as_long = static_cast<long>(basis);
   if (as_long == static_cast<long>(kSimpleBasis) ||
       as_long == static_cast<long>(kDiscountRateBasis)) {
-    const std::optional<double> yf = year_fraction(start, end, day_count);
+    const Expected<double> yf = year_fraction(start, end, day_count);
     if (!yf) {
-      return std::nullopt; // upstream propagates the day count failure
+      return unexpected(yf.error()); // upstream propagates the day count failure
     }
     t = *yf;
   }
@@ -117,13 +118,15 @@ namespace detail {
 /// Upstream's comment is explicit: "We prefer to be stodgy and not do the
 /// log/exp thing here for performance." Those are not the same double, so the
 /// choice is preserved rather than modernised.
-[[nodiscard]] inline std::optional<double>
-rate_to_discount_year_frac(double rate, double year_fraction, double basis) noexcept {
+[[nodiscard]] inline Expected<double> rate_to_discount_year_frac(double rate, double year_fraction,
+                                                                 double basis) noexcept {
   switch (static_cast<long>(basis)) {
   case static_cast<long>(kSimpleBasis): {
     const double denominator = 1.0 + rate * year_fraction;
     if (denominator <= 0.0 || detail::is_almost_zero(denominator)) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument,
+                  "rate and basis give a non-positive discount denominator (" +
+                      detail::num(denominator) + ")");
     }
     return 1.0 / denominator;
   }
@@ -133,7 +136,8 @@ rate_to_discount_year_frac(double rate, double year_fraction, double basis) noex
     }
     const double discount = 1.0 - rate * year_fraction;
     if (discount <= 0.0) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument, "rate and year fraction give a non-positive discount (" +
+                                               detail::num(discount) + ")");
     }
     return discount;
   }
@@ -146,7 +150,8 @@ rate_to_discount_year_frac(double rate, double year_fraction, double basis) noex
     // pow(x, y) is undefined for x < 0 and non-integral y, so upstream checks
     // first rather than relying on the library.
     if (tmp <= 0.0 || detail::is_almost_zero(tmp)) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument,
+                  "rate and basis give a non-positive compounding base (" + detail::num(tmp) + ")");
     }
     return std::pow(tmp, -basis * year_fraction);
   }
@@ -161,32 +166,33 @@ rate_to_discount_year_frac(double rate, double year_fraction, double basis) noex
 /// In `rate_to_discount_year_frac` the discount-rate branch treats the same
 /// zero as "a discount factor of 1", because over no time nothing is
 /// discounted. One direction has an answer at `t = 0` and the other does not.
-[[nodiscard]] inline std::optional<double>
+[[nodiscard]] inline Expected<double>
 discount_to_rate_year_frac(double discount, double year_fraction, double basis) noexcept {
   if (discount <= 0.0) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument,
+                "discount factor must be positive, got " + detail::num(discount));
   }
   switch (static_cast<long>(basis)) {
   case static_cast<long>(kSimpleBasis):
     if (detail::is_almost_zero(year_fraction)) {
-      return std::nullopt;
+      return fail(ErrorKind::no_root, "year fraction is zero, so no simple rate is implied");
     }
     return (1.0 / discount - 1.0) / year_fraction;
   case static_cast<long>(kDiscountRateBasis):
     if (detail::is_almost_zero(year_fraction)) {
-      return std::nullopt;
+      return fail(ErrorKind::no_root, "year fraction is zero, so no discount rate is implied");
     }
     return (1.0 - discount) / year_fraction;
   case static_cast<long>(kContinuousBasis):
     if (detail::is_almost_zero(year_fraction)) {
-      return std::nullopt;
+      return fail(ErrorKind::no_root, "year fraction is zero, so no continuous rate is implied");
     }
     return -std::log(discount) / year_fraction;
   case static_cast<long>(kDiscountFactorBasis):
     return discount; // the rate IS the discount factor
   default:
     if (detail::is_almost_zero(year_fraction)) {
-      return std::nullopt;
+      return fail(ErrorKind::no_root, "year fraction is zero, so no rate is implied");
     }
     // Again `pow` rather than log/exp, for the same stated reason.
     return basis * (std::pow(discount, -1.0 / (basis * year_fraction)) - 1.0);
@@ -220,20 +226,23 @@ discount_to_rate_year_frac(double discount, double year_fraction, double basis) 
 /// explicitly, except for the discount-factor sentinel handled above. So -2
 /// is admissible and -1 is not, which reads as an accident of the sentinel
 /// encoding rather than a decision.
-[[nodiscard]] inline std::optional<double> rate_to_discount(double rate, Date start, Date end,
-                                                            DayCount day_count, long basis) {
+[[nodiscard]] inline Expected<double> rate_to_discount(double rate, Date start, Date end,
+                                                       DayCount day_count, long basis) {
   if (basis == static_cast<long>(kDiscountFactorBasis)) {
     if (rate <= 0.0) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument,
+                  "rate must be positive for this conversion, got " + detail::num(rate));
     }
     return rate;
   }
   if (basis < static_cast<long>(kSimpleBasis)) {
-    return std::nullopt;
+    return fail(ErrorKind::unsupported, "basis " + detail::num(basis) +
+                                            " is below the simple-interest basis " +
+                                            detail::num(static_cast<long>(kSimpleBasis)));
   }
-  const std::optional<double> yf = year_fraction(start, end, day_count);
+  const Expected<double> yf = year_fraction(start, end, day_count);
   if (!yf) {
-    return std::nullopt;
+    return unexpected(yf.error());
   }
   return rate_to_discount_year_frac(rate, *yf, static_cast<double>(basis));
 }
@@ -258,8 +267,8 @@ discount_to_rate_year_frac(double discount, double year_fraction, double basis) 
 ///    So the discount-factor basis does not simply pass through in both
 ///    directions: it passes through over a real period and returns 1.0 over a
 ///    zero-length one.
-[[nodiscard]] inline std::optional<double> discount_to_rate(double discount, Date start, Date end,
-                                                            DayCount day_count, long basis) {
+[[nodiscard]] inline Expected<double> discount_to_rate(double discount, Date start, Date end,
+                                                       DayCount day_count, long basis) {
   // Upstream's guard is `if (discount <= 0.0) return FAILURE`, which NaN
   // passes -- every comparison with NaN is false. That is UPSTREAM-19: a NaN
   // forward discount factor walks through the one check meant to stop it and
@@ -267,28 +276,36 @@ discount_to_rate_year_frac(double discount, double year_fraction, double basis) 
   // here, so the guard means what it was for. A NaN discount factor is not a
   // rate, from any caller; this is the one place that has to know it.
   if (!(discount > 0.0) || !std::isfinite(discount)) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument,
+                "discount factor must be positive and finite, got " + detail::num(discount));
   }
   if (basis == static_cast<long>(kDiscountFactorBasis)) {
     if (start == end) {
       // ARE_ALMOST_EQUAL(discount, 1.0) in upstream, which is
       // IS_ALMOST_ZERO(discount - 1.0).
       if (!detail::is_almost_zero(discount - 1.0)) {
-        return std::nullopt;
+        return fail(ErrorKind::no_root,
+                    "a zero-length period can only have a unit discount factor, got " +
+                        detail::num(discount));
       }
       return 1.0;
     }
     return discount;
   }
   if (start == end) {
-    return std::nullopt; // no counterpart in the forward direction
+    return fail(
+        ErrorKind::no_root,
+        "start and end are the same date, so there is no rate to imply"); // no counterpart in the
+                                                                          // forward direction
   }
   if (basis < static_cast<long>(kSimpleBasis)) {
-    return std::nullopt;
+    return fail(ErrorKind::unsupported, "basis " + detail::num(basis) +
+                                            " is below the simple-interest basis " +
+                                            detail::num(static_cast<long>(kSimpleBasis)));
   }
-  const std::optional<double> yf = year_fraction(start, end, day_count);
+  const Expected<double> yf = year_fraction(start, end, day_count);
   if (!yf) {
-    return std::nullopt;
+    return unexpected(yf.error());
   }
   return discount_to_rate_year_frac(discount, *yf, static_cast<double>(basis));
 }

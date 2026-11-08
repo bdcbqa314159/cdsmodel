@@ -76,11 +76,11 @@ std::vector<cdsmodel::RatePoint> rising(int count = 8) {
 
 struct Pair {
   Ref ref;
-  std::optional<cdsmodel::ZeroCurve> port;
+  cdsmodel::Expected<cdsmodel::ZeroCurve> port;
 
   Pair(cdsmodel::Date base, const std::vector<cdsmodel::RatePoint> &points, double basis,
        cdsmodel::DayCount dcc)
-      : ref(nullptr) {
+      : ref(nullptr), port(cdsmodel::fail(cdsmodel::ErrorKind::bad_argument, "not built")) {
     std::vector<TDate> dates;
     std::vector<double> rates;
     for (const cdsmodel::RatePoint &p : points) {
@@ -123,7 +123,7 @@ TEST_F(CurveRatesDifferential, ForwardRatesMatchAcrossBasesQuoteTermsAndDirectio
                   pair.ref.curve, upstream_interp(interp), cdsmodel::to_tdate(from),
                   cdsmodel::to_tdate(to), cdsmodel::to_upstream_code(quote_dcc), quote_basis,
                   &want);
-              const std::optional<double> got = cdsmodel::forward_from_curve(
+              const cdsmodel::Expected<double> got = cdsmodel::forward_from_curve(
                   *pair.port, interp, from, to, quote_dcc, quote_basis);
               JpmcdsBSearchCheckOrder(TRUE);
               const std::string where =
@@ -195,7 +195,7 @@ TEST_F(CurveRatesDifferential, Upstream19_SecondSite_AnUnguardedDivisionYieldsNa
                                     &want),
             SUCCESS);
   JpmcdsBSearchCheckOrder(TRUE);
-  const std::optional<double> got = cdsmodel::forward_from_curve(
+  const cdsmodel::Expected<double> got = cdsmodel::forward_from_curve(
       *ok.port, cdsmodel::InterpType::FlatForwards, start, end, cdsmodel::DayCount::Act365Fixed, 0);
   ASSERT_TRUE(got.has_value());
   EXPECT_NEAR(*got, want, 1.0e-12 * std::max(1.0, std::fabs(want)));
@@ -229,7 +229,7 @@ TEST_F(CurveRatesDifferential, ParCouponRatesMatchAcrossIntervalsStubsAndConvent
                   pair.ref.curve, upstream_interp(interp), cdsmodel::to_tdate(start), &raw,
                   cdsmodel::to_tdate(maturity), cdsmodel::to_upstream_code(dcc),
                   stub == cdsmodel::StubPosition::Back ? TRUE : FALSE, &want);
-              const std::optional<double> got = cdsmodel::par_coupon_rate(
+              const cdsmodel::Expected<double> got = cdsmodel::par_coupon_rate(
                   *pair.port, interp, start, iv, maturity, dcc, stub, cdsmodel::BadDayConv::None,
                   cdsmodel::BadDayConv::None, calendars);
               JpmcdsBSearchCheckOrder(TRUE);
@@ -280,7 +280,7 @@ TEST_F(CurveRatesDifferential, ParCouponRatesMatchUnderBadDayAdjustment) {
           cdsmodel::to_tdate(d(2029, 1, 6)), JPMCDS_ACT_365F, FALSE,
           cdsmodel::to_upstream_code(accrual), cdsmodel::to_upstream_code(pay),
           const_cast<char *>("NONE"), &want);
-      const std::optional<double> got = cdsmodel::par_coupon_rate(
+      const cdsmodel::Expected<double> got = cdsmodel::par_coupon_rate(
           *pair.port, cdsmodel::InterpType::FlatForwards, d(2024, 1, 6), iv, d(2029, 1, 6),
           cdsmodel::DayCount::Act365Fixed, cdsmodel::StubPosition::Front, accrual, pay, calendars);
       JpmcdsBSearchCheckOrder(TRUE);
@@ -320,7 +320,7 @@ TEST_F(CurveRatesDifferential, AStartDateBeforeTheCurveIsRefusedByBoth) {
     const int rc = JpmcdsZerosToCouponsPoint(
         straddling.ref.curve, JPMCDS_FLAT_FORWARDS, cdsmodel::to_tdate(start), &raw,
         cdsmodel::to_tdate(d(2029, 1, 1)), JPMCDS_ACT_365F, FALSE, &want);
-    const std::optional<double> got = cdsmodel::par_coupon_rate(
+    const cdsmodel::Expected<double> got = cdsmodel::par_coupon_rate(
         *straddling.port, cdsmodel::InterpType::FlatForwards, start, iv, d(2029, 1, 1),
         cdsmodel::DayCount::Act365Fixed, cdsmodel::StubPosition::Front, cdsmodel::BadDayConv::None,
         cdsmodel::BadDayConv::None, calendars);
@@ -351,7 +351,7 @@ TEST_F(CurveRatesDifferential, AnInvertedSpanIsRefusedByBoth) {
     const int rc = JpmcdsZerosToCouponsPoint(
         pair.ref.curve, JPMCDS_FLAT_FORWARDS, cdsmodel::to_tdate(start), &raw,
         cdsmodel::to_tdate(maturity), JPMCDS_ACT_365F, FALSE, &want);
-    const std::optional<double> got = cdsmodel::par_coupon_rate(
+    const cdsmodel::Expected<double> got = cdsmodel::par_coupon_rate(
         *pair.port, cdsmodel::InterpType::FlatForwards, start, iv, maturity,
         cdsmodel::DayCount::Act365Fixed, cdsmodel::StubPosition::Front, cdsmodel::BadDayConv::None,
         cdsmodel::BadDayConv::None, calendars);

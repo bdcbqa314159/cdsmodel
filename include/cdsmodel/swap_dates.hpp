@@ -36,6 +36,7 @@
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_interval.hpp>
 #include <cdsmodel/date_sup.hpp>
+#include <cdsmodel/expected.hpp>
 
 #include <chrono>
 #include <optional>
@@ -112,7 +113,7 @@ struct SwapDate {
 /// documented purpose, not the code, and the port's answer to that is the
 /// signature: `bad_days` being an `optional` says "either this or the
 /// convention" where upstream's two unrelated parameters say "both".
-[[nodiscard]] inline std::optional<Date>
+[[nodiscard]] inline Expected<Date>
 zc_adjust_date(Date date, std::optional<std::span<const BadDayPair>> bad_days, BadDayConv conv,
                std::span<const Calendar> calendars) {
   if (bad_days) {
@@ -192,11 +193,11 @@ namespace detail {
 /// `JpmcdsCountDates` has just set it -- but the safety is an argument about
 /// control flow rather than a property of the code, which is exactly the shape
 /// UPSTREAM-14 is. Here the argument happens to hold.
-[[nodiscard]] inline std::optional<std::pair<bool, Date>>
+[[nodiscard]] inline Expected<std::pair<bool, Date>>
 previous_and_on_cycle(Date value_date, Date original, long freq) {
-  const std::optional<DateInterval> interval = frequency_to_interval(freq);
+  const Expected<DateInterval> interval = frequency_to_interval(freq);
   if (!interval) {
-    return std::nullopt;
+    return unexpected(interval.error());
   }
   const unsigned value_day = static_cast<unsigned>(to_ymd(value_date).day());
   const unsigned original_day = static_cast<unsigned>(to_ymd(original).day());
@@ -205,9 +206,9 @@ previous_and_on_cycle(Date value_date, Date original, long freq) {
   int intervals = 0;
   if (value_day <= 28 && original_day <= 28) {
     // UPSTREAM-27: the guard, reproduced.
-    const std::optional<DateCount> counted = count_dates(value_date, original, *interval);
+    const Expected<DateCount> counted = count_dates(value_date, original, *interval);
     if (!counted) {
-      return std::nullopt;
+      return unexpected(counted.error());
     }
     intervals = counted->intervals;
     on_cycle = counted->extra_days == 0;
@@ -216,11 +217,11 @@ previous_and_on_cycle(Date value_date, Date original, long freq) {
   // On cycle: forward from the value date. Off cycle: back one from the
   // maturity. `intervals` is only read on the first path, which is the only
   // one that sets it -- the port keeps it initialised regardless.
-  const std::optional<Date> previous =
+  const Expected<Date> previous =
       on_cycle ? date_from_date_and_offset(value_date, *interval, intervals - 1)
                : date_from_date_and_offset(original, *interval, -1);
   if (!previous) {
-    return std::nullopt;
+    return unexpected(previous.error());
   }
   return std::pair{on_cycle, *previous};
 }
@@ -238,7 +239,7 @@ previous_and_on_cycle(Date value_date, Date original, long freq) {
 /// meant. Not a defect in this function; it is the reverse lookup behaving as
 /// `bad_day_map.hpp` records, and `is_well_formed` is the check that catches
 /// the table.
-[[nodiscard]] inline std::optional<std::vector<SwapDate>>
+[[nodiscard]] inline Expected<std::vector<SwapDate>>
 swap_dates_from_adjusted(Date value_date, long freq, std::span<const Date> adjusted,
                          std::optional<std::span<const BadDayPair>> bad_days) {
   std::vector<SwapDate> dates;
@@ -247,10 +248,10 @@ swap_dates_from_adjusted(Date value_date, long freq, std::span<const Date> adjus
     SwapDate entry;
     entry.adjusted = date;
     entry.original = bad_days ? good_to_bad(*bad_days, date) : date;
-    const std::optional<std::pair<bool, Date>> derived =
+    const Expected<std::pair<bool, Date>> derived =
         detail::previous_and_on_cycle(value_date, entry.original, freq);
     if (!derived) {
-      return std::nullopt;
+      return unexpected(derived.error());
     }
     entry.on_cycle = derived->first;
     entry.previous = derived->second;
@@ -267,7 +268,7 @@ swap_dates_from_adjusted(Date value_date, long freq, std::span<const Date> adjus
 /// adjusted dates, one holding unadjusted -- agree on `on_cycle` only insofar
 /// as the substitution table round trips. That is upstream's design and it is
 /// why `from_adjusted` bothers to recover the original at all.
-[[nodiscard]] inline std::optional<std::vector<SwapDate>>
+[[nodiscard]] inline Expected<std::vector<SwapDate>>
 swap_dates_from_original(Date value_date, long freq, std::span<const Date> original,
                          std::optional<std::span<const BadDayPair>> bad_days, BadDayConv conv,
                          std::span<const Calendar> calendars) {
@@ -276,15 +277,15 @@ swap_dates_from_original(Date value_date, long freq, std::span<const Date> origi
   for (const Date date : original) {
     SwapDate entry;
     entry.original = date;
-    const std::optional<Date> moved = zc_adjust_date(date, bad_days, conv, calendars);
+    const Expected<Date> moved = zc_adjust_date(date, bad_days, conv, calendars);
     if (!moved) {
-      return std::nullopt;
+      return unexpected(moved.error());
     }
     entry.adjusted = *moved;
-    const std::optional<std::pair<bool, Date>> derived =
+    const Expected<std::pair<bool, Date>> derived =
         detail::previous_and_on_cycle(value_date, date, freq);
     if (!derived) {
-      return std::nullopt;
+      return unexpected(derived.error());
     }
     entry.on_cycle = derived->first;
     entry.previous = derived->second;

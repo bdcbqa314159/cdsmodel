@@ -38,7 +38,7 @@ bool compare(const std::string &input) {
   std::string mutable_copy = input; // upstream takes char* and uses strtok
   TDate ref = -999;
   const bool ref_ok = JpmcdsStringToDate(mutable_copy.data(), &ref) == SUCCESS;
-  const std::optional<cdsmodel::Date> got = cdsmodel::date_from_string(input);
+  const cdsmodel::Expected<cdsmodel::Date> got = cdsmodel::date_from_string(input);
 
   EXPECT_EQ(ref_ok, got.has_value()) << "acceptance differs for \"" << input << "\"";
   if (ref_ok && got) {

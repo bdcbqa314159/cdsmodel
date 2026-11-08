@@ -43,6 +43,7 @@
 #include <cdsmodel/bsearch.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/interpolation.hpp>
 #include <cdsmodel/rate_conversion.hpp>
 #include <cdsmodel/zero_curve.hpp>
@@ -84,17 +85,16 @@ namespace detail {
 /// dates for tree models. For ACT/360 and ACT/365F the day-count difference is
 /// a plain subtraction, so a fraction is meaningful; the other conventions
 /// reject it, and those conventions cannot reach here anyway.
-[[nodiscard]] inline std::optional<double> interp_flat_forwards(const ZeroCurve &curve,
-                                                                double desired) {
+[[nodiscard]] inline Expected<double> interp_flat_forwards(const ZeroCurve &curve, double desired) {
   const std::span<const RatePoint> points = curve.points();
   std::vector<TDate> dates;
   dates.reserve(points.size());
   for (const RatePoint &point : points) {
     dates.push_back(to_tdate(point.date));
   }
-  const std::optional<Bracket> at = bracket(std::span<const TDate>{dates}, desired);
+  const Expected<Bracket> at = bracket(std::span<const TDate>{dates}, desired);
   if (!at) {
-    return std::nullopt;
+    return unexpected(at.error());
   }
   const TDate date_lo = dates[at->lo];
   const TDate date_hi = dates[at->hi];
@@ -114,14 +114,15 @@ namespace detail {
     return desired < static_cast<double>(base) ? rate_lo : rate_hi;
   }
 
-  const std::optional<double> disc_lo =
+  const Expected<double> disc_lo =
       rate_to_discount(rate_lo, curve.base_date(), from_tdate(date_lo), curve.day_count(),
                        static_cast<long>(curve.basis()));
-  const std::optional<double> disc_hi =
+  const Expected<double> disc_hi =
       rate_to_discount(rate_hi, curve.base_date(), from_tdate(date_hi), curve.day_count(),
                        static_cast<long>(curve.basis()));
   if (!disc_lo || !disc_hi || *disc_lo == 0.0) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument,
+                "a bracket endpoint has no discount factor, or the lower one is zero");
   }
 
   // ACT/360 and ACT/365F measure the gap as a plain date difference, which is
@@ -130,7 +131,7 @@ namespace detail {
   const double span = static_cast<double>(date_hi - date_lo);
   const double covered = desired - static_cast<double>(date_lo);
   if (detail::is_almost_zero(span) || span < 0.0) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the bracket has zero or negative width");
   }
 
   const double disc_desired = *disc_lo * std::pow(*disc_hi / *disc_lo, covered / span);
@@ -238,11 +239,11 @@ namespace detail {
 /// a date before the first returns the first -- flat extrapolation in both
 /// directions, "regardless of what the interpolation type is". The guard is
 /// skipped entirely for a discount-factor curve, which the port cannot build.
-[[nodiscard]] inline std::optional<double> interp_rate_exact(const ZeroCurve &curve, double desired,
-                                                             InterpType interp) {
+[[nodiscard]] inline Expected<double> interp_rate_exact(const ZeroCurve &curve, double desired,
+                                                        InterpType interp) {
   const std::span<const RatePoint> points = curve.points();
   if (points.empty()) {
-    return std::nullopt; // unreachable: ZeroCurve::create refuses an empty curve
+    return fail(ErrorKind::bad_argument, "the curve has no points");
   }
 
   // Flat extrapolation at both ends, whatever the interpolation type.
@@ -271,13 +272,13 @@ namespace detail {
     return linear_interpolate(dates, rates, desired, Metric::Direct);
   }
   }
-  return std::nullopt;
+  return fail(ErrorKind::unsupported, "unrecognised enumerator reached a switch default");
 }
 
 /// `interp_rate_exact` at a whole date. Replaces `JpmcdsInterpRate`, which is
 /// a one-line cast wrapper around the exact form.
-[[nodiscard]] inline std::optional<double> interp_rate(const ZeroCurve &curve, Date date,
-                                                       InterpType interp) {
+[[nodiscard]] inline Expected<double> interp_rate(const ZeroCurve &curve, Date date,
+                                                  InterpType interp) {
   return interp_rate_exact(curve, static_cast<double>(to_tdate(date)), interp);
 }
 

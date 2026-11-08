@@ -65,6 +65,7 @@
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_interval.hpp>
 #include <cdsmodel/date_sup.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/stub.hpp>
 
 #include <algorithm>
@@ -130,6 +131,8 @@ struct CouponScheduleTerms {
 
   /// Upstream's `fullFirstCoupDate`: the accrual start the first period takes
   /// instead of the schedule's own, which must be on or before `start`.
+  /// D7: genuinely absent -- most schedules have no full-first-coupon date,
+  /// which is a fact about the terms, not a failure to compute one.
   std::optional<Date> full_first_coupon_date{};
 };
 
@@ -196,10 +199,10 @@ namespace detail {
 /// and a direct caller gets a heap-buffer-overflow (ASan-confirmed; see
 /// `defect_evidence --section u30`). A vector removes the sizing question
 /// entirely, and the bound is checked here as well.
-[[nodiscard]] inline std::optional<UnadjustedDates>
+[[nodiscard]] inline Expected<UnadjustedDates>
 generate_unadjusted_dates(const CouponScheduleTerms &terms) {
   if (terms.start > terms.maturity) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "start must be on or before maturity");
   }
 
   const auto *first_roll = std::get_if<FirstRollDate>(&terms.roll_anchor);
@@ -208,10 +211,12 @@ generate_unadjusted_dates(const CouponScheduleTerms &terms) {
   // UPSTREAM-30's bound, which upstream applies in its caller rather than
   // here. Checked in both places so neither entry point can overflow.
   if (first_roll && (first_roll->date < terms.start || first_roll->date > terms.maturity)) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument,
+                "the first roll date is outside the start-to-maturity range");
   }
   if (last_roll && (last_roll->date < terms.start || last_roll->date > terms.maturity)) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument,
+                "the last roll date is outside the start-to-maturity range");
   }
 
   // Upstream's JpmcdsCountDates call. Its answer only sized the buffer, but
@@ -219,7 +224,8 @@ generate_unadjusted_dates(const CouponScheduleTerms &terms) {
   // those refusals are load-bearing: without them the stepping loop below
   // never terminates.
   if (!count_dates(terms.start, terms.maturity, terms.coupon_interval)) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument,
+                "the coupon interval does not divide the start-to-maturity range");
   }
 
   bool front = false;
@@ -268,13 +274,14 @@ generate_unadjusted_dates(const CouponScheduleTerms &terms) {
     const long long count =
         static_cast<long long>(terms.coupon_interval.periods) * direction * step;
     if (count < std::numeric_limits<int>::min() || count > std::numeric_limits<int>::max()) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument,
+                  "coupon count " + detail::num(count) + " is not representable as an int");
     }
     ++step;
-    const std::optional<Date> next =
+    const Expected<Date> next =
         advance(begin, DateInterval{static_cast<int>(count), terms.coupon_interval.unit});
     if (!next) {
-      return std::nullopt;
+      return unexpected(next.error());
     }
     unadjusted = *next;
     dates.push_back((end - unadjusted).count() * direction > 0 ? unadjusted : end);
@@ -350,9 +357,9 @@ generate_unadjusted_dates(const CouponScheduleTerms &terms) {
 /// check, so that schedule produces an out-of-bounds read at index -1
 /// (ASan-confirmed; see `defect_evidence --section u29`). The port refuses
 /// instead, which is why `CouponSchedule::periods` can be assumed non-empty.
-[[nodiscard]] inline std::optional<CouponSchedule>
-coupon_schedule(const CouponScheduleTerms &terms, const CouponConventions &conventions,
-                const Calendar &calendar) {
+[[nodiscard]] inline Expected<CouponSchedule> coupon_schedule(const CouponScheduleTerms &terms,
+                                                              const CouponConventions &conventions,
+                                                              const Calendar &calendar) {
   // CheckArgsSwapMakeSchedule. The bad-day conventions it validates are an
   // enum here, and the both-roll-dates case is unrepresentable, so what is
   // left is the three order checks. Note upstream's `startDate > matDate`
@@ -360,18 +367,20 @@ coupon_schedule(const CouponScheduleTerms &terms, const CouponConventions &conve
   // for the condition it guards -- equality is accepted, and UPSTREAM-29 is
   // what equality then produces.
   if (terms.start > terms.maturity) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "start must be on or before maturity");
   }
   if (terms.full_first_coupon_date && *terms.full_first_coupon_date > terms.start) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument,
+                "the full first coupon date must not be after the start date");
   }
   if (conventions.reset_offset_days < 0) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "reset offset must not be negative, got " +
+                                             detail::num(conventions.reset_offset_days));
   }
 
-  const std::optional<UnadjustedDates> unadjusted = generate_unadjusted_dates(terms);
+  const Expected<UnadjustedDates> unadjusted = generate_unadjusted_dates(terms);
   if (!unadjusted || unadjusted->dates.size() < 2) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the unadjusted schedule has fewer than 2 dates");
   }
   const std::vector<Date> &cycle = unadjusted->dates;
   const std::size_t last = cycle.size() - 1;
@@ -382,9 +391,9 @@ coupon_schedule(const CouponScheduleTerms &terms, const CouponConventions &conve
   for (std::size_t i = 0; i < cycle.size(); ++i) {
     Date accrual{};
     if (i != last || conventions.adjust_last_accrual_date) {
-      const std::optional<Date> moved = adjust(cycle[i], conventions.accrual, calendar);
+      const Expected<Date> moved = adjust(cycle[i], conventions.accrual, calendar);
       if (!moved) {
-        return std::nullopt;
+        return unexpected(moved.error());
       }
       accrual = *moved;
     } else {
@@ -428,41 +437,41 @@ coupon_schedule(const CouponScheduleTerms &terms, const CouponConventions &conve
 
   // UPSTREAM-29: upstream carries on with a zero-period schedule.
   if (schedule.periods.empty()) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the coupon schedule has no periods");
   }
 
   for (CouponDates &period : schedule.periods) {
-    const std::optional<Date> pay = adjust(period.accrual_end, conventions.pay, calendar);
+    const Expected<Date> pay = adjust(period.accrual_end, conventions.pay, calendar);
     if (!pay) {
-      return std::nullopt;
+      return unexpected(pay.error());
     }
     period.pay = *pay;
   }
   if (conventions.pay_offset_days != 0) {
     for (CouponDates &period : schedule.periods) {
-      const std::optional<Date> moved =
+      const Expected<Date> moved =
           add_business_days(period.pay, conventions.pay_offset_days, calendar);
       if (!moved) {
-        return std::nullopt;
+        return unexpected(moved.error());
       }
       period.pay = *moved;
     }
   }
 
   for (CouponDates &period : schedule.periods) {
-    const std::optional<Date> set =
+    const Expected<Date> set =
         adjust(conventions.in_arrears ? period.accrual_end : period.accrual_start,
                conventions.reset, calendar);
     if (!set) {
-      return std::nullopt;
+      return unexpected(set.error());
     }
     period.reset = *set;
 
     if (conventions.reset_offset_days != 0) {
-      const std::optional<Date> moved =
+      const Expected<Date> moved =
           add_business_days(period.reset, -conventions.reset_offset_days, calendar);
       if (!moved) {
-        return std::nullopt;
+        return unexpected(moved.error());
       }
       period.reset = *moved;
     }
@@ -473,10 +482,10 @@ coupon_schedule(const CouponScheduleTerms &terms, const CouponConventions &conve
     // with a business day, because the date strictly decreases each pass;
     // a calendar with none is UPSTREAM-6, refused by `adjust` before this.
     while (period.reset > period.pay) {
-      const std::optional<Date> back =
+      const Expected<Date> back =
           adjust(period.reset - std::chrono::days{1}, BadDayConv::Previous, calendar);
       if (!back) {
-        return std::nullopt;
+        return unexpected(back.error());
       }
       period.reset = *back;
     }

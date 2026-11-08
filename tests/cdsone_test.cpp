@@ -62,7 +62,7 @@ cdsmodel::ZeroCurve example_discount() {
   for (std::size_t i = 0; i < spec.n; ++i) {
     pts.push_back({cdsmodel::from_tdate(spec.dates[i]), spec.rates[i]});
   }
-  const std::optional<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(spec.day_count);
+  const cdsmodel::Expected<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(spec.day_count);
   return *cdsmodel::ZeroCurve::create(cdsmodel::from_tdate(spec.base), pts, spec.basis,
                                       dcc.value_or(cdsmodel::DayCount::Act365Fixed));
 }
@@ -133,15 +133,15 @@ TEST(Cdsone, SpreadSolverReturnsASpreadThatReproducesTheCharge) {
     }
     const cdsmodel::Cds cds = cds_of(c);
     const cdsmodel::UpfrontDates dates = dates_of(c);
-    const std::optional<double> target = cdsmodel::cdsone_upfront_charge(
+    const cdsmodel::Expected<double> target = cdsmodel::cdsone_upfront_charge(
         cds, dates, cals, discount, c.one_spread, c.recovery, /*pay_accrued_at_start=*/false);
     ASSERT_TRUE(target.has_value());
-    const std::optional<double> implied = cdsmodel::cdsone_spread(
+    const cdsmodel::Expected<double> implied = cdsmodel::cdsone_spread(
         cds, dates, cals, discount, *target, c.recovery, /*pay_accrued_at_start=*/false);
     if (!implied) {
       continue; // the bracket is [0, 100]; some targets have no root in it
     }
-    const std::optional<double> reproduced = cdsmodel::cdsone_upfront_charge(
+    const cdsmodel::Expected<double> reproduced = cdsmodel::cdsone_upfront_charge(
         cds, dates, cals, discount, *implied, c.recovery, /*pay_accrued_at_start=*/false);
     ASSERT_TRUE(reproduced.has_value()) << "implied spread " << *implied << " is unpriceable";
     // The outer solver stops at |difference| <= 1e-8; allow the bootstrap's
@@ -175,10 +175,10 @@ TEST(Cdsone, SpreadRoundTripHoldsWhereTheProblemIsWellConditioned) {
     for (double spread_bps : {25.0, 50.0, 100.0, 250.0, 500.0, 1000.0}) {
       for (double recovery : {0.0, 0.4, 0.8}) {
         const double spread = spread_bps / 10000.0;
-        const std::optional<double> charge =
+        const cdsmodel::Expected<double> charge =
             cdsmodel::cdsone_upfront_charge(cds, dates, cals, discount, spread, recovery, false);
         ASSERT_TRUE(charge.has_value()) << spread_bps;
-        const std::optional<double> recovered =
+        const cdsmodel::Expected<double> recovered =
             cdsmodel::cdsone_spread(cds, dates, cals, discount, *charge, recovery, false);
         ASSERT_TRUE(recovered.has_value()) << spread_bps;
         EXPECT_NEAR(*recovered, spread, kSpreadTolerance)
@@ -223,7 +223,7 @@ TEST(Cdsone, ReproducesTheNumbersIsdaPublished) {
   for (const Published &p : {Published{0.0, 38651.944609}, Published{3600.0, -10682.519172},
                              Published{7200.0, -60016.982954}}) {
     cds.coupon_rate = p.coupon_bps / 10000.0;
-    const std::optional<double> got = cdsmodel::cdsone_upfront_charge(
+    const cdsmodel::Expected<double> got = cdsmodel::cdsone_upfront_charge(
         cds, dates, cals, discount, 3600.0 / 10000.0, 0.4, /*pay_accrued_at_start=*/false);
     ASSERT_TRUE(got.has_value()) << p.coupon_bps << "bps";
     // Half a unit in the last printed decimal.
@@ -249,7 +249,7 @@ TEST(Cdsone, MatchesRecordedCharges) {
   int checked = 0;
   int rejected = 0;
   for (const auto &c : cdsmodel::golden::kCdsoneChargeCases) {
-    const std::optional<double> got = cdsmodel::cdsone_upfront_charge(
+    const cdsmodel::Expected<double> got = cdsmodel::cdsone_upfront_charge(
         cds_of(c), dates_of(c), cals, discount, c.one_spread, c.recovery, c.clean);
     const std::string where = "cpn=" + std::to_string(c.coupon_rate) +
                               " s=" + std::to_string(c.one_spread) +
@@ -282,7 +282,7 @@ TEST(Cdsone, MatchesRecordedSpreads) {
     cds.bad_day = cdsmodel::BadDayConv::Follow;
     cds.pay_accrual_on_default = true;
 
-    const std::optional<double> got =
+    const cdsmodel::Expected<double> got =
         cdsmodel::cdsone_spread(cds, dates, cals, discount, c.charge, c.recovery, false);
     ASSERT_EQ(got.has_value(), c.solved)
         << "cpn=" << c.coupon_rate << " R=" << c.recovery << " charge=" << c.charge;
@@ -319,7 +319,7 @@ TEST(Cdsone, AtParTheChargeIsZero) {
     // Step-in and value on `today` so the priced contract and the benchmark
     // see the same clamps.
     const cdsmodel::UpfrontDates dates{d(2008, 2, 1), d(2008, 2, 1), d(2008, 2, 2), d(2008, 2, 1)};
-    const std::optional<double> charge = cdsmodel::cdsone_upfront_charge(
+    const cdsmodel::Expected<double> charge = cdsmodel::cdsone_upfront_charge(
         cds, dates, cals, discount, spread_bps / 10000.0, 0.4, /*pay_accrued_at_start=*/true);
     ASSERT_TRUE(charge.has_value()) << spread_bps;
     EXPECT_NEAR(*charge, 0.0, 1.0e-9)
@@ -347,22 +347,22 @@ TEST(Cdsone, ChargeRisesWithTheQuotedSpreadAndFallsWithTheCoupon) {
   // Protection is worth more when the market quotes a wider spread.
   std::optional<double> previous;
   for (double spread_bps : {25.0, 100.0, 500.0, 1000.0, 3600.0}) {
-    const std::optional<double> charge = charge_at(100.0, spread_bps);
+    const cdsmodel::Expected<double> charge = charge_at(100.0, spread_bps);
     ASSERT_TRUE(charge.has_value()) << spread_bps;
     if (previous) {
       EXPECT_GT(*charge, *previous) << "spread " << spread_bps << "bps did not raise the charge";
     }
-    previous = charge;
+    previous = *charge;
   }
   // And paying a larger coupon is worse for the buyer.
   previous.reset();
   for (double coupon_bps : {0.0, 100.0, 500.0, 1000.0, 3600.0}) {
-    const std::optional<double> charge = charge_at(coupon_bps, 500.0);
+    const cdsmodel::Expected<double> charge = charge_at(coupon_bps, 500.0);
     ASSERT_TRUE(charge.has_value()) << coupon_bps;
     if (previous) {
       EXPECT_LT(*charge, *previous) << "coupon " << coupon_bps << "bps did not reduce the charge";
     }
-    previous = charge;
+    previous = *charge;
   }
 }
 
@@ -382,20 +382,20 @@ TEST(Cdsone, BenchmarkStartAndContractStartAreIndependent) {
   cds.pay_accrual_on_default = true;
 
   const cdsmodel::UpfrontDates base{d(2008, 2, 1), d(2008, 2, 1), d(2008, 2, 2), d(2008, 2, 9)};
-  const std::optional<double> reference =
+  const cdsmodel::Expected<double> reference =
       cdsmodel::cdsone_upfront_charge(cds, base, cals, discount, 0.05, 0.4, false);
   ASSERT_TRUE(reference.has_value());
 
   cdsmodel::UpfrontDates moved_benchmark = base;
   moved_benchmark.benchmark_start = d(2008, 3, 2);
-  const std::optional<double> a =
+  const cdsmodel::Expected<double> a =
       cdsmodel::cdsone_upfront_charge(cds, moved_benchmark, cals, discount, 0.05, 0.4, false);
   ASSERT_TRUE(a.has_value());
   EXPECT_NE(*a, *reference) << "moving the benchmark start changed nothing";
 
   cdsmodel::Cds moved_contract = cds;
   moved_contract.start = d(2008, 1, 8);
-  const std::optional<double> b =
+  const cdsmodel::Expected<double> b =
       cdsmodel::cdsone_upfront_charge(moved_contract, base, cals, discount, 0.05, 0.4, false);
   ASSERT_TRUE(b.has_value());
   EXPECT_NE(*b, *reference) << "moving the contract start changed nothing";

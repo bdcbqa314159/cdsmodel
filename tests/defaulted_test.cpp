@@ -55,13 +55,13 @@ TEST(Defaulted, TheAnswerDoesNotDependOnWhenYouAsk) {
   int events = 0;
   for (int event_offset = 0; event_offset <= 1600; event_offset += 13) {
     const Date event = cds.start + std::chrono::days{event_offset};
-    const std::optional<cdsmodel::DefaultAccrual> prompt =
+    const cdsmodel::Expected<cdsmodel::DefaultAccrual> prompt =
         cdsmodel::default_accrual(cds, event, event, 1.0e7, cals);
     if (!prompt) {
       continue; // the event is outside the schedule
     }
     for (int lag : {0, 1, 7, 45, 50, 95, 200, 400, 2000}) {
-      const std::optional<cdsmodel::DefaultAccrual> later =
+      const cdsmodel::Expected<cdsmodel::DefaultAccrual> later =
           cdsmodel::default_accrual(cds, event + std::chrono::days{lag}, event, 1.0e7, cals);
       ASSERT_TRUE(later.has_value()) << "event+" << event_offset << " lag " << lag;
       EXPECT_EQ(later->days, prompt->days)
@@ -83,7 +83,7 @@ TEST(Defaulted, AccrualIsNeverNegativeAndNeverExceedsAFullPeriod) {
     for (int event_offset = 0; event_offset <= 1600; event_offset += 7) {
       const Date event = cds.start + std::chrono::days{event_offset};
       for (int lag : {0, 30, 120}) {
-        const std::optional<cdsmodel::DefaultAccrual> got =
+        const cdsmodel::Expected<cdsmodel::DefaultAccrual> got =
             cdsmodel::default_accrual(cds, event + std::chrono::days{lag}, event, 1.0e7, cals);
         if (!got) {
           continue;
@@ -114,7 +114,7 @@ TEST(Defaulted, AccrualGrowsThroughACouponPeriodAndResetsAtTheBoundary) {
   int resets = 0;
   for (int offset = 1; offset <= 400; ++offset) {
     const Date event = cds.start + std::chrono::days{offset};
-    const std::optional<cdsmodel::DefaultAccrual> got =
+    const cdsmodel::Expected<cdsmodel::DefaultAccrual> got =
         cdsmodel::default_accrual(cds, event, event, 1.0e7, cals);
     ASSERT_TRUE(got.has_value()) << offset;
     if (previous != 0) {
@@ -137,7 +137,7 @@ TEST(Defaulted, NothingIsOwedBeforeTheEventIsDetermined) {
   const cdsmodel::Cds cds = quarterly();
   const Date event = d(2024, 8, 1);
   for (int lead : {1, 5, 30, 200, 2000}) {
-    const std::optional<cdsmodel::DefaultAccrual> got =
+    const cdsmodel::Expected<cdsmodel::DefaultAccrual> got =
         cdsmodel::default_accrual(cds, event - std::chrono::days{lead}, event, 1.0e7, cals);
     ASSERT_TRUE(got.has_value()) << lead;
     EXPECT_EQ(got->days, 0) << lead;
@@ -150,19 +150,19 @@ TEST(Defaulted, ScalesLinearlyInNotionalAndCoupon) {
   cdsmodel::Cds cds = quarterly();
   const Date event = d(2024, 8, 1);
 
-  const std::optional<cdsmodel::DefaultAccrual> base =
+  const cdsmodel::Expected<cdsmodel::DefaultAccrual> base =
       cdsmodel::default_accrual(cds, event, event, 1.0e7, cals);
   ASSERT_TRUE(base.has_value());
   ASSERT_GT(base->amount, 0.0);
 
-  const std::optional<cdsmodel::DefaultAccrual> double_notional =
+  const cdsmodel::Expected<cdsmodel::DefaultAccrual> double_notional =
       cdsmodel::default_accrual(cds, event, event, 2.0e7, cals);
   ASSERT_TRUE(double_notional.has_value());
   EXPECT_EQ(double_notional->days, base->days) << "notional must not move the day count";
   EXPECT_NEAR(double_notional->amount, 2.0 * base->amount, 1.0e-9);
 
   cds.coupon_rate = 0.03;
-  const std::optional<cdsmodel::DefaultAccrual> triple_coupon =
+  const cdsmodel::Expected<cdsmodel::DefaultAccrual> triple_coupon =
       cdsmodel::default_accrual(cds, event, event, 1.0e7, cals);
   ASSERT_TRUE(triple_coupon.has_value());
   EXPECT_EQ(triple_coupon->days, base->days) << "coupon must not move the day count";
@@ -170,7 +170,7 @@ TEST(Defaulted, ScalesLinearlyInNotionalAndCoupon) {
 
   // A zero coupon owes nothing but still accrues days.
   cds.coupon_rate = 0.0;
-  const std::optional<cdsmodel::DefaultAccrual> zero =
+  const cdsmodel::Expected<cdsmodel::DefaultAccrual> zero =
       cdsmodel::default_accrual(cds, event, event, 1.0e7, cals);
   ASSERT_TRUE(zero.has_value());
   EXPECT_EQ(zero->days, base->days);
@@ -216,7 +216,7 @@ TEST(Defaulted, MatchesRecordedIntent) {
     cds.day_count = *cdsmodel::from_upstream_code(c.dcc);
     cds.bad_day = *cdsmodel::bad_day_conv_from_upstream(static_cast<long>(c.bad_day));
 
-    const std::optional<cdsmodel::DefaultAccrual> got = cdsmodel::default_accrual(
+    const cdsmodel::Expected<cdsmodel::DefaultAccrual> got = cdsmodel::default_accrual(
         cds, cdsmodel::from_tdate(c.trade), cdsmodel::from_tdate(c.event), c.notional, cals);
     const std::string where = "trade " + std::to_string(c.trade) + " event " +
                               std::to_string(c.event) + " dcc " + std::to_string(c.dcc) + " ivl " +

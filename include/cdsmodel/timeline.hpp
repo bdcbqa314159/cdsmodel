@@ -23,6 +23,7 @@
 
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_list.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/zero_curve.hpp>
 
 #include <optional>
@@ -54,10 +55,10 @@ namespace cdsmodel {
 /// in the list, and `end > start`, so at least two dates survive each one.
 /// Upstream's truncation is correct in that regime, so its defect cannot
 /// affect a timeline. Asserted in `timeline_differential_test.cpp`.
-[[nodiscard]] inline std::optional<std::vector<Date>>
+[[nodiscard]] inline Expected<std::vector<Date>>
 risky_timeline(Date start, Date end, const ZeroCurve &discount, const ZeroCurve &spread) {
   if (end <= start) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "end must be strictly after start");
   }
 
   // Upstream builds this by repeated duplicate-excluding merges, which is a
@@ -72,7 +73,7 @@ risky_timeline(Date start, Date end, const ZeroCurve &discount, const ZeroCurve 
   // Drop anything strictly outside [start, end], keeping both endpoints.
   const auto after_start = truncate_date_list(timeline, start, Keep::After, true);
   if (!after_start) {
-    return std::nullopt;
+    return unexpected(after_start.error());
   }
   return truncate_date_list(*after_start, end, Keep::Before, true);
 }
@@ -81,10 +82,10 @@ risky_timeline(Date start, Date end, const ZeroCurve &discount, const ZeroCurve 
 /// endpoints are present. Replaces `JpmcdsTruncateTimeLine`.
 ///
 /// `critical` may be empty, as upstream's may be NULL.
-[[nodiscard]] inline std::optional<std::vector<Date>>
-truncate_timeline(std::span<const Date> critical, Date start, Date end) {
+[[nodiscard]] inline Expected<std::vector<Date>> truncate_timeline(std::span<const Date> critical,
+                                                                   Date start, Date end) {
   if (end <= start) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "end must be strictly after start");
   }
   std::vector<Date> all{critical.begin(), critical.end()};
   all.push_back(start);
@@ -93,7 +94,7 @@ truncate_timeline(std::span<const Date> critical, Date start, Date end) {
 
   const auto after_start = truncate_date_list(timeline, start, Keep::After, true);
   if (!after_start) {
-    return std::nullopt;
+    return unexpected(after_start.error());
   }
   return truncate_date_list(*after_start, end, Keep::Before, true);
 }

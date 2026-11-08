@@ -10,6 +10,8 @@
 // search. std::lower_bound is the wrong tool -- see docs/port-notes.md for the
 // three boundary behaviours that would silently change if you used it.
 
+#include <cdsmodel/expected.hpp>
+
 #include <algorithm>
 #include <concepts>
 #include <cstddef>
@@ -53,11 +55,10 @@ template <std::totally_ordered T>
 /// shift. A contiguous std::span indexes directly, so that whole branch is
 /// gone -- the compiler does better than the 2009 hand-optimisation.
 template <std::totally_ordered T>
-[[nodiscard]] constexpr std::optional<Bracket> bracket(std::span<const T> xs,
-                                                       double desired) noexcept {
+[[nodiscard]] constexpr Expected<Bracket> bracket(std::span<const T> xs, double desired) noexcept {
   const std::ptrdiff_t n = static_cast<std::ptrdiff_t>(xs.size());
   if (n < 1) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "a bracket needs at least 1 point, got " + detail::num(n));
   }
   if (n == 1) {
     return Bracket{0, 0};
@@ -81,7 +82,7 @@ template <std::totally_ordered T>
   for (std::ptrdiff_t guard = n + 1; guard > 0; --guard) {
     mid = (hi + lo) / 2;
     if (mid < 0 || mid + 1 >= n) {
-      return std::nullopt; // only reachable when xs is not strictly increasing
+      return fail(ErrorKind::bad_argument, "the computed bracket index is outside the array");
     }
     if (desired < static_cast<double>(xs[static_cast<std::size_t>(mid)])) {
       hi = mid - 1;
@@ -99,7 +100,7 @@ template <std::totally_ordered T>
       return Bracket{static_cast<std::size_t>(mid), static_cast<std::size_t>(end)};
     }
   }
-  return std::nullopt;
+  return fail(ErrorKind::bad_argument, "no bracket found; the domain array may not be ordered");
 }
 
 /// Bracket `desired`, verifying the ordering precondition first.
@@ -116,10 +117,10 @@ template <std::totally_ordered T>
 /// deliberate non-port rather than left as an omission -- see UPSTREAM-13,
 /// which is the defect that global caused.
 template <std::totally_ordered T>
-[[nodiscard]] constexpr std::optional<Bracket> bracket_checked(std::span<const T> xs,
-                                                               double desired) noexcept {
+[[nodiscard]] constexpr Expected<Bracket> bracket_checked(std::span<const T> xs,
+                                                          double desired) noexcept {
   if (!is_strictly_increasing(xs)) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the domain array is not strictly increasing");
   }
   return bracket(xs, desired);
 }

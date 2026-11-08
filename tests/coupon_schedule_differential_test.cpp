@@ -101,7 +101,7 @@ void compare(const cdsmodel::CouponScheduleTerms &terms,
       cdsmodel::to_upstream_code(conventions.pay), cdsmodel::to_upstream_code(conventions.accrual),
       cdsmodel::to_upstream_code(conventions.reset), const_cast<char *>("NONE")));
 
-  const std::optional<cdsmodel::CouponSchedule> got =
+  const cdsmodel::Expected<cdsmodel::CouponSchedule> got =
       cdsmodel::coupon_schedule(terms, conventions, cdsmodel::Calendar::none());
 
   if (!ref) {
@@ -199,7 +199,7 @@ TEST_F(CouponScheduleDifferential, MatchesAcrossRollDates) {
   const cdsmodel::Date start = d(2024, 1, 15);
   const cdsmodel::Date maturity = d(2028, 7, 20);
   for (const int month : {1, 2, 4, 7, 12, 30, 48}) {
-    const std::optional<cdsmodel::Date> roll =
+    const cdsmodel::Expected<cdsmodel::Date> roll =
         cdsmodel::advance(start, {month, cdsmodel::PeriodUnit::Months});
     ASSERT_TRUE(roll.has_value());
     for (const bool use_first : {false, true}) {
@@ -232,7 +232,7 @@ TEST_F(CouponScheduleDifferential, MatchesAcrossFullFirstCouponDates) {
   const cdsmodel::Date start = d(2024, 3, 15);
   for (const auto maturity : {d(2027, 1, 15), d(2027, 3, 15), d(2026, 11, 20)}) {
     for (const int months_back : {1, 3, 6, 12}) {
-      const std::optional<cdsmodel::Date> ffc =
+      const cdsmodel::Expected<cdsmodel::Date> ffc =
           cdsmodel::advance(start, {-months_back, cdsmodel::PeriodUnit::Months});
       ASSERT_TRUE(ffc.has_value());
       for (const cdsmodel::StubPosition position :
@@ -242,7 +242,7 @@ TEST_F(CouponScheduleDifferential, MatchesAcrossFullFirstCouponDates) {
                    .maturity = maturity,
                    .coupon_interval = {6, cdsmodel::PeriodUnit::Months},
                    .stub_position = position,
-                   .full_first_coupon_date = ffc},
+                   .full_first_coupon_date = *ffc},
                   {.pay = cdsmodel::BadDayConv::Follow,
                    .accrual = cdsmodel::BadDayConv::Follow,
                    .reset = cdsmodel::BadDayConv::Follow,
@@ -261,7 +261,7 @@ TEST_F(CouponScheduleDifferential, MatchesAcrossFullFirstCouponDates) {
 // sweep above on every period but the zeroth of a front-stub schedule.
 TEST_F(CouponScheduleDifferential, FullFirstCouponLeavesResetAfterAccrualStart) {
   const cdsmodel::Date start = d(2024, 3, 15);
-  const std::optional<cdsmodel::CouponSchedule> got =
+  const cdsmodel::Expected<cdsmodel::CouponSchedule> got =
       cdsmodel::coupon_schedule({.start = start,
                                  .maturity = d(2027, 1, 15),
                                  .coupon_interval = {6, cdsmodel::PeriodUnit::Months},
@@ -348,13 +348,14 @@ TEST_F(CouponScheduleDifferential, UnadjustedDatesMatch) {
               stub_at_end ? TRUE : FALSE, length == cdsmodel::StubLength::Long ? TRUE : FALSE, 0, 0,
               &out.list, &stub);
 
-          const std::optional<cdsmodel::UnadjustedDates> got = cdsmodel::generate_unadjusted_dates(
-              {.start = start,
-               .maturity = maturity,
-               .coupon_interval = {periods, cdsmodel::PeriodUnit::Months},
-               .stub_position =
-                   stub_at_end ? cdsmodel::StubPosition::Back : cdsmodel::StubPosition::Front,
-               .stub_length = length});
+          const cdsmodel::Expected<cdsmodel::UnadjustedDates> got =
+              cdsmodel::generate_unadjusted_dates(
+                  {.start = start,
+                   .maturity = maturity,
+                   .coupon_interval = {periods, cdsmodel::PeriodUnit::Months},
+                   .stub_position =
+                       stub_at_end ? cdsmodel::StubPosition::Back : cdsmodel::StubPosition::Front,
+                   .stub_length = length});
 
           if (rc != SUCCESS) {
             EXPECT_FALSE(got.has_value());

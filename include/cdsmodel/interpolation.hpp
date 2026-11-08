@@ -23,6 +23,7 @@
 #include <cdsmodel/bsearch.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/expected.hpp>
 
 #include <optional>
 #include <span>
@@ -78,7 +79,7 @@ enum class Metric {
 /// outside the five listed. Note that the three ACT variants all map to the
 /// same metric: the ratio is scale-invariant, so dividing by 360 or 365 would
 /// cancel.
-[[nodiscard]] constexpr std::optional<Metric> metric_for_day_count(DayCount dcc) noexcept {
+[[nodiscard]] constexpr Expected<Metric> metric_for_day_count(DayCount dcc) noexcept {
   switch (dcc) {
   case DayCount::Act365Fixed:
   case DayCount::Act365:
@@ -89,9 +90,9 @@ enum class Metric {
   case DayCount::ThirtyE360:
     return Metric::Bond30E_360;
   case DayCount::EffectiveRate:
-    return std::nullopt; // upstream: "Day count convention unknown"
+    return fail(ErrorKind::unsupported, "day count convention unknown");
   }
-  return std::nullopt;
+  return fail(ErrorKind::unsupported, "unrecognised enumerator reached a switch default");
 }
 
 /// Distance from `from` to `to` under a metric. Argument order follows
@@ -134,8 +135,8 @@ enum class Metric {
 /// pre-epoch abscissa is just a date in 1600 and the 30/360 difference is
 /// well defined. The port therefore returns a sensible extrapolation where
 /// upstream returns garbage -- a divergence recorded with the defect.
-[[nodiscard]] inline std::optional<double> metric_distance(Metric metric, double from,
-                                                           double to) noexcept {
+[[nodiscard]] inline Expected<double> metric_distance(Metric metric, double from,
+                                                      double to) noexcept {
   if (metric == Metric::Direct || metric == Metric::ActualDays) {
     return to - from;
   }
@@ -143,13 +144,13 @@ enum class Metric {
   // representable instead of truncating silently.
   if (!is_representable_tdate(static_cast<TDate>(from)) ||
       !is_representable_tdate(static_cast<TDate>(to))) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "an interpolation endpoint is not a representable date");
   }
   const DayCount dcc = metric == Metric::Bond30_360 ? DayCount::Thirty360 : DayCount::ThirtyE360;
-  const std::optional<long> days =
+  const Expected<long> days =
       days_diff(from_tdate(static_cast<TDate>(from)), from_tdate(static_cast<TDate>(to)), dcc);
   if (!days) {
-    return std::nullopt;
+    return unexpected(days.error());
   }
   return static_cast<double>(*days);
 }
@@ -162,20 +163,19 @@ namespace detail {
 /// Expression order preserved: upstream computes
 /// `metric(desired, x_lo) / metric(x_hi, x_lo)` and then
 /// `f_lo + fraction * (f_hi - f_lo)`.
-[[nodiscard]] inline std::optional<double>
-interpolate_between(double desired, long x_lo, long x_hi, double f_lo, double f_hi, Metric metric) {
+[[nodiscard]] inline Expected<double> interpolate_between(double desired, long x_lo, long x_hi,
+                                                          double f_lo, double f_hi, Metric metric) {
   double fraction = 0.0;
   if (metric == Metric::Direct) {
     // Upstream's null branch, in its own order. NOT the same as routing
     // ActualDays through the metric form: see the note on `Metric`.
     fraction = (desired - static_cast<double>(x_lo)) / static_cast<double>(x_hi - x_lo);
   } else {
-    const std::optional<double> numerator =
-        metric_distance(metric, desired, static_cast<double>(x_lo));
-    const std::optional<double> denominator =
+    const Expected<double> numerator = metric_distance(metric, desired, static_cast<double>(x_lo));
+    const Expected<double> denominator =
         metric_distance(metric, static_cast<double>(x_hi), static_cast<double>(x_lo));
     if (!numerator || !denominator) {
-      return std::nullopt;
+      return unexpected(!numerator ? numerator.error() : (denominator.error()));
     }
     fraction = *numerator / *denominator;
   }
@@ -192,16 +192,17 @@ interpolate_between(double desired, long x_lo, long x_hi, double f_lo, double f_
 /// That is upstream's behaviour and callers who need clamping do it
 /// themselves -- `JpmcdsLinInterpCurve` is the one in-library example, and it
 /// clamps its inputs before calling.
-[[nodiscard]] inline std::optional<double> linear_interpolate(std::span<const long> xs,
-                                                              std::span<const double> fs,
-                                                              double desired,
-                                                              Metric metric = Metric::Direct) {
+[[nodiscard]] inline Expected<double> linear_interpolate(std::span<const long> xs,
+                                                         std::span<const double> fs, double desired,
+                                                         Metric metric = Metric::Direct) {
   if (xs.size() != fs.size()) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "xs and fs must be the same length, got " +
+                                             detail::num(xs.size()) + " and " +
+                                             detail::num(fs.size()));
   }
-  const std::optional<Bracket> at = bracket_checked(xs, desired);
+  const Expected<Bracket> at = bracket_checked(xs, desired);
   if (!at) {
-    return std::nullopt;
+    return unexpected(at.error());
   }
   if (at->lo == at->hi) {
     return fs[static_cast<std::size_t>(at->lo)]; // a single-point curve
@@ -216,15 +217,15 @@ interpolate_between(double desired, long x_lo, long x_hi, double f_lo, double f_
 /// nothing more.
 ///
 /// The desired abscissae need not be ordered.
-[[nodiscard]] inline std::optional<std::vector<double>>
+[[nodiscard]] inline Expected<std::vector<double>>
 linear_interpolate_many(std::span<const long> xs, std::span<const double> fs,
                         std::span<const long> desired, Metric metric = Metric::Direct) {
   std::vector<double> out;
   out.reserve(desired.size());
   for (long x : desired) {
-    const std::optional<double> value = linear_interpolate(xs, fs, static_cast<double>(x), metric);
+    const Expected<double> value = linear_interpolate(xs, fs, static_cast<double>(x), metric);
     if (!value) {
-      return std::nullopt;
+      return unexpected(value.error());
     }
     out.push_back(*value);
   }
@@ -285,25 +286,26 @@ enum class Limit { Left, Right };
 /// made on taste in the first slice of this port, whose comment then read
 /// "process-wide state that silently changed the behaviour of every caller".
 /// UPSTREAM-13 is that sentence turning out to be literally true.
-[[nodiscard]] inline std::optional<double>
+[[nodiscard]] inline Expected<double>
 linear_interpolate_discontinuous(std::span<const long> xs, std::span<const double> fs,
                                  double desired, Limit limit, Metric metric = Metric::Direct) {
   if (xs.size() != fs.size() || xs.empty()) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "xs and fs must be the same non-empty length");
   }
   // Non-decreasing, not strictly increasing: equal neighbours ARE the
   // discontinuities. Upstream's own loop tests `x[i] > x[i+1]`.
   for (std::size_t i = 0; i + 1 < xs.size(); ++i) {
     if (xs[i] > xs[i + 1]) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument, "xs must be non-decreasing: element " + detail::num(i) +
+                                               " exceeds element " + detail::num(i + 1));
     }
   }
   // Unchecked search, because repeated abscissae are legal here. Upstream
   // reaches the same place by clearing a global; here it is a different
   // function.
-  const std::optional<Bracket> at = bracket(xs, desired);
+  const Expected<Bracket> at = bracket(xs, desired);
   if (!at) {
-    return std::nullopt;
+    return unexpected(at.error());
   }
 
   auto lo = static_cast<std::size_t>(at->lo);

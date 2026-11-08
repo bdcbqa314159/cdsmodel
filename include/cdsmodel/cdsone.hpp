@@ -22,6 +22,7 @@
 #include <cdsmodel/calendar.hpp>
 #include <cdsmodel/cds.hpp>
 #include <cdsmodel/date.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/root_find.hpp>
 #include <cdsmodel/zero_curve.hpp>
 
@@ -96,16 +97,16 @@ inline constexpr double kSpreadTolerance = 1.0e-8;
 /// Returns nullopt wherever either step fails: an unbootstrappable spread
 /// (see `clean_spread_curve` on the feasible region), or a contract
 /// `cds_price` refuses.
-[[nodiscard]] inline std::optional<double>
+[[nodiscard]] inline Expected<double>
 cdsone_upfront_charge(const Cds &cds, const UpfrontDates &dates,
                       std::span<const Calendar> calendars, const ZeroCurve &discount,
                       double one_spread, double recovery, bool pay_accrued_at_start) {
   const std::array<Benchmark, 1> benchmark{Benchmark{cds.end, one_spread, true}};
-  const std::optional<ZeroCurve> flat_curve =
+  const Expected<ZeroCurve> flat_curve =
       clean_spread_curve(dates.today, discount, dates.benchmark_start, dates.stepin,
                          /*cash_settle=*/dates.value, benchmark, recovery, cds, calendars);
   if (!flat_curve) {
-    return std::nullopt;
+    return unexpected(flat_curve.error());
   }
   return cds_price(cds, dates.today, /*settle=*/dates.value, dates.stepin, calendars, discount,
                    *flat_curve, recovery, /*clean=*/pay_accrued_at_start);
@@ -130,16 +131,16 @@ cdsone_upfront_charge(const Cds &cds, const UpfrontDates &dates,
 /// the root finder treats as a failed evaluation and propagates. In practice
 /// the guess of 1% and a first step of 1bp keep the search inside the
 /// feasible region for any quotable market.
-[[nodiscard]] inline std::optional<double> cdsone_spread(const Cds &cds, const UpfrontDates &dates,
-                                                         std::span<const Calendar> calendars,
-                                                         const ZeroCurve &discount,
-                                                         double upfront_charge, double recovery,
-                                                         bool pay_accrued_at_start) {
-  auto objective = [&](double one_spread) -> std::optional<double> {
-    const std::optional<double> charge = cdsone_upfront_charge(
+[[nodiscard]] inline Expected<double> cdsone_spread(const Cds &cds, const UpfrontDates &dates,
+                                                    std::span<const Calendar> calendars,
+                                                    const ZeroCurve &discount,
+                                                    double upfront_charge, double recovery,
+                                                    bool pay_accrued_at_start) {
+  auto objective = [&](double one_spread) -> Expected<double> {
+    const Expected<double> charge = cdsone_upfront_charge(
         cds, dates, calendars, discount, one_spread, recovery, pay_accrued_at_start);
     if (!charge) {
-      return std::nullopt;
+      return unexpected(charge.error());
     }
     return *charge - upfront_charge;
   };

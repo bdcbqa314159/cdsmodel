@@ -29,14 +29,14 @@ protected:
 };
 
 /// Upstream's canonical form for an interval, as a port-side value.
-std::optional<cdsmodel::DateInterval> as_ported(const TDateInterval &iv) {
+cdsmodel::Expected<cdsmodel::DateInterval> as_ported(const TDateInterval &iv) {
   if (iv.prd_typ == 'M') {
     return cdsmodel::DateInterval{iv.prd, cdsmodel::PeriodUnit::Months};
   }
   if (iv.prd_typ == 'D') {
     return cdsmodel::DateInterval{iv.prd, cdsmodel::PeriodUnit::Days};
   }
-  return std::nullopt; // a construct-but-cannot-advance type
+  return cdsmodel::fail(cdsmodel::ErrorKind::bad_argument, "test fixture could not be built");
 }
 
 const char *kAdvanceable = "AaYySsQqMmWwUuDd";

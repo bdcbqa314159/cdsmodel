@@ -50,6 +50,7 @@ jobs:
       # and every gate was satisfied -- port_progress counts a function as done
       # when ANY header claims it, so 100% was reported either way.
       - run: python verify.py claims
+      - run: python verify.py error-channel
 
       # A hand-edited golden file is how a port's bug becomes the port's
       # specification. Vectors must be generated, and have a generator.

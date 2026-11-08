@@ -23,6 +23,7 @@
 
 #include <cdsmodel/cash_flow_list.hpp>
 #include <cdsmodel/date.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/root_find.hpp>
 #include <cdsmodel/zero_curve_builder.hpp>
 
@@ -84,9 +85,9 @@ inline constexpr double kFallbackRateGuess = 0.06;
 /// break the answer -- the match simply fails and the slow path produces the
 /// same number -- so this is one of the few places upstream is accidentally
 /// robust rather than accidentally wrong.
-[[nodiscard]] inline std::optional<double> present_value_cash_flows(const ZeroCurveBuilder &curve,
-                                                                    std::span<const CashFlow> flows,
-                                                                    InterpType interp) {
+[[nodiscard]] inline Expected<double> present_value_cash_flows(const ZeroCurveBuilder &curve,
+                                                               std::span<const CashFlow> flows,
+                                                               InterpType interp) {
   double sum = 0.0;
   std::size_t j = 0;
   for (const CashFlow &flow : flows) {
@@ -97,9 +98,9 @@ inline constexpr double kFallbackRateGuess = 0.06;
     if (j < points.size() && points[j].date == flow.date) {
       sum += points[j].discount * flow.amount; // the cached discount
     } else {
-      const std::optional<double> pv = curve.present_value(flow.amount, flow.date, interp);
+      const Expected<double> pv = curve.present_value(flow.amount, flow.date, interp);
       if (!pv) {
-        return std::nullopt;
+        return unexpected(pv.error());
       }
       sum += *pv;
     }
@@ -177,7 +178,7 @@ inline constexpr double kFallbackRateGuess = 0.06;
     if (flow.date <= last_date || curve.find_exact(flow.date)) {
       continue;
     }
-    const std::optional<double> rate = curve.interpolate(flow.date, interp);
+    const Expected<double> rate = curve.interpolate(flow.date, interp);
     if (!rate) {
       return false;
     }
@@ -303,7 +304,7 @@ inline constexpr double kFallbackRateGuess = 0.06;
 
   double covered_pv = 0.0;
   if (first_uncovered > 0) {
-    const std::optional<double> pv =
+    const Expected<double> pv =
         present_value_cash_flows(curve, flows.first(first_uncovered), interp);
     if (!pv) {
       return false;
@@ -330,7 +331,7 @@ inline constexpr double kFallbackRateGuess = 0.06;
   // makes them worth `target_pv`.
   double guess = kFallbackRateGuess;
   if (!curve.empty()) {
-    const std::optional<double> extrapolated = curve.interpolate(target, InterpType::Linear);
+    const Expected<double> extrapolated = curve.interpolate(target, InterpType::Linear);
     // Upstream falls back to 0.06 when the extrapolation fails, then clamps.
     guess = std::clamp(extrapolated.value_or(kFallbackRateGuess), 0.01, 1.00);
   }
@@ -347,17 +348,18 @@ inline constexpr double kFallbackRateGuess = 0.06;
   // this through a void* and a ten-field struct, six of whose fields belong
   // to a different caller.
   bool evaluation_failed = false;
-  const auto objective = [&](double rate) -> std::optional<double> {
+  const auto objective = [&](double rate) -> Expected<double> {
     if (rate <= kMinZeroRate || kMaxZeroRate <= rate) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument,
+                  "trial rate " + detail::num(rate) + " is outside the permitted zero-rate range");
     }
     if (!curve.set_rate(*solved_at, rate)) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument, "the trial rate could not be stored on the curve");
     }
-    const std::optional<double> pv = present_value_cash_flows(curve, uncovered, interp);
+    const Expected<double> pv = present_value_cash_flows(curve, uncovered, interp);
     if (!pv) {
       evaluation_failed = true;
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument, "the objective could not be valued at this rate");
     }
     return target_pv - *pv;
   };
@@ -372,7 +374,7 @@ inline constexpr double kFallbackRateGuess = 0.06;
   options.x_tolerance = kRateXTolerance;
   options.f_tolerance = kRateFTolerance;
 
-  const std::optional<double> root = root_find_brent(objective, options);
+  const Expected<double> root = root_find_brent(objective, options);
   if (!root || evaluation_failed) {
     return false;
   }

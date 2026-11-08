@@ -100,7 +100,7 @@ TEST(Bootstrap, EveryBootstrappedCurveRepricesItsOwnBenchmarks) {
   int infeasible = 0;
   for (const auto &c : cdsmodel::golden::kBootstrapCases) {
     const Replay r = replay_of(c);
-    const std::optional<cdsmodel::ZeroCurve> curve = cdsmodel::clean_spread_curve(
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> curve = cdsmodel::clean_spread_curve(
         r.today, discount, r.start, r.today, r.today, r.marks, r.recovery, r.conventions, cals);
     if (!curve) {
       ++infeasible;
@@ -110,7 +110,7 @@ TEST(Bootstrap, EveryBootstrappedCurveRepricesItsOwnBenchmarks) {
       cdsmodel::Cds priced = r.conventions;
       priced.end = b.end;
       priced.coupon_rate = b.coupon_rate;
-      const std::optional<double> pv = cdsmodel::cds_price(
+      const cdsmodel::Expected<double> pv = cdsmodel::cds_price(
           priced, r.today, r.today, r.today, cals, discount, *curve, r.recovery, /*clean=*/true);
       ASSERT_TRUE(pv.has_value()) << cdsmodel::to_tdate(b.end);
       // The solver converged to |pv| <= 1e-10; 1e-9 allows for the repricing
@@ -135,7 +135,7 @@ TEST(Bootstrap, SurvivalFallsMonotonicallyOnEveryFeasibleCurve) {
   int checked = 0;
   for (const auto &c : cdsmodel::golden::kBootstrapCases) {
     const Replay r = replay_of(c);
-    const std::optional<cdsmodel::ZeroCurve> curve = cdsmodel::clean_spread_curve(
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> curve = cdsmodel::clean_spread_curve(
         r.today, discount, r.start, r.today, r.today, r.marks, r.recovery, r.conventions, cals);
     if (!curve) {
       continue;
@@ -168,7 +168,7 @@ TEST(Bootstrap, MatchesRecordedRatesAndFeasibility) {
   int rejected = 0;
   for (const auto &c : cdsmodel::golden::kBootstrapCases) {
     const Replay r = replay_of(c);
-    const std::optional<cdsmodel::ZeroCurve> got = cdsmodel::clean_spread_curve(
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> got = cdsmodel::clean_spread_curve(
         r.today, discount, r.start, r.today, r.today, r.marks, r.recovery, r.conventions, cals);
     const std::string where = "nb=" + std::to_string(c.nb) + " R=" + std::to_string(c.recovery) +
                               " dcc=" + std::to_string(c.dcc) +
@@ -210,7 +210,7 @@ TEST(Bootstrap, PublishesAnnualCompoundingNotTheContinuousRatesItSolvedWith) {
   conv.start = today;
   const std::vector<cdsmodel::Benchmark> marks{{d(2027, 6, 20), 0.05, true},
                                                {d(2031, 6, 20), 0.06, true}};
-  const std::optional<cdsmodel::ZeroCurve> curve = cdsmodel::clean_spread_curve(
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> curve = cdsmodel::clean_spread_curve(
       today, discount, today, today, today, marks, 0.4, conv, no_holidays());
   ASSERT_TRUE(curve.has_value());
   EXPECT_EQ(curve->basis(), 1.0);
@@ -218,7 +218,7 @@ TEST(Bootstrap, PublishesAnnualCompoundingNotTheContinuousRatesItSolvedWith) {
   for (const cdsmodel::RatePoint &p : curve->points()) {
     // annual = exp(cc) - 1 > cc for cc > 0, so the published rate must exceed
     // the continuous one it came from. Recover cc and check the direction.
-    const std::optional<double> cc = cdsmodel::convert_compound_rate(
+    const cdsmodel::Expected<double> cc = cdsmodel::convert_compound_rate(
         p.rate, 1.0, cdsmodel::DayCount::Act365Fixed, cdsmodel::kContinuousBasis,
         cdsmodel::DayCount::Act365Fixed);
     ASSERT_TRUE(cc.has_value());
@@ -237,7 +237,7 @@ TEST(Bootstrap, ExcludedBenchmarksDoNotAppearInTheCurve) {
                                          {d(2026, 6, 20), 0.012, false},
                                          {d(2027, 6, 20), 0.014, true},
                                          {d(2029, 6, 20), 0.017, false}};
-  const std::optional<cdsmodel::ZeroCurve> curve = cdsmodel::clean_spread_curve(
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> curve = cdsmodel::clean_spread_curve(
       today, discount, today, today, today, marks, 0.4, conv, no_holidays());
   ASSERT_TRUE(curve.has_value());
   ASSERT_EQ(curve->points().size(), 2u);
@@ -248,7 +248,7 @@ TEST(Bootstrap, ExcludedBenchmarksDoNotAppearInTheCurve) {
   // what makes the include flag a filter rather than a weighting.
   const std::vector<cdsmodel::Benchmark> only_included{{d(2025, 6, 20), 0.01, true},
                                                        {d(2027, 6, 20), 0.014, true}};
-  const std::optional<cdsmodel::ZeroCurve> direct = cdsmodel::clean_spread_curve(
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> direct = cdsmodel::clean_spread_curve(
       today, discount, today, today, today, only_included, 0.4, conv, no_holidays());
   ASSERT_TRUE(direct.has_value());
   ASSERT_EQ(direct->points().size(), 2u);
@@ -318,7 +318,7 @@ TEST(Bootstrap, NegativeRecoveryIsAcceptedNotRejected) {
 
   std::optional<double> previous_rate;
   for (double recovery : {0.4, 0.0, -0.5, -2.0}) {
-    const std::optional<cdsmodel::ZeroCurve> curve = cdsmodel::clean_spread_curve(
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> curve = cdsmodel::clean_spread_curve(
         today, discount, today, today, today, marks, recovery, conv, no_holidays());
     ASSERT_TRUE(curve.has_value()) << "recovery " << recovery;
     const double rate = curve->points()[0].rate;
@@ -342,7 +342,7 @@ TEST(Bootstrap, AZeroCouponLadderGivesAZeroHazardCurve) {
   conv.start = today;
   const std::vector<cdsmodel::Benchmark> marks{
       {d(2025, 6, 20), 0.0, true}, {d(2027, 6, 20), 0.0, true}, {d(2031, 6, 20), 0.0, true}};
-  const std::optional<cdsmodel::ZeroCurve> curve = cdsmodel::clean_spread_curve(
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> curve = cdsmodel::clean_spread_curve(
       today, discount, today, today, today, marks, 0.4, conv, no_holidays());
   ASSERT_TRUE(curve.has_value());
   for (const cdsmodel::RatePoint &p : curve->points()) {

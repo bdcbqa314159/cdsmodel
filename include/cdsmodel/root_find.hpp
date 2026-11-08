@@ -32,19 +32,27 @@
 // Brent only once two of three points bracket a root, and it is willing to
 // evaluate the objective at both bounds to get there.
 
+#include <cdsmodel/expected.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <concepts>
+
 #include <optional>
 
 namespace cdsmodel {
 
-/// A function whose root is wanted. Returns nullopt where it cannot be
-/// evaluated, which upstream signals with a FAILURE return and an out-param.
+/// A function whose root is wanted. Reports why it could not be evaluated,
+/// which upstream signals with a FAILURE return and an out-param.
+///
+/// `convertible_to` rather than `same_as` on purpose: an objective that cannot
+/// fail may return a plain `double`, which converts to a success. Every call
+/// site below assigns through an explicit `Expected<double>`, so the
+/// conversion happens once, at the boundary.
 template <class F>
 concept Objective = requires(F &f, double x) {
-  { f(x) } -> std::convertible_to<std::optional<double>>;
+  { f(x) } -> std::convertible_to<Expected<double>>;
 };
 
 /// Tuning for `root_find_brent`. Upstream passes these as eight positional
@@ -77,8 +85,12 @@ inline constexpr double kBracketFraction = 0.01;
 /// What the secant phase concluded. Upstream returns this through two
 /// `TBoolean` out-params plus the status, a three-way encoding its own comment
 /// has to tabulate to explain.
+/// `ObjectiveFailed` is GONE from this enum. A failing objective is now the
+/// error channel of the return type, so the state cannot be constructed
+/// alongside a `solution` that means nothing -- the same
+/// make-it-unrepresentable move the rest of the port makes with sentinels.
 struct SecantOutcome {
-  enum class Status { NotBracketed, Bracketed, Found, ObjectiveFailed };
+  enum class Status { NotBracketed, Bracketed, Found };
   Status status = Status::NotBracketed;
   double solution = 0.0;
 };
@@ -86,8 +98,8 @@ struct SecantOutcome {
 /// Upstream's `secantMethod`. Runs the secant iteration until it finds the
 /// root, brackets it, steps outside the bounds, or runs out of iterations.
 template <Objective F>
-SecantOutcome secant_method(F &f, const RootFindOptions &opt, std::array<double, 3> &x,
-                            std::array<double, 3> &y) {
+Expected<SecantOutcome> secant_method(F &f, const RootFindOptions &opt, std::array<double, 3> &x,
+                                      std::array<double, 3> &y) {
   // `int j = numIterations; while (j--)` -- so a non-positive count runs the
   // body zero times and reports "not bracketed" rather than failing. The
   // Brent phase treats the same input as a failure; the inconsistency is
@@ -119,18 +131,18 @@ SecantOutcome secant_method(F &f, const RootFindOptions &opt, std::array<double,
     if (x[1] < opt.bound_lo || x[1] > opt.bound_hi) {
       // Note that y[1] is NOT evaluated here. Upstream leaves it whatever it
       // was, and the caller overwrites both before using them.
-      return {SecantOutcome::Status::NotBracketed, 0.0};
+      return SecantOutcome{SecantOutcome::Status::NotBracketed, 0.0};
     }
 
-    const std::optional<double> value = f(x[1]);
+    const Expected<double> value = f(x[1]);
     if (!value) {
-      return {SecantOutcome::Status::ObjectiveFailed, 0.0};
+      return unexpected(value.error()); // forwarded unchanged -- D5
     }
     y[1] = *value;
 
     if (y[1] == 0.0 ||
         (std::fabs(y[1]) <= opt.f_tolerance && std::fabs(x[1] - x[0]) <= opt.x_tolerance)) {
-      return {SecantOutcome::Status::Found, x[1]};
+      return SecantOutcome{SecantOutcome::Status::Found, x[1]};
     }
 
     if ((y[0] < 0 && y[1] < 0 && y[2] < 0) || (y[0] > 0 && y[1] > 0 && y[2] > 0)) {
@@ -156,21 +168,21 @@ SecantOutcome secant_method(F &f, const RootFindOptions &opt, std::array<double,
         std::swap(y[1], y[2]);
       }
     }
-    return {SecantOutcome::Status::Bracketed, 0.0};
+    return SecantOutcome{SecantOutcome::Status::Bracketed, 0.0};
   }
-  return {SecantOutcome::Status::NotBracketed, 0.0};
+  return SecantOutcome{SecantOutcome::Status::NotBracketed, 0.0};
 }
 
 /// Upstream's `brentMethod`: inverse quadratic interpolation through three
 /// points, falling back to bisection when the interpolation is unsuitable.
 ///
-/// Returns nullopt both when the objective fails and when the iteration count
-/// is exhausted -- upstream returns FAILURE for both, and non-convergence
-/// genuinely has no answer to report.
+/// The two failures this used to conflate are now distinct: a failing
+/// objective forwards its OWN error, while an exhausted iteration count
+/// reports `no_convergence`. Upstream returns FAILURE for both but logs
+/// different messages, which is what made the distinction recoverable (A3).
 template <Objective F>
-std::optional<double> brent_method(F &f, const RootFindOptions &opt,
-                                   const std::array<double, 3> &x_in,
-                                   const std::array<double, 3> &y_in) {
+Expected<double> brent_method(F &f, const RootFindOptions &opt, const std::array<double, 3> &x_in,
+                              const std::array<double, 3> &y_in) {
   double x1 = x_in[0];
   double x2 = x_in[1];
   double x3 = x_in[2];
@@ -208,9 +220,9 @@ std::optional<double> brent_method(F &f, const RootFindOptions &opt,
     } else {
       const double xm =
           x1 - (f1 / f21) * x21 + ((f1 * f2) / (f31 * f32)) * x31 - ((f1 * f2) / (f21 * f32)) * x21;
-      const std::optional<double> fm_value = f(xm);
+      const Expected<double> fm_value = f(xm);
       if (!fm_value) {
-        return std::nullopt;
+        return unexpected(fm_value.error());
       }
       const double fm = *fm_value;
       if (fm == 0.0 ||
@@ -228,16 +240,18 @@ std::optional<double> brent_method(F &f, const RootFindOptions &opt,
       }
     }
     x2 = 0.5 * (x1 + x3);
-    const std::optional<double> f2_value = f(x2);
+    const Expected<double> f2_value = f(x2);
     if (!f2_value) {
-      return std::nullopt;
+      return unexpected(f2_value.error());
     }
     f2 = *f2_value;
     if (f2 == 0.0 || (std::fabs(f2) <= opt.f_tolerance && std::fabs(x2 - x1) <= opt.x_tolerance)) {
       return x2;
     }
   }
-  return std::nullopt; // iterations exhausted
+  // Upstream: "Maximum number of iterations exceeded."
+  return fail(ErrorKind::no_convergence,
+              "maximum number of iterations (" + detail::num(opt.max_iterations) + ") exceeded");
 }
 
 } // namespace detail
@@ -268,21 +282,27 @@ std::optional<double> brent_method(F &f, const RootFindOptions &opt,
 /// cannot return something the caller called unacceptable -- which is why this
 /// is documented as a quirk rather than recorded as a defect.
 template <Objective F>
-[[nodiscard]] std::optional<double> root_find_brent(F &&f, const RootFindOptions &opt) {
+[[nodiscard]] Expected<double> root_find_brent(F &&f, const RootFindOptions &opt) {
   std::array<double, 3> x{};
   std::array<double, 3> y{};
   x[0] = opt.guess;
 
   if (opt.bound_lo >= opt.bound_hi) {
-    return std::nullopt;
+    // Upstream: "Lower bound (%2.6e) >= higher bound (%2.6e)."
+    return fail(ErrorKind::bad_argument, "lower bound (" + detail::num(opt.bound_lo) +
+                                             ") >= higher bound (" + detail::num(opt.bound_hi) +
+                                             ")");
   }
   if (x[0] < opt.bound_lo || x[0] > opt.bound_hi) {
-    return std::nullopt;
+    // Upstream: "Guess (%2.6e) is out of range [%2.6e,%2.6e]."
+    return fail(ErrorKind::bad_argument, "guess (" + detail::num(x[0]) + ") is out of range [" +
+                                             detail::num(opt.bound_lo) + "," +
+                                             detail::num(opt.bound_hi) + "]");
   }
 
-  const std::optional<double> at_guess = f(x[0]);
+  const Expected<double> at_guess = f(x[0]);
   if (!at_guess) {
-    return std::nullopt;
+    return unexpected(at_guess.error());
   }
   y[0] = *at_guess;
 
@@ -322,9 +342,9 @@ template <Objective F>
     }
   }
 
-  const std::optional<double> at_second = f(x[2]);
+  const Expected<double> at_second = f(x[2]);
   if (!at_second) {
-    return std::nullopt;
+    return unexpected(at_second.error());
   }
   y[2] = *at_second;
 
@@ -335,12 +355,13 @@ template <Objective F>
 
   bool bracketed = false;
   {
-    const detail::SecantOutcome outcome = detail::secant_method(f, opt, x, y);
-    switch (outcome.status) {
-    case detail::SecantOutcome::Status::ObjectiveFailed:
-      return std::nullopt;
+    const Expected<detail::SecantOutcome> outcome = detail::secant_method(f, opt, x, y);
+    if (!outcome) {
+      return unexpected(outcome.error());
+    }
+    switch (outcome->status) {
     case detail::SecantOutcome::Status::Found:
-      return outcome.solution;
+      return outcome->solution;
     case detail::SecantOutcome::Status::Bracketed:
       bracketed = true;
       break;
@@ -351,9 +372,9 @@ template <Objective F>
 
   if (!bracketed) {
     // Secant did not bracket. Try the bounds, lower first.
-    const std::optional<double> at_lo = f(opt.bound_lo);
+    const Expected<double> at_lo = f(opt.bound_lo);
     if (!at_lo) {
-      return std::nullopt;
+      return unexpected(at_lo.error());
     }
     const double f_lo = *at_lo;
     if (f_lo == 0.0 ||
@@ -368,9 +389,9 @@ template <Objective F>
       y[2] = y[0];
       y[0] = f_lo;
     } else {
-      const std::optional<double> at_hi = f(opt.bound_hi);
+      const Expected<double> at_hi = f(opt.bound_hi);
       if (!at_hi) {
-        return std::nullopt;
+        return unexpected(at_hi.error());
       }
       const double f_hi = *at_hi;
       if (f_hi == 0.0 || (std::fabs(f_hi) <= opt.f_tolerance &&
@@ -381,15 +402,20 @@ template <Objective F>
         x[2] = opt.bound_hi;
         y[2] = f_hi;
       } else {
-        return std::nullopt; // values at both bounds imply no root
+        // Upstream: "Function values (%2.6e,%2.6e) at bounds (%2.6e,%2.6e)
+        // imply no root exists."
+        return fail(ErrorKind::no_root, "function values (" + detail::num(y[0]) + "," +
+                                            detail::num(f_hi) + ") at bounds (" +
+                                            detail::num(opt.bound_lo) + "," +
+                                            detail::num(opt.bound_hi) + ") imply no root exists");
       }
     }
 
     // Two points bracket the root; Brent needs a third. Take the midpoint.
     x[1] = 0.5 * (x[0] + x[2]);
-    const std::optional<double> at_mid = f(x[1]);
+    const Expected<double> at_mid = f(x[1]);
     if (!at_mid) {
-      return std::nullopt;
+      return unexpected(at_mid.error());
     }
     y[1] = *at_mid;
     if (y[1] == 0.0 ||

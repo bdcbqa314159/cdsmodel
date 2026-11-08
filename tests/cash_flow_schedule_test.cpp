@@ -70,9 +70,10 @@ TEST(CashFlowSchedule, EveryStreamIsOrderedAndReachesTheMaturity) {
     for (const int periods : {3, 6, 12}) {
       for (const StubPosition position : {StubPosition::Front, StubPosition::Back}) {
         for (const StubLength length : {StubLength::Short, StubLength::Long}) {
-          const std::optional<std::vector<CashFlow>> flows = cdsmodel::cash_flows_from_schedule(
-              start, maturity, DateInterval{periods, PeriodUnit::Months},
-              terms(0.05, cdsmodel::DayCount::Act365Fixed, length), position, {}, {});
+          const cdsmodel::Expected<std::vector<CashFlow>> flows =
+              cdsmodel::cash_flows_from_schedule(
+                  start, maturity, DateInterval{periods, PeriodUnit::Months},
+                  terms(0.05, cdsmodel::DayCount::Act365Fixed, length), position, {}, {});
           ASSERT_TRUE(flows.has_value());
           ASSERT_FALSE(flows->empty());
           const std::string where = std::to_string(cdsmodel::to_tdate(start)) + " iv " +
@@ -101,11 +102,11 @@ TEST(CashFlowSchedule, TheAccrualAddsUpToTheWholeSpan) {
   for (const auto &[start, maturity] : spans()) {
     for (const int periods : {3, 6, 12}) {
       for (const StubPosition position : {StubPosition::Front, StubPosition::Back}) {
-        const std::optional<std::vector<CashFlow>> flows = cdsmodel::cash_flows_from_schedule(
+        const cdsmodel::Expected<std::vector<CashFlow>> flows = cdsmodel::cash_flows_from_schedule(
             start, maturity, DateInterval{periods, PeriodUnit::Months}, terms(), position,
             {.keep_start_date = true}, {});
         ASSERT_TRUE(flows.has_value());
-        const std::optional<double> span =
+        const cdsmodel::Expected<double> span =
             cdsmodel::year_fraction(start, maturity, cdsmodel::DayCount::Act365Fixed);
         ASSERT_TRUE(span.has_value());
         const std::string where = std::to_string(cdsmodel::to_tdate(start)) + " iv " +
@@ -122,10 +123,10 @@ TEST(CashFlowSchedule, TheAccrualAddsUpToTheWholeSpan) {
 
 TEST(CashFlowSchedule, TheAmountsScaleLinearlyInTheRate) {
   for (const StubPosition position : {StubPosition::Front, StubPosition::Back}) {
-    const std::optional<std::vector<CashFlow>> single = cdsmodel::cash_flows_from_schedule(
+    const cdsmodel::Expected<std::vector<CashFlow>> single = cdsmodel::cash_flows_from_schedule(
         d(2024, 2, 20), d(2027, 5, 10), DateInterval{3, PeriodUnit::Months}, terms(0.05), position,
         {.keep_start_date = true}, {});
-    const std::optional<std::vector<CashFlow>> doubled = cdsmodel::cash_flows_from_schedule(
+    const cdsmodel::Expected<std::vector<CashFlow>> doubled = cdsmodel::cash_flows_from_schedule(
         d(2024, 2, 20), d(2027, 5, 10), DateInterval{3, PeriodUnit::Months}, terms(0.10), position,
         {.keep_start_date = true}, {});
     ASSERT_TRUE(single.has_value());
@@ -148,8 +149,8 @@ TEST(CashFlowSchedule, AddFinalAddsExactlyOneToTheLastPaymentAndNothingElse) {
                                               DateInterval{6, PeriodUnit::Months}, terms(),
                                               StubPosition::Front, flags, {});
   };
-  const std::optional<std::vector<CashFlow>> plain = build({.keep_start_date = true});
-  const std::optional<std::vector<CashFlow>> with_final =
+  const cdsmodel::Expected<std::vector<CashFlow>> plain = build({.keep_start_date = true});
+  const cdsmodel::Expected<std::vector<CashFlow>> with_final =
       build({.add_final = true, .keep_start_date = true});
   ASSERT_TRUE(plain.has_value());
   ASSERT_TRUE(with_final.has_value());
@@ -165,10 +166,10 @@ TEST(CashFlowSchedule, SubtractInitialTakesOneFromTheFirstAndKeepsItInTheStream)
   // The leading flow has a zero amount and is normally dropped. Subtracting
   // one makes it non-zero, so it survives -- the two effects are coupled, and
   // upstream's comment about the exact zero comparison is what couples them.
-  const std::optional<std::vector<CashFlow>> plain = cdsmodel::cash_flows_from_schedule(
+  const cdsmodel::Expected<std::vector<CashFlow>> plain = cdsmodel::cash_flows_from_schedule(
       d(2024, 1, 15), d(2027, 1, 15), DateInterval{6, PeriodUnit::Months}, terms(),
       StubPosition::Front, {}, {});
-  const std::optional<std::vector<CashFlow>> priced = cdsmodel::cash_flows_from_schedule(
+  const cdsmodel::Expected<std::vector<CashFlow>> priced = cdsmodel::cash_flows_from_schedule(
       d(2024, 1, 15), d(2027, 1, 15), DateInterval{6, PeriodUnit::Months}, terms(),
       StubPosition::Front, {.subtract_initial = true}, {});
   ASSERT_TRUE(plain.has_value());
@@ -184,10 +185,10 @@ TEST(CashFlowSchedule, SubtractInitialTakesOneFromTheFirstAndKeepsItInTheStream)
 }
 
 TEST(CashFlowSchedule, KeepStartDateRetainsTheZeroFlowWithoutChangingAnyAmount) {
-  const std::optional<std::vector<CashFlow>> dropped = cdsmodel::cash_flows_from_schedule(
+  const cdsmodel::Expected<std::vector<CashFlow>> dropped = cdsmodel::cash_flows_from_schedule(
       d(2024, 1, 15), d(2027, 1, 15), DateInterval{6, PeriodUnit::Months}, terms(),
       StubPosition::Front, {}, {});
-  const std::optional<std::vector<CashFlow>> kept = cdsmodel::cash_flows_from_schedule(
+  const cdsmodel::Expected<std::vector<CashFlow>> kept = cdsmodel::cash_flows_from_schedule(
       d(2024, 1, 15), d(2027, 1, 15), DateInterval{6, PeriodUnit::Months}, terms(),
       StubPosition::Front, {.keep_start_date = true}, {});
   ASSERT_TRUE(dropped.has_value());
@@ -199,7 +200,7 @@ TEST(CashFlowSchedule, KeepStartDateRetainsTheZeroFlowWithoutChangingAnyAmount) 
 
 TEST(CashFlowSchedule, PostMaturityZeroPaymentExtendsPastMaturityAndZeroesTheLast) {
   const cdsmodel::Date maturity = d(2027, 1, 15);
-  const std::optional<std::vector<CashFlow>> extended = cdsmodel::cash_flows_from_schedule(
+  const cdsmodel::Expected<std::vector<CashFlow>> extended = cdsmodel::cash_flows_from_schedule(
       d(2024, 1, 15), maturity, DateInterval{6, PeriodUnit::Months}, terms(), StubPosition::Front,
       {.post_maturity_zero_payment = true}, {});
   ASSERT_TRUE(extended.has_value());
@@ -256,8 +257,8 @@ TEST(CashFlowSchedule, ALongStubProducesFewerPeriodsThanAShortOne) {
               terms(0.05, cdsmodel::DayCount::Act365Fixed, length), position,
               {.keep_start_date = true}, {});
         };
-        const std::optional<std::vector<CashFlow>> brief = build(StubLength::Short);
-        const std::optional<std::vector<CashFlow>> merged = build(StubLength::Long);
+        const cdsmodel::Expected<std::vector<CashFlow>> brief = build(StubLength::Short);
+        const cdsmodel::Expected<std::vector<CashFlow>> merged = build(StubLength::Long);
         ASSERT_TRUE(brief.has_value());
         ASSERT_TRUE(merged.has_value());
         EXPECT_LE(merged->size(), brief->size()) << cdsmodel::to_tdate(start) << " iv " << periods;
@@ -276,7 +277,7 @@ TEST(CashFlowSchedule, ALongStubProducesFewerPeriodsThanAShortOne) {
 
 TEST(CashFlowSchedule, AdjustmentMovesDatesWithoutChangingTheNumberOfPayments) {
   const std::vector<cdsmodel::Calendar> calendars{cdsmodel::Calendar::none()};
-  const std::optional<std::vector<CashFlow>> unadjusted = cdsmodel::cash_flows_from_schedule(
+  const cdsmodel::Expected<std::vector<CashFlow>> unadjusted = cdsmodel::cash_flows_from_schedule(
       d(2024, 1, 6), d(2026, 7, 4), DateInterval{3, PeriodUnit::Months}, terms(),
       StubPosition::Front, {.add_final = true}, calendars);
   ASSERT_TRUE(unadjusted.has_value());
@@ -287,7 +288,7 @@ TEST(CashFlowSchedule, AdjustmentMovesDatesWithoutChangingTheNumberOfPayments) {
     CashFlowConventions conventions = terms();
     conventions.accrual_bad_day = conv;
     conventions.pay_bad_day = conv;
-    const std::optional<std::vector<CashFlow>> adjusted = cdsmodel::cash_flows_from_schedule(
+    const cdsmodel::Expected<std::vector<CashFlow>> adjusted = cdsmodel::cash_flows_from_schedule(
         d(2024, 1, 6), d(2026, 7, 4), DateInterval{3, PeriodUnit::Months}, conventions,
         StubPosition::Front, {.add_final = true}, calendars);
     ASSERT_TRUE(adjusted.has_value()) << static_cast<char>(conv);
@@ -310,8 +311,8 @@ TEST(CashFlowSchedule, MatchesRecordedStreams) {
   int checked = 0;
   int refused = 0;
   for (const auto &c : cdsmodel::golden::kCashFlowScheduleCases) {
-    const std::optional<cdsmodel::BadDayConv> conv =
-        c.bad_day == 'N' ? std::optional{cdsmodel::BadDayConv::None}
+    const cdsmodel::Expected<cdsmodel::BadDayConv> conv =
+        c.bad_day == 'N' ? cdsmodel::Expected<cdsmodel::BadDayConv>{cdsmodel::BadDayConv::None}
                          : cdsmodel::bad_day_conv_from_upstream(c.bad_day);
     ASSERT_TRUE(conv.has_value()) << c.bad_day;
     const CashFlowConventions conventions{
@@ -329,7 +330,7 @@ TEST(CashFlowSchedule, MatchesRecordedStreams) {
                               .keep_start_date = (c.flags & 16) != 0};
     const std::vector<cdsmodel::Calendar> calendars{cdsmodel::Calendar::none()};
 
-    const std::optional<std::vector<CashFlow>> got = cdsmodel::cash_flows_from_schedule(
+    const cdsmodel::Expected<std::vector<CashFlow>> got = cdsmodel::cash_flows_from_schedule(
         cdsmodel::from_tdate(c.start), cdsmodel::from_tdate(c.maturity),
         DateInterval{c.periods, PeriodUnit::Months}, conventions, position, flags, calendars);
     const std::string where = std::to_string(c.start) + " iv " + std::to_string(c.periods) +

@@ -66,9 +66,10 @@ struct RefTC {
 /// Build the same curve on both sides.
 struct CurvePair {
   RefTC ref;
-  std::optional<cdsmodel::ZeroCurve> port;
+  cdsmodel::Expected<cdsmodel::ZeroCurve> port;
 
-  CurvePair(cdsmodel::Date base, const std::vector<cdsmodel::RatePoint> &points) {
+  CurvePair(cdsmodel::Date base, const std::vector<cdsmodel::RatePoint> &points)
+      : port(cdsmodel::fail(cdsmodel::ErrorKind::bad_argument, "not built")) {
     std::vector<TDate> dates;
     std::vector<double> rates;
     for (const cdsmodel::RatePoint &p : points) {
@@ -130,7 +131,7 @@ TEST_F(CurveInstrumentsDifferential, CashMatchesWithAndWithoutAStubCurve) {
         }
         RefTC out(JpmcdsZCCash(pair.ref.tc, raw_dates.data(), raw_rates.data(),
                                static_cast<int>(quotes.size()), cdsmodel::to_upstream_code(dcc)));
-        const std::optional<cdsmodel::ZeroCurve> got =
+        const cdsmodel::Expected<cdsmodel::ZeroCurve> got =
             cdsmodel::curve_with_cash(*pair.port, quotes, dcc);
 
         ASSERT_EQ(static_cast<bool>(out), got.has_value()) << "acceptance differs";
@@ -157,7 +158,7 @@ TEST_F(CurveInstrumentsDifferential, NoCashQuotesReturnsTheCurveUnvalidated) {
   // 9999 is not a day count convention JpmcdsDayCountValid accepts.
   RefTC out(JpmcdsZCCash(pair.ref.tc, &date, &rate, 0, 9999));
   ASSERT_TRUE(out) << "upstream validated despite having nothing to add";
-  const std::optional<cdsmodel::ZeroCurve> got =
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> got =
       cdsmodel::curve_with_cash(*pair.port, {}, cdsmodel::DayCount::Act360);
   ASSERT_TRUE(got.has_value());
   expect_curves_match(out.tc, *got, "empty cash");
@@ -182,7 +183,7 @@ TEST_F(CurveInstrumentsDifferential, CashRatesAgreeFarInsideTheSolverTolerance) 
   }
   RefTC out(JpmcdsZCCash(pair.ref.tc, raw_dates.data(), raw_rates.data(), 3, JPMCDS_ACT_360));
   ASSERT_TRUE(out);
-  const std::optional<cdsmodel::ZeroCurve> got =
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> got =
       cdsmodel::curve_with_cash(*pair.port, quotes, cdsmodel::DayCount::Act360);
   ASSERT_TRUE(got.has_value());
   ASSERT_EQ(out.tc->fNumItems, static_cast<int>(got->points().size()));
@@ -236,7 +237,7 @@ TEST_F(CurveInstrumentsDifferential, SwapsMatchAcrossStripsAndStubOverlap) {
                                                       .float_frequency = freq,
                                                       .interp = cdsmodel::InterpType::FlatForwards,
                                                       .bad_day = conv};
-          const std::optional<cdsmodel::ZeroCurve> got =
+          const cdsmodel::Expected<cdsmodel::ZeroCurve> got =
               cdsmodel::curve_with_swaps(*pair.port, std::nullopt, strip, strip_rates, conventions,
                                          cdsmodel::Calendar::none());
 
@@ -271,7 +272,7 @@ TEST_F(CurveInstrumentsDifferential, ABenchmarkOnTheStubsLastDateIsKept) {
                           JPMCDS_ACT_360, JPMCDS_ACT_360, 'M',
                           static_cast<TBadDayAndStubPos>(JPMCDS_BAD_DAY_NONE),
                           const_cast<char *>("NONE")));
-  const std::optional<cdsmodel::ZeroCurve> got = cdsmodel::curve_with_swaps(
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> got = cdsmodel::curve_with_swaps(
       *pair.port, std::nullopt, strip, rates, {.interp = cdsmodel::InterpType::FlatForwards},
       cdsmodel::Calendar::none());
   ASSERT_EQ(static_cast<bool>(out), got.has_value());
@@ -294,7 +295,7 @@ TEST_F(CurveInstrumentsDifferential, NoSwapsReturnsTheCurveUnchanged) {
                           JPMCDS_ACT_360, 'M', static_cast<TBadDayAndStubPos>(JPMCDS_BAD_DAY_NONE),
                           const_cast<char *>("NONE")));
   ASSERT_TRUE(out);
-  const std::optional<cdsmodel::ZeroCurve> got = cdsmodel::curve_with_swaps(
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> got = cdsmodel::curve_with_swaps(
       *pair.port, std::nullopt, {}, {}, {.interp = cdsmodel::InterpType::FlatForwards},
       cdsmodel::Calendar::none());
   ASSERT_TRUE(got.has_value());
@@ -317,7 +318,7 @@ TEST_F(CurveInstrumentsDifferential, TheTwoValidatorsDisagreeAboutEqualDates) {
   // later, so compare acceptance rather than assuming success).
   RefTC cash(JpmcdsZCCash(pair.ref.tc, dup, two, 2, JPMCDS_ACT_360));
   const std::vector<cdsmodel::RatePoint> quotes{{same, 0.026}, {same, 0.026}};
-  const std::optional<cdsmodel::ZeroCurve> got_cash =
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> got_cash =
       cdsmodel::curve_with_cash(*pair.port, quotes, cdsmodel::DayCount::Act360);
   EXPECT_EQ(static_cast<bool>(cash), got_cash.has_value())
       << "the cash path disagrees about duplicate dates";

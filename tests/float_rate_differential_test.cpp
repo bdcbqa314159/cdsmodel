@@ -122,7 +122,8 @@ TEST_F(FloatRateDifferential, SpotOffsetAdvancesIdenticallyFromEveryWeekday) {
       TDate raw_out = 0;
       const bool accepted =
           JpmcdsDtFwdAdj(cdsmodel::to_tdate(reset), &ref.spotOffset, &raw_out) == SUCCESS;
-      const std::optional<cdsmodel::Date> got = cdsmodel::advance_adjusted(reset, offset, calendar);
+      const cdsmodel::Expected<cdsmodel::Date> got =
+          cdsmodel::advance_adjusted(reset, offset, calendar);
 
       ASSERT_EQ(accepted, got.has_value()) << "spot " << spot << " day " << day;
       if (!accepted) {

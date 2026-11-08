@@ -14,6 +14,7 @@
 // (yearfrac.c) is deliberately NOT in this header -- see port-notes.md.
 
 #include <cdsmodel/date.hpp>
+#include <cdsmodel/expected.hpp>
 
 #include <chrono>
 #include <optional>
@@ -47,7 +48,7 @@ inline constexpr DayCount kActAct = DayCount::Act365;
 /// The day count for an upstream code, or nullopt if there is none. Replaces
 /// `JpmcdsDayCountValid` -- upstream returns a status and the port returns the
 /// value, so validity and conversion are one step rather than two.
-[[nodiscard]] constexpr std::optional<DayCount> from_upstream_code(long code) noexcept {
+[[nodiscard]] constexpr Expected<DayCount> from_upstream_code(long code) noexcept {
   switch (code) {
   case 1:
     return DayCount::Act365;
@@ -62,7 +63,7 @@ inline constexpr DayCount kActAct = DayCount::Act365;
   case 8:
     return DayCount::EffectiveRate;
   default: // includes JPMCDS_BAD_DCC (-2), a sentinel for Brazilian bonds
-    return std::nullopt;
+    return fail(ErrorKind::unsupported, "unrecognised day count convention code");
   }
 }
 
@@ -74,7 +75,7 @@ inline constexpr DayCount kActAct = DayCount::Act365;
 ///
 /// Signed: swapping the dates negates the result, as upstream does by
 /// swapping then multiplying by -1.
-[[nodiscard]] constexpr std::optional<long> days_diff(Date from, Date to, DayCount dcc) noexcept {
+[[nodiscard]] constexpr Expected<long> days_diff(Date from, Date to, DayCount dcc) noexcept {
   const bool reversed = from > to;
   if (reversed) {
     const Date tmp = from;
@@ -117,15 +118,14 @@ inline constexpr DayCount kActAct = DayCount::Act365;
   }
 
   case DayCount::EffectiveRate:
-    return std::nullopt;
+    return fail(ErrorKind::unsupported, "the effective-rate convention has no year fraction");
   }
 
   return reversed ? -days : days;
 }
 
 /// The day count fraction. Replaces JpmcdsDayCountFraction.
-[[nodiscard]] constexpr std::optional<double> year_fraction(Date from, Date to,
-                                                            DayCount dcc) noexcept {
+[[nodiscard]] constexpr Expected<double> year_fraction(Date from, Date to, DayCount dcc) noexcept {
   // Upstream short-circuits these two before any date ordering, purely for
   // speed. The subtraction is already signed, so the result is unchanged.
   if (dcc == DayCount::Act365Fixed) {
@@ -150,9 +150,9 @@ inline constexpr DayCount kActAct = DayCount::Act365;
   }
 
   if (dcc == DayCount::Thirty360 || dcc == DayCount::ThirtyE360) {
-    const std::optional<long> days = days_diff(from, to, dcc);
+    const Expected<long> days = days_diff(from, to, dcc);
     if (!days) {
-      return std::nullopt;
+      return unexpected(days.error());
     }
     return sign * static_cast<double>(*days) / 360.0;
   }
@@ -199,7 +199,7 @@ inline constexpr DayCount kActAct = DayCount::Act365;
 /// `JpmcdsMDYToDate`, which is where it would fail for a date in the last
 /// representable year. The port's `next_year_start` is calendar arithmetic
 /// with the same reach, and `days_diff` supplies the only refusal.
-[[nodiscard]] constexpr std::optional<long> days_left_this_year(Date date, DayCount dcc) noexcept {
+[[nodiscard]] constexpr Expected<long> days_left_this_year(Date date, DayCount dcc) noexcept {
   return days_diff(date, next_year_start(date), dcc);
 }
 

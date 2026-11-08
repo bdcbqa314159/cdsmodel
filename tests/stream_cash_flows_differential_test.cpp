@@ -107,9 +107,10 @@ struct RefFlows {
 /// One schedule, built on both sides from the same arguments.
 struct SchedulePair {
   RefSchedule ref;
-  std::optional<cdsmodel::CouponSchedule> port;
+  cdsmodel::Expected<cdsmodel::CouponSchedule> port;
 
-  SchedulePair(cdsmodel::Date start, cdsmodel::Date maturity, int months, bool stub_at_end) {
+  SchedulePair(cdsmodel::Date start, cdsmodel::Date maturity, int months, bool stub_at_end)
+      : port(cdsmodel::fail(cdsmodel::ErrorKind::bad_argument, "not built")) {
     TDateInterval raw = raw_interval({months, cdsmodel::PeriodUnit::Months});
     ref.list = JpmcdsNewCouponDatesSwap(cdsmodel::to_tdate(start), cdsmodel::to_tdate(maturity),
                                         &raw, TRUE, FALSE, 0, 0, stub_at_end ? TRUE : FALSE, FALSE,
@@ -131,9 +132,10 @@ struct SchedulePair {
 /// A modest rising curve, on both sides.
 struct CurvePair {
   RefCurve ref;
-  std::optional<cdsmodel::ZeroCurve> port;
+  cdsmodel::Expected<cdsmodel::ZeroCurve> port;
 
-  explicit CurvePair(cdsmodel::Date base) {
+  explicit CurvePair(cdsmodel::Date base)
+      : port(cdsmodel::fail(cdsmodel::ErrorKind::bad_argument, "not built")) {
     std::vector<cdsmodel::RatePoint> points;
     std::vector<TDate> dates;
     std::vector<double> rates;
@@ -207,7 +209,7 @@ TEST_F(StreamCashFlowsDifferential, FixedLegMatchesAcrossSchedulesFlagsAndRates)
                                                    .first_coupon_rate = 0.03,
                                                    .final_coupon_rate = 0.05,
                                                    .fixed_rate = fixed_rate};
-                const std::optional<std::vector<cdsmodel::CashFlow>> got =
+                const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got =
                     cdsmodel::fixed_stream_cash_flows(stream);
 
                 if (!ref) {
@@ -242,7 +244,7 @@ TEST_F(StreamCashFlowsDifferential, FixedCouponRatesMatchIncludingStubRates) {
       std::vector<double> ref(static_cast<std::size_t>(sched.ref.list->fNumItems), -1.0);
       ASSERT_EQ(JpmcdsGetFixedCouponRates(cdsmodel::to_tdate(start), rs, ref.data()), SUCCESS);
 
-      const std::optional<std::vector<double>> got =
+      const cdsmodel::Expected<std::vector<double>> got =
           cdsmodel::fixed_coupon_rates({.schedule = *sched.port,
                                         .principal = 1.0e6,
                                         .pay_day_count = cdsmodel::DayCount::Act360,
@@ -316,7 +318,7 @@ TEST_F(StreamCashFlowsDifferential, FloatLegMatchesAcrossSchedulesFlagsAndInterp
                                .spot_offset = cdsmodel::calendar_day_offset(spot),
                                .spread = spread,
                                .weight = 1.0}};
-                  const std::optional<std::vector<cdsmodel::CashFlow>> got =
+                  const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got =
                       cdsmodel::float_stream_cash_flows(*curve.port, interp, stream,
                                                         cdsmodel::BadDayConv::None,
                                                         cdsmodel::Calendar::none());
@@ -350,10 +352,10 @@ TEST_F(StreamCashFlowsDifferential, FloatingCashFlowMatchesOnItsOwn) {
   int compared = 0;
   for (const int start_months : {0, 6, 24, 60}) {
     for (const int tenor_months : {3, 6, 12}) {
-      const std::optional<cdsmodel::Date> index_start = cdsmodel::advance(
+      const cdsmodel::Expected<cdsmodel::Date> index_start = cdsmodel::advance(
           base, {start_months == 0 ? 1 : start_months, cdsmodel::PeriodUnit::Months});
       ASSERT_TRUE(index_start.has_value());
-      const std::optional<cdsmodel::Date> index_mat =
+      const cdsmodel::Expected<cdsmodel::Date> index_mat =
           cdsmodel::advance(*index_start, {tenor_months, cdsmodel::PeriodUnit::Months});
       ASSERT_TRUE(index_mat.has_value());
       for (const cdsmodel::InterpType interp :
@@ -376,7 +378,7 @@ TEST_F(StreamCashFlowsDifferential, FloatingCashFlowMatchesOnItsOwn) {
                   curve.ref.curve, upstream_interp(interp), cdsmodel::to_tdate(*index_start),
                   cdsmodel::to_tdate(*index_mat), pay, &ref_coupon, JPMCDS_ACT_360, JPMCDS_ACT_360,
                   1.0e6, spread, &ref_amount) == SUCCESS;
-          const std::optional<double> got = cdsmodel::floating_cash_flow(
+          const cdsmodel::Expected<double> got = cdsmodel::floating_cash_flow(
               *curve.port, interp, *index_start, *index_mat,
               {tenor_months, cdsmodel::PeriodUnit::Months}, coupon, cdsmodel::DayCount::Act360,
               cdsmodel::DayCount::Act360, 1.0e6, spread);
@@ -558,7 +560,7 @@ TEST_F(StreamCashFlowsDifferential, OnePeriodTwoStubResolvesOppositelyOnTheTwoLe
                                                    .pay = d(2024, 7, 15),
                                                    .accrual_start = d(2024, 1, 15),
                                                    .accrual_end = d(2024, 7, 15)});
-  const std::optional<std::vector<double>> got =
+  const cdsmodel::Expected<std::vector<double>> got =
       cdsmodel::fixed_coupon_rates({.schedule = schedule,
                                     .principal = 1.0e6,
                                     .pay_day_count = cdsmodel::DayCount::Act360,
@@ -642,7 +644,7 @@ TEST_F(StreamCashFlowsDifferential, Upstream31TheStubPathIsReachable) {
                .pay_interval = {6, cdsmodel::PeriodUnit::Months},
                .day_count = cdsmodel::DayCount::Act360}};
   const std::vector<cdsmodel::RatePoint> port_points{cdsmodel::RatePoint{d(2300, 1, 15), 1.0e2}};
-  const std::optional<cdsmodel::ZeroCurve> port_curve =
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> port_curve =
       cdsmodel::ZeroCurve::create(base, port_points, 1.0, cdsmodel::DayCount::Act365Fixed);
   ASSERT_TRUE(port_curve.has_value());
   EXPECT_FALSE(cdsmodel::float_stream_cash_flows(*port_curve, cdsmodel::InterpType::FlatForwards,

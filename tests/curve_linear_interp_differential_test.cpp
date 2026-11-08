@@ -63,10 +63,11 @@ struct RefDL {
 /// One old curve, built on both sides.
 struct CurvePair {
   RefTC ref;
-  std::optional<cdsmodel::ZeroCurve> port;
+  cdsmodel::Expected<cdsmodel::ZeroCurve> port;
 
   CurvePair(cdsmodel::Date base, const std::vector<cdsmodel::RatePoint> &points, double basis,
-            cdsmodel::DayCount dcc) {
+            cdsmodel::DayCount dcc)
+      : port(cdsmodel::fail(cdsmodel::ErrorKind::bad_argument, "not built")) {
     std::vector<TDate> dates;
     std::vector<double> rates;
     for (const cdsmodel::RatePoint &p : points) {
@@ -126,7 +127,7 @@ TEST_F(CurveLinearInterpDifferential, MatchesAcrossCurvesDatesAndDayCounts) {
           ASSERT_NE(dl.dl, nullptr);
 
           RefTC out(JpmcdsLinInterpCurve(dl.dl, pair.ref.tc, nullptr));
-          const std::optional<cdsmodel::ZeroCurve> got =
+          const cdsmodel::Expected<cdsmodel::ZeroCurve> got =
               cdsmodel::linear_interp_curve(desired, *pair.port);
 
           if (!out) {
@@ -194,7 +195,8 @@ TEST_F(CurveLinearInterpDifferential, ADateBeyondTheCurveKeepsItsOwnDateAndTheFi
   EXPECT_EQ(out.tc->fArray[1].fDate, cdsmodel::to_tdate(d(2045, 1, 1)));
   EXPECT_DOUBLE_EQ(out.tc->fArray[1].fRate, 0.0350) << "after the curve: the LAST rate";
 
-  const std::optional<cdsmodel::ZeroCurve> got = cdsmodel::linear_interp_curve(desired, *pair.port);
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> got =
+      cdsmodel::linear_interp_curve(desired, *pair.port);
   ASSERT_TRUE(got.has_value());
   EXPECT_EQ(got->points()[0].date, d(2020, 1, 1));
   EXPECT_DOUBLE_EQ(got->points()[0].rate, 0.0300);

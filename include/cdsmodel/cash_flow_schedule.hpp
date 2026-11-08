@@ -35,6 +35,7 @@
 #include <cdsmodel/date_interval.hpp>
 #include <cdsmodel/date_schedule.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/stub.hpp>
 
 #include <cstddef>
@@ -177,7 +178,7 @@ struct CashFlowFlags {
 /// working.
 ///
 /// The port has no copy here: coalescing drops one element from a vector.
-[[nodiscard]] inline std::optional<std::vector<CashFlow>>
+[[nodiscard]] inline Expected<std::vector<CashFlow>>
 cash_flows_from_dates(std::span<const Date> dates, Date start, Date maturity,
                       const CashFlowConventions &conventions,
                       std::span<const Calendar> accrual_calendars,
@@ -207,7 +208,8 @@ cash_flows_from_dates(std::span<const Date> dates, Date start, Date maturity,
 
   // UPSTREAM-25: upstream indexes dates[1] / dates[-1] here.
   if ((front_stub || back_stub) && dates.size() < 2) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument,
+                "a stub needs at least 2 schedule dates, got " + detail::num(dates.size()));
   }
 
   // The accrual and payment grids, adjusted or not. Upstream aliases the
@@ -218,14 +220,16 @@ cash_flows_from_dates(std::span<const Date> dates, Date start, Date maturity,
   Date accrual_start = start;
   Date accrual_maturity = maturity;
   if (conventions.accrual_bad_day != BadDayConv::None) {
-    const std::optional<std::vector<Date>> adjusted =
+    const Expected<std::vector<Date>> adjusted =
         adjust_date_list(dates, conventions.accrual_bad_day, accrual_calendars);
-    const std::optional<Date> adjusted_start =
+    const Expected<Date> adjusted_start =
         adjust(start, conventions.accrual_bad_day, accrual_calendars);
-    const std::optional<Date> adjusted_maturity =
+    const Expected<Date> adjusted_maturity =
         adjust(maturity, conventions.accrual_bad_day, accrual_calendars);
     if (!adjusted || !adjusted_start || !adjusted_maturity) {
-      return std::nullopt;
+      return unexpected(
+          !adjusted ? adjusted.error()
+                    : (!adjusted_start ? adjusted_start.error() : (adjusted_maturity.error())));
     }
     accrual_storage = *adjusted;
     accrual_dates = accrual_storage;
@@ -238,14 +242,15 @@ cash_flows_from_dates(std::span<const Date> dates, Date start, Date maturity,
   Date pay_start = start;
   Date pay_maturity = maturity;
   if (conventions.pay_bad_day != BadDayConv::None) {
-    const std::optional<std::vector<Date>> adjusted =
+    const Expected<std::vector<Date>> adjusted =
         adjust_date_list(dates, conventions.pay_bad_day, pay_calendars);
-    const std::optional<Date> adjusted_start =
-        adjust(start, conventions.pay_bad_day, pay_calendars);
-    const std::optional<Date> adjusted_maturity =
+    const Expected<Date> adjusted_start = adjust(start, conventions.pay_bad_day, pay_calendars);
+    const Expected<Date> adjusted_maturity =
         adjust(maturity, conventions.pay_bad_day, pay_calendars);
     if (!adjusted || !adjusted_start || !adjusted_maturity) {
-      return std::nullopt;
+      return unexpected(
+          !adjusted ? adjusted.error()
+                    : (!adjusted_start ? adjusted_start.error() : (adjusted_maturity.error())));
     }
     pay_storage = *adjusted;
     pay_dates = pay_storage;
@@ -272,21 +277,21 @@ cash_flows_from_dates(std::span<const Date> dates, Date start, Date maturity,
 
   if (front_stub) {
     first_regular = 2;
-    const std::optional<double> payment =
+    const Expected<double> payment =
         stub_payment(accrual_dates[0], accrual_dates[1], accrual_start, accrual_dates[1],
                      conventions.rate, conventions.day_count);
     if (!payment) {
-      return std::nullopt;
+      return unexpected(payment.error());
     }
     flows[1].amount = *payment;
   }
   if (back_stub) {
     last_regular = n - 2;
-    const std::optional<double> payment =
+    const Expected<double> payment =
         stub_payment(accrual_dates[n - 2], accrual_dates[n - 1], accrual_dates[n - 2],
                      accrual_maturity, conventions.rate, conventions.day_count);
     if (!payment) {
-      return std::nullopt;
+      return unexpected(payment.error());
     }
     flows[n - 1].amount = *payment;
   }
@@ -301,10 +306,10 @@ cash_flows_from_dates(std::span<const Date> dates, Date start, Date maturity,
   // established needs `n >= 2`. Written out because `std::size_t` would wrap
   // silently if that reasoning were ever wrong.
   for (std::size_t i = first_regular; i <= last_regular && i < n; ++i) {
-    const std::optional<double> year_frac =
+    const Expected<double> year_frac =
         year_fraction(accrual_dates[i - 1], accrual_dates[i], conventions.day_count);
     if (!year_frac) {
-      return std::nullopt;
+      return unexpected(year_frac.error());
     }
     flows[i].amount = conventions.rate * *year_frac;
   }
@@ -343,44 +348,45 @@ cash_flows_from_dates(std::span<const Date> dates, Date start, Date maturity,
 /// and `JpmcdsMakeCFL` always passes `startDate` for it. That is kept rather
 /// than simplified away, because it is not a no-op -- see UPSTREAM-24, where
 /// passing the start date flips the generation direction for a leap-day start.
-[[nodiscard]] inline std::optional<std::vector<CashFlow>>
+[[nodiscard]] inline Expected<std::vector<CashFlow>>
 cash_flows_from_schedule(Date start, Date maturity, DateInterval interval,
                          const CashFlowConventions &conventions, StubPosition position,
                          const CashFlowFlags &flags, std::span<const Calendar> calendars) {
   if (maturity <= start) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "maturity must be after the start date");
   }
   if ((flags.subtract_initial || flags.keep_start_date) && flags.prestart_zero_payment) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "a prestart zero payment cannot be combined with "
+                                         "subtracting the initial flow or keeping the start date");
   }
 
   Date effective_maturity = maturity;
   if (flags.post_maturity_zero_payment) {
     if (position == StubPosition::Back) {
-      return std::nullopt; // no post-maturity zero payment with a stub at the end
+      return fail(ErrorKind::unsupported, "a back stub is not supported for this schedule");
     }
     if (flags.add_final) {
-      return std::nullopt; // nor with a final principal payment
+      return fail(ErrorKind::unsupported, "adding a final flow is not supported for this schedule");
     }
-    const std::optional<Date> advanced = advance(maturity, interval);
+    const Expected<Date> advanced = advance(maturity, interval);
     if (!advanced) {
-      return std::nullopt;
+      return unexpected(advanced.error());
     }
     effective_maturity = *advanced;
   }
 
   const bool stub_at_end = position == StubPosition::Back;
-  const std::optional<std::vector<Date>> schedule =
+  const Expected<std::vector<Date>> schedule =
       date_list_extended_roll(start, effective_maturity, start, interval, stub_at_end);
   if (!schedule) {
-    return std::nullopt;
+    return unexpected(schedule.error());
   }
 
-  std::optional<std::vector<CashFlow>> flows =
+  Expected<std::vector<CashFlow>> flows =
       cash_flows_from_dates(*schedule, start, effective_maturity, conventions, calendars, calendars,
                             flags.prestart_zero_payment);
   if (!flows) {
-    return std::nullopt;
+    return unexpected(flows.error());
   }
   if (flows->empty()) {
     return flows; // upstream returns the empty list before touching any flag

@@ -31,11 +31,12 @@ const std::vector<cdsmodel::Calendar> &calendars() {
   return v;
 }
 
-std::optional<cdsmodel::Cds> cds_of(const FeeLegFlowsCase &c) {
-  const std::optional<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
-  const std::optional<cdsmodel::BadDayConv> conv = cdsmodel::bad_day_conv_from_upstream(c.conv);
+cdsmodel::Expected<cdsmodel::Cds> cds_of(const FeeLegFlowsCase &c) {
+  const cdsmodel::Expected<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
+  const cdsmodel::Expected<cdsmodel::BadDayConv> conv =
+      cdsmodel::bad_day_conv_from_upstream(c.conv);
   if (!dcc || !conv) {
-    return std::nullopt;
+    return cdsmodel::unexpected(!dcc ? dcc.error() : (conv.error()));
   }
   return cdsmodel::Cds{.start = cdsmodel::from_tdate(c.start),
                        .end = cdsmodel::from_tdate(c.end),
@@ -50,9 +51,9 @@ TEST(FeeLegFlowsGolden, ReplaysEveryRecordedCase) {
   int matched = 0;
   int refused = 0;
   for (const FeeLegFlowsCase &c : kFeeLegFlowsCases) {
-    const std::optional<cdsmodel::Cds> cds = cds_of(c);
+    const cdsmodel::Expected<cdsmodel::Cds> cds = cds_of(c);
     ASSERT_TRUE(cds.has_value());
-    const std::optional<std::vector<cdsmodel::CashFlow>> got =
+    const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got =
         cdsmodel::cds_fee_leg_flows(*cds, kFeeLegFlowsNotional, calendars());
     ASSERT_EQ(got.has_value(), c.accepted) << "months " << c.months << " dcc " << c.day_count;
     if (!c.accepted) {
@@ -83,11 +84,11 @@ TEST(FeeLegFlowsGolden, AmountsScaleExactlyWithTheNotional) {
     if (!c.accepted || c.flow_count == 0) {
       continue;
     }
-    const std::optional<cdsmodel::Cds> cds = cds_of(c);
+    const cdsmodel::Expected<cdsmodel::Cds> cds = cds_of(c);
     ASSERT_TRUE(cds.has_value());
-    const std::optional<std::vector<cdsmodel::CashFlow>> one =
+    const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> one =
         cdsmodel::cds_fee_leg_flows(*cds, 1.0, calendars());
-    const std::optional<std::vector<cdsmodel::CashFlow>> many =
+    const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> many =
         cdsmodel::cds_fee_leg_flows(*cds, 2.0e7, calendars());
     ASSERT_TRUE(one.has_value());
     ASSERT_TRUE(many.has_value());

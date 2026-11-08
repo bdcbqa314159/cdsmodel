@@ -36,6 +36,7 @@
 #include <cdsmodel/contingent_leg.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/timeline.hpp>
 #include <cdsmodel/zero_curve.hpp>
 
@@ -159,14 +160,14 @@ struct FeeLeg {
 ///
 /// Upstream dereferences `fl->nbDates` with no NULL check, which the port's
 /// reference makes moot.
-[[nodiscard]] inline std::optional<std::vector<CashFlow>> fee_leg_flows(const FeeLeg &leg) {
+[[nodiscard]] inline Expected<std::vector<CashFlow>> fee_leg_flows(const FeeLeg &leg) {
   std::vector<CashFlow> flows;
   flows.reserve(leg.payments.size());
   for (const FeePayment &payment : leg.payments) {
-    const std::optional<double> year_frac =
+    const Expected<double> year_frac =
         year_fraction(payment.accrual_start, payment.accrual_end, leg.day_count);
     if (!year_frac) {
-      return std::nullopt;
+      return unexpected(year_frac.error());
     }
     flows.push_back(CashFlow{payment.pay, *year_frac * leg.coupon_rate * leg.notional});
   }
@@ -178,19 +179,20 @@ struct FeeLeg {
 /// Replaces `JpmcdsAccrualOnDefaultPVWithTimeLine`. `critical` is an
 /// already-built timeline to truncate; pass an empty span to have one built
 /// for the period, which is what upstream does when its pointer is NULL.
-[[nodiscard]] inline std::optional<double>
-accrual_on_default_pv(Date today, Date stepin, Date start, Date end, double amount,
-                      const ZeroCurve &discount, const ZeroCurve &spread,
-                      std::span<const Date> critical) {
+[[nodiscard]] inline Expected<double> accrual_on_default_pv(Date today, Date stepin, Date start,
+                                                            Date end, double amount,
+                                                            const ZeroCurve &discount,
+                                                            const ZeroCurve &spread,
+                                                            std::span<const Date> critical) {
   if (end <= start) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "end must be strictly after start");
   }
 
-  const std::optional<std::vector<Date>> tl = critical.empty()
-                                                  ? risky_timeline(start, end, discount, spread)
-                                                  : truncate_timeline(critical, start, end);
+  const Expected<std::vector<Date>> tl = critical.empty()
+                                             ? risky_timeline(start, end, discount, spread)
+                                             : truncate_timeline(critical, start, end);
   if (!tl) {
-    return std::nullopt;
+    return unexpected(tl.error());
   }
 
   Date sub_start = std::max(stepin, start);
@@ -265,7 +267,7 @@ namespace detail {
 
 /// Present value of one coupon, as at `today`. Replaces
 /// `FeePaymentPVWithTimeLine`.
-[[nodiscard]] inline std::optional<double>
+[[nodiscard]] inline Expected<double>
 fee_payment_pv(const FeeLeg &leg, const FeePayment &payment, Date today, Date stepin,
                const ZeroCurve &discount, const ZeroCurve &spread, std::span<const Date> timeline) {
   // Survival is computed at end of day, so observing at start of day means
@@ -276,10 +278,10 @@ fee_payment_pv(const FeeLeg &leg, const FeePayment &payment, Date today, Date st
     return 0.0;
   }
 
-  const std::optional<double> acc_time =
+  const Expected<double> acc_time =
       year_fraction(payment.accrual_start, payment.accrual_end, leg.day_count);
   if (!acc_time) {
-    return std::nullopt;
+    return unexpected(acc_time.error());
   }
   const double amount = leg.notional * leg.coupon_rate * *acc_time;
   const double survival = spread.forward_zero_price(today, payment.accrual_end + obs_offset);
@@ -287,11 +289,11 @@ fee_payment_pv(const FeeLeg &leg, const FeePayment &payment, Date today, Date st
   double pv = amount * survival * discount_factor;
 
   if (leg.accrual_pay == AccrualPayment::All) {
-    const std::optional<double> accrual =
+    const Expected<double> accrual =
         accrual_on_default_pv(today, stepin + obs_offset, payment.accrual_start + obs_offset,
                               payment.accrual_end + obs_offset, amount, discount, spread, timeline);
     if (!accrual) {
-      return std::nullopt;
+      return unexpected(accrual.error());
     }
     pv += *accrual;
   }
@@ -303,9 +305,9 @@ fee_payment_pv(const FeeLeg &leg, const FeePayment &payment, Date today, Date st
 /// Zero outside the schedule and zero exactly on an accrual start date;
 /// otherwise the day count fraction from the enclosing period's start,
 /// times coupon and notional.
-[[nodiscard]] inline std::optional<double> fee_leg_accrued(const FeeLeg &leg, Date as_of) {
+[[nodiscard]] inline Expected<double> fee_leg_accrued(const FeeLeg &leg, Date as_of) {
   if (leg.payments.empty()) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the fee leg has no payments");
   }
   if (as_of <= leg.payments.front().accrual_start || as_of >= leg.payments.back().accrual_end) {
     return 0.0;
@@ -328,10 +330,10 @@ fee_payment_pv(const FeeLeg &leg, const FeePayment &payment, Date today, Date st
     return 0.0;
   }
 
-  std::optional<double> accrual =
+  Expected<double> accrual =
       year_fraction(leg.payments[enclosing].accrual_start, as_of, leg.day_count);
   if (!accrual) {
-    return std::nullopt;
+    return unexpected(accrual.error());
   }
   // Order matters: the fraction is scaled by (coupon * notional) as a product.
   return *accrual * (leg.coupon_rate * leg.notional);
@@ -350,12 +352,12 @@ fee_payment_pv(const FeeLeg &leg, const FeePayment &payment, Date today, Date st
 /// upstream applies those guards only when there is more than one payment;
 /// the port's check is uniform, which costs nothing because it is the result
 /// that is tested rather than an input.
-[[nodiscard]] inline std::optional<double> fee_leg_pv(const FeeLeg &leg, Date today, Date stepin,
-                                                      Date value_date, const ZeroCurve &discount,
-                                                      const ZeroCurve &spread,
-                                                      bool pay_accrued_at_start) {
+[[nodiscard]] inline Expected<double> fee_leg_pv(const FeeLeg &leg, Date today, Date stepin,
+                                                 Date value_date, const ZeroCurve &discount,
+                                                 const ZeroCurve &spread,
+                                                 bool pay_accrued_at_start) {
   if (leg.payments.empty() || value_date < today || stepin < today) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the fee leg has no payments, or a date precedes today");
   }
 
   // One timeline for the whole leg, truncated per payment. Upstream builds it
@@ -363,10 +365,10 @@ fee_payment_pv(const FeeLeg &leg, const FeePayment &payment, Date today, Date st
   // build its own.
   std::vector<Date> timeline;
   if (leg.payments.size() > 1) {
-    const std::optional<std::vector<Date>> built = risky_timeline(
+    const Expected<std::vector<Date>> built = risky_timeline(
         leg.payments.front().accrual_start, leg.payments.back().accrual_end, discount, spread);
     if (!built) {
-      return std::nullopt;
+      return unexpected(built.error());
     }
     timeline = *built;
   }
@@ -380,10 +382,10 @@ fee_payment_pv(const FeeLeg &leg, const FeePayment &payment, Date today, Date st
 
   double pv = 0.0;
   for (const FeePayment &payment : leg.payments) {
-    const std::optional<double> this_pv =
+    const Expected<double> this_pv =
         detail::fee_payment_pv(leg, payment, today, stepin, discount, spread, timeline);
     if (!this_pv) {
-      return std::nullopt;
+      return unexpected(this_pv.error());
     }
     pv += *this_pv;
   }
@@ -392,15 +394,15 @@ fee_payment_pv(const FeeLeg &leg, const FeePayment &payment, Date today, Date st
   double result = pv / value_date_df;
 
   if (pay_accrued_at_start) {
-    const std::optional<double> accrued = detail::fee_leg_accrued(leg, stepin);
+    const Expected<double> accrued = detail::fee_leg_accrued(leg, stepin);
     if (!accrued) {
-      return std::nullopt;
+      return unexpected(accrued.error());
     }
     result -= *accrued;
   }
 
   if (!std::isfinite(result)) {
-    return std::nullopt; // the real failure UPSTREAM-8's threshold stood in for
+    return fail(ErrorKind::bad_argument, "the fee leg value is not finite");
   }
   return result;
 }

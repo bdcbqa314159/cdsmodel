@@ -39,7 +39,7 @@ std::string num(double v) {
 
 extern "C" int trampoline(double x, void *data, double *out) {
   Objective *obj = static_cast<Objective *>(data);
-  const std::optional<double> value = (*obj)(x);
+  const cdsmodel::Expected<double> value = (*obj)(x);
   if (!value) {
     return FAILURE;
   }

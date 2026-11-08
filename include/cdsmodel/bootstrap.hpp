@@ -31,6 +31,7 @@
 #include <cdsmodel/contingent_leg.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/fee_leg.hpp>
 #include <cdsmodel/root_find.hpp>
 #include <cdsmodel/zero_curve.hpp>
@@ -112,7 +113,7 @@ inline constexpr double kBootstrapTolerance = 1.0e-10;
 /// fails to bracket, retries at the bounds and ultimately fails. Measured
 /// against upstream: all three cases return NULL. No wrong answer is
 /// produced, so this is recorded as a non-finding rather than a defect.
-[[nodiscard]] inline std::optional<ZeroCurve>
+[[nodiscard]] inline Expected<ZeroCurve>
 clean_spread_curve(Date today, const ZeroCurve &discount, Date start, Date stepin, Date cash_settle,
                    std::span<const Benchmark> benchmarks, double recovery, const Cds &conventions,
                    std::span<const Calendar> calendars) {
@@ -123,7 +124,7 @@ clean_spread_curve(Date today, const ZeroCurve &discount, Date start, Date stepi
     }
   }
   if (selected.empty()) {
-    return std::nullopt; // upstream: REQUIRE(nbDate > 0) and REQUIRE(nbInclude > 0)
+    return fail(ErrorKind::bad_argument, "no instrument matures after the start date");
   }
 
   // The working curve: continuously compounded, rates initialised to the
@@ -136,7 +137,7 @@ clean_spread_curve(Date today, const ZeroCurve &discount, Date start, Date stepi
   // Built once up front purely to reject a bad set of dates before any
   // solving, the way JpmcdsMakeTCurve does.
   if (!ZeroCurve::create(today, points, kContinuousBasis, DayCount::Act365Fixed)) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the bootstrapped points do not form a valid zero curve");
   }
 
   Cds terms = conventions;
@@ -146,38 +147,38 @@ clean_spread_curve(Date today, const ZeroCurve &discount, Date start, Date stepi
   for (std::size_t i = 0; i < selected.size(); ++i) {
     const double guess = selected[i].coupon_rate / (1.0 - recovery);
 
-    const std::optional<ContingentLeg> protection =
+    const Expected<ContingentLeg> protection =
         cds_contingent_leg(std::max(today, start), selected[i].end, 1.0, terms.protect_start);
     if (!protection) {
-      return std::nullopt;
+      return unexpected(protection.error());
     }
 
     terms.end = selected[i].end;
     terms.coupon_rate = selected[i].coupon_rate;
-    const std::optional<FeeLeg> premium = cds_fee_leg(terms, 1.0, calendars);
+    const Expected<FeeLeg> premium = cds_fee_leg(terms, 1.0, calendars);
     if (!premium) {
-      return std::nullopt;
+      return unexpected(premium.error());
     }
 
     // Writes the trial spread into the shared points and reprices. This is
     // upstream's in-place mutation, with a validated curve rebuilt each call
     // because ZeroCurve has no setter.
-    auto objective = [&](double clean_spread) -> std::optional<double> {
+    auto objective = [&](double clean_spread) -> Expected<double> {
       points[i].rate = clean_spread;
-      const std::optional<ZeroCurve> curve =
+      const Expected<ZeroCurve> curve =
           ZeroCurve::create(today, points, kContinuousBasis, DayCount::Act365Fixed);
       if (!curve) {
-        return std::nullopt;
+        return unexpected(curve.error());
       }
-      const std::optional<double> pv_protection =
+      const Expected<double> pv_protection =
           contingent_leg_pv(*protection, today, cash_settle, stepin, discount, *curve, recovery);
       if (!pv_protection) {
-        return std::nullopt;
+        return unexpected(pv_protection.error());
       }
-      const std::optional<double> pv_premium =
+      const Expected<double> pv_premium =
           fee_leg_pv(*premium, today, stepin, cash_settle, discount, *curve, /*clean=*/true);
       if (!pv_premium) {
-        return std::nullopt;
+        return unexpected(pv_premium.error());
       }
       return *pv_protection - *pv_premium;
     };
@@ -192,9 +193,9 @@ clean_spread_curve(Date today, const ZeroCurve &discount, Date start, Date stepi
     opt.x_tolerance = detail::kBootstrapTolerance;
     opt.f_tolerance = detail::kBootstrapTolerance;
 
-    const std::optional<double> spread = root_find_brent(objective, opt);
+    const Expected<double> spread = root_find_brent(objective, opt);
     if (!spread) {
-      return std::nullopt;
+      return unexpected(spread.error());
     }
     // Assigned again deliberately: the objective's LAST evaluation need not
     // have been at the returned root, so the curve would otherwise hold a
@@ -209,23 +210,26 @@ clean_spread_curve(Date today, const ZeroCurve &discount, Date start, Date stepi
       // bound and is sufficient rather than an oversight: the first segment
       // runs from `today` and its rate is the solver output, which the lower
       // bound of 0 already keeps non-negative.
-      const std::optional<ZeroCurve> curve =
+      const Expected<ZeroCurve> curve =
           ZeroCurve::create(today, points, kContinuousBasis, DayCount::Act365Fixed);
       if (!curve) {
-        return std::nullopt;
+        return unexpected(curve.error());
       }
       if (curve->forward_zero_price(selected[i - 1].end, selected[i].end) > 1) {
-        return std::nullopt;
+        return fail(
+            ErrorKind::no_root,
+            "a forward discount factor above 1 implies a negative forward rate between points " +
+                detail::num(i - 1) + " and " + detail::num(i));
       }
     }
   }
 
   // Continuous to annual, in place, exactly as CreditCurveConvertRateType does.
   for (RatePoint &point : points) {
-    const std::optional<double> annual = convert_compound_rate(
+    const Expected<double> annual = convert_compound_rate(
         point.rate, kContinuousBasis, DayCount::Act365Fixed, 1.0, DayCount::Act365Fixed);
     if (!annual) {
-      return std::nullopt;
+      return unexpected(annual.error());
     }
     point.rate = *annual;
   }

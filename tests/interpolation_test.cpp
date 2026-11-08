@@ -41,7 +41,7 @@ TEST(Interpolation, ReproducesTheEndpointsExactly) {
   const std::vector<long> xs{100, 200, 400, 800};
   const std::vector<double> fs{0.01, 0.02, 0.025, 0.03};
   for (std::size_t i = 0; i < xs.size(); ++i) {
-    const std::optional<double> got = linear_interpolate(xs, fs, static_cast<double>(xs[i]));
+    const cdsmodel::Expected<double> got = linear_interpolate(xs, fs, static_cast<double>(xs[i]));
     ASSERT_TRUE(got.has_value()) << i;
     EXPECT_EQ(*got, fs[i]) << "at node " << i;
   }
@@ -52,12 +52,12 @@ TEST(Interpolation, IsMonotoneBetweenMonotoneNodes) {
   const std::vector<double> fs{1.0, 2.0, 3.0, 4.0};
   std::optional<double> previous;
   for (double x = -50.0; x <= 350.0; x += 7.5) {
-    const std::optional<double> got = linear_interpolate(xs, fs, x);
+    const cdsmodel::Expected<double> got = linear_interpolate(xs, fs, x);
     ASSERT_TRUE(got.has_value()) << x;
     if (previous) {
       EXPECT_GT(*got, *previous) << "at " << x;
     }
-    previous = got;
+    previous = *got;
   }
 }
 
@@ -76,7 +76,7 @@ TEST(Interpolation, ASinglePointCurveIsConstant) {
   const std::vector<long> xs{500};
   const std::vector<double> fs{0.07};
   for (double x : {-1000.0, 0.0, 500.0, 1e6}) {
-    const std::optional<double> got = linear_interpolate(xs, fs, x);
+    const cdsmodel::Expected<double> got = linear_interpolate(xs, fs, x);
     ASSERT_TRUE(got.has_value()) << x;
     EXPECT_EQ(*got, 0.07) << x;
   }
@@ -131,7 +131,7 @@ TEST(Interpolation, ThreeSharedAbscissaeTakeTheMiddleValue) {
   const std::vector<long> xs{100, 200, 200, 200, 300};
   const std::vector<double> fs{1.0, 2.0, 3.0, 5.0, 6.0};
   for (Limit limit : {Limit::Left, Limit::Right}) {
-    const std::optional<double> got = linear_interpolate_discontinuous(xs, fs, 200.0, limit);
+    const cdsmodel::Expected<double> got = linear_interpolate_discontinuous(xs, fs, 200.0, limit);
     ASSERT_TRUE(got.has_value());
     EXPECT_EQ(*got, 3.0) << "expected the middle of f[1..3], regardless of the limit";
   }
@@ -159,9 +159,9 @@ TEST(Interpolation, DirectAndActualDaysDifferOnlyOnAZeroWidthBracket) {
   // ...and opposite infinities when the bracket collapses.
   const std::vector<long> flat{100, 200, 300, 300};
   const std::vector<double> ff{1.0, 2.0, 3.0, 9.0};
-  const std::optional<double> direct =
+  const cdsmodel::Expected<double> direct =
       linear_interpolate_discontinuous(flat, ff, 400.0, Limit::Right, Metric::Direct);
-  const std::optional<double> actual =
+  const cdsmodel::Expected<double> actual =
       linear_interpolate_discontinuous(flat, ff, 400.0, Limit::Right, Metric::ActualDays);
   ASSERT_TRUE(direct.has_value());
   ASSERT_TRUE(actual.has_value());
@@ -185,7 +185,7 @@ TEST(Interpolation, ManyIsTheLoopOverOne) {
   const std::vector<long> xs{100, 200, 400, 800};
   const std::vector<double> fs{0.01, 0.02, 0.025, 0.03};
   const std::vector<long> desired{50, 100, 150, 300, 700, 900};
-  const std::optional<std::vector<double>> many = linear_interpolate_many(xs, fs, desired);
+  const cdsmodel::Expected<std::vector<double>> many = linear_interpolate_many(xs, fs, desired);
   ASSERT_TRUE(many.has_value());
   ASSERT_EQ(many->size(), desired.size());
   for (std::size_t i = 0; i < desired.size(); ++i) {
@@ -203,7 +203,8 @@ TEST(Interpolation, MatchesRecordedPointResults) {
   for (const auto &c : cdsmodel::golden::kInterpCases) {
     const std::vector<long> xs(c.xs.begin(), c.xs.begin() + static_cast<std::ptrdiff_t>(c.n));
     const std::vector<double> fs(c.fs.begin(), c.fs.begin() + static_cast<std::ptrdiff_t>(c.n));
-    const std::optional<double> got = linear_interpolate(xs, fs, c.desired, metric_of(c.metric));
+    const cdsmodel::Expected<double> got =
+        linear_interpolate(xs, fs, c.desired, metric_of(c.metric));
     const std::string where = "n=" + std::to_string(c.n) + " at " + std::to_string(c.desired) +
                               " metric " + std::to_string(c.metric);
     ASSERT_EQ(got.has_value(), c.solved) << where;
@@ -229,7 +230,7 @@ TEST(Interpolation, MatchesRecordedDiscontinuousResults) {
   for (const auto &c : cdsmodel::golden::kDiscontinuousCases) {
     const std::vector<long> xs(c.xs.begin(), c.xs.begin() + static_cast<std::ptrdiff_t>(c.n));
     const std::vector<double> fs(c.fs.begin(), c.fs.begin() + static_cast<std::ptrdiff_t>(c.n));
-    const std::optional<double> got = linear_interpolate_discontinuous(
+    const cdsmodel::Expected<double> got = linear_interpolate_discontinuous(
         xs, fs, c.desired, c.right_limit ? Limit::Right : Limit::Left, metric_of(c.metric));
     const std::string where = "n=" + std::to_string(c.n) + " at " + std::to_string(c.desired) +
                               " metric " + std::to_string(c.metric) +
