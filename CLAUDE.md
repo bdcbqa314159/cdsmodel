@@ -63,6 +63,32 @@ documented difference into a silent one.
 three surfaces) and `python verify.py claims` (no upstream function claimed by
 two headers).
 
+## The error channel
+
+A function reports failure by returning `cdsmodel::Expected<T>` carrying a
+kind and a message that names the offending value. **No namespace-scope
+function in `include/cdsmodel/` returns `std::optional`.**
+
+`std::optional` remains correct where `nullopt` means *legitimately absent* --
+an optional parameter, a struct field with no value yet, a lookup miss. The
+test is semantic: **absent is `optional`, failed is `Expected`.** Exemptions
+are named individually in the gate, never granted by pattern.
+
+Propagation is not a kind. A caller forwarding a callee's failure passes the
+original kind and message through unchanged; inventing a wrapper at each layer
+buries the one reason the caller needs.
+
+`Expected<T>` is a C++20 stand-in whose API is a **strict subset** of
+`std::expected`'s, and it may not grow a member `std::expected` lacks -- that
+subset is what lets it become a type alias and a deletion if this project ever
+moves to C++23 for its own reasons.
+
+→ enforced by `python verify.py error-channel` (return types, named
+exemptions, and a floor on DISTINCT error messages -- a non-empty check alone
+would pass 341 copies of "invalid input").
+
+Rationale and the measurements behind the four kinds: `specs/01_error_channel.md`.
+
 ## Formatting
 
 `clang-format` covers `include/`, `src/` and `tests/` only. Upstream C is never
