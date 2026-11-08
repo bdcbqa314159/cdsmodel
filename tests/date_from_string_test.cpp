@@ -19,7 +19,7 @@ TEST(DateFromStringGolden, MatchesEveryRecordedCase) {
   int accepted = 0;
   int refused = 0;
   for (const cdsmodel::golden::DateFromStringCase &c : cdsmodel::golden::kDateFromStringCases) {
-    const std::optional<cdsmodel::Date> got = cdsmodel::date_from_string(c.input);
+    const cdsmodel::Expected<cdsmodel::Date> got = cdsmodel::date_from_string(c.input);
     ASSERT_EQ(c.accepted, got.has_value()) << "acceptance differs for \"" << c.input << "\"";
     if (c.accepted) {
       ++accepted;
@@ -47,7 +47,7 @@ TEST(DateFromStringGolden, TheComparisonWouldNoticeAWrongDate) {
     }
   }
   ASSERT_NE(first_accepted, nullptr) << "the file records no accepted case at all";
-  const std::optional<cdsmodel::Date> got = cdsmodel::date_from_string(first_accepted->input);
+  const cdsmodel::Expected<cdsmodel::Date> got = cdsmodel::date_from_string(first_accepted->input);
   ASSERT_TRUE(got.has_value());
   EXPECT_NE(first_accepted->tdate + 1, cdsmodel::to_tdate(*got));
 }

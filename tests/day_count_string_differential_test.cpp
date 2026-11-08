@@ -28,18 +28,18 @@ protected:
   void SetUp() override { JpmcdsErrMsgOff(); }
 };
 
-std::optional<long> reference_parse(const std::string &s) {
+cdsmodel::Expected<long> reference_parse(const std::string &s) {
   long code = 0;
   std::string mutable_copy = s; // upstream takes char*, not const char*
   if (JpmcdsStringToDayCountConv(mutable_copy.data(), &code) != SUCCESS) {
-    return std::nullopt;
+    return cdsmodel::fail(cdsmodel::ErrorKind::bad_argument, "test fixture could not be built");
   }
   return code;
 }
 
 void expect_parse_matches(const std::string &s) {
-  const std::optional<long> reference = reference_parse(s);
-  const std::optional<long> ported = cdsmodel::parse_day_count_code(s);
+  const cdsmodel::Expected<long> reference = reference_parse(s);
+  const cdsmodel::Expected<long> ported = cdsmodel::parse_day_count_code(s);
 
   ASSERT_EQ(ported.has_value(), reference.has_value())
       << "validity disagreement for \"" << s << "\"";
@@ -196,7 +196,7 @@ TEST_F(DayCountStringDifferential, RoundTripFormatThenParseForCalculableConventi
 TEST_F(DayCountStringDifferential, NoneDoesNotRoundTripUpstreamEither) {
   // "NONE" parses to code 0, which upstream's formatter has no case for.
   // Asserted against upstream so this records its behaviour, not just ours.
-  const std::optional<long> parsed = reference_parse("NONE");
+  const cdsmodel::Expected<long> parsed = reference_parse("NONE");
   ASSERT_TRUE(parsed.has_value());
   EXPECT_EQ(*parsed, 0);
   EXPECT_STREQ(JpmcdsFormatDayCountConv(0), "unrecognized");

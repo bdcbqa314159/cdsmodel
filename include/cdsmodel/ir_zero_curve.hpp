@@ -57,6 +57,7 @@
 #include <cdsmodel/curve_instruments.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/swap_bootstrap.hpp>
 #include <cdsmodel/zero_curve.hpp>
 
@@ -106,8 +107,7 @@ struct InstrumentQuote {
 /// argument contract to violate -- and no locale either, which `toupper` does
 /// consult: under a locale where `'s'` uppercases to something other than
 /// `'S'`, upstream's parse changes. That is a second reason not to use it.
-[[nodiscard]] constexpr std::optional<InstrumentKind>
-instrument_kind_from_code(char code) noexcept {
+[[nodiscard]] constexpr Expected<InstrumentKind> instrument_kind_from_code(char code) noexcept {
   switch (code) {
   case 'M':
   case 'm':
@@ -116,7 +116,7 @@ instrument_kind_from_code(char code) noexcept {
   case 's':
     return InstrumentKind::Swap;
   default:
-    return std::nullopt;
+    return fail(ErrorKind::unsupported, "instrument code must be M or S");
   }
 }
 
@@ -131,13 +131,13 @@ instrument_kind_from_code(char code) noexcept {
 /// `fwdLength` is not a parameter: upstream's is annotated `/* not used */` at
 /// the call site. There is no discount curve parameter either -- upstream
 /// hardcodes `NULL`, meaning the floating leg is taken at par.
-[[nodiscard]] inline std::optional<ZeroCurve>
+[[nodiscard]] inline Expected<ZeroCurve>
 build_ir_zero_curve(Date value_date, std::span<const InstrumentQuote> instruments,
                     DayCount money_market_day_count, const SwapConventions &conventions,
                     const Calendar &calendar) {
   if (instruments.empty()) {
     // Upstream fails here too, via JpmcdsMallocSafe(0). See the header note.
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "no instruments were supplied");
   }
 
   std::vector<RatePoint> cash;
@@ -156,16 +156,25 @@ build_ir_zero_curve(Date value_date, std::span<const InstrumentQuote> instrument
   // curve with no points -- and passes it through both stages. The port's
   // ZeroCurve cannot be empty, so the first stage that has instruments starts
   // from the value date instead. Same two stages, same order.
+  // D7: `optional` for "no stage has run yet", which is a state of the build
+  // rather than a failure. A stage that FAILS returns through the error
+  // channel immediately, so this never holds a failure.
   std::optional<ZeroCurve> curve;
   if (!cash.empty()) {
-    curve = curve_with_cash(value_date, cash, money_market_day_count);
-    if (!curve) {
-      return std::nullopt;
+    const Expected<ZeroCurve> from_cash = curve_with_cash(value_date, cash, money_market_day_count);
+    if (!from_cash) {
+      return unexpected(from_cash.error());
     }
+    curve = *from_cash;
   }
 
   if (swap_dates.empty()) {
-    return curve; // money market only; nullopt is impossible, cash was non-empty
+    // Money market only. `curve` is necessarily set: an empty `cash` with an
+    // empty `swap_dates` was refused above.
+    if (!curve) {
+      return fail(ErrorKind::bad_argument, "no instruments were supplied");
+    }
+    return *curve;
   }
   if (!curve) {
     // Swaps only: upstream hands JpmcdsZCSwaps the zero-point curve, where

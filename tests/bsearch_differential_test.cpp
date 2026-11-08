@@ -22,25 +22,26 @@ namespace {
 
 // Calls upstream and packages its out-params into the port's return type, so
 // the two are directly comparable.
-std::optional<cdsmodel::Bracket> reference_bracket(std::span<const double> xs, double desired) {
+cdsmodel::Expected<cdsmodel::Bracket> reference_bracket(std::span<const double> xs,
+                                                        double desired) {
   int lo = 0;
   int hi = 0;
   // const_cast: upstream takes double* but does not write through it.
   double *data = const_cast<double *>(xs.data());
   if (JpmcdsBSearchDoubleFast(desired, data, sizeof(double), static_cast<int>(xs.size()), &lo,
                               &hi) != SUCCESS) {
-    return std::nullopt;
+    return cdsmodel::fail(cdsmodel::ErrorKind::bad_argument, "test fixture could not be built");
   }
   return cdsmodel::Bracket{static_cast<std::size_t>(lo), static_cast<std::size_t>(hi)};
 }
 
-std::optional<cdsmodel::Bracket> reference_bracket(std::span<const long> xs, double desired) {
+cdsmodel::Expected<cdsmodel::Bracket> reference_bracket(std::span<const long> xs, double desired) {
   int lo = 0;
   int hi = 0;
   long *data = const_cast<long *>(xs.data());
   if (JpmcdsBSearchLongFast(desired, data, sizeof(long), static_cast<int>(xs.size()), &lo, &hi) !=
       SUCCESS) {
-    return std::nullopt;
+    return cdsmodel::fail(cdsmodel::ErrorKind::bad_argument, "test fixture could not be built");
   }
   return cdsmodel::Bracket{static_cast<std::size_t>(lo), static_cast<std::size_t>(hi)};
 }

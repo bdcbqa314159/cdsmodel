@@ -47,14 +47,14 @@ TEST(DateSup, IntervalToYearsAgreesWithTheConventionalValues) {
 
 TEST(DateSup, FrequencyRoundTripsWhereItDividesTwelve) {
   for (long freq : {1, 2, 3, 4, 6, 12}) {
-    const std::optional<DateInterval> iv = cdsmodel::frequency_to_interval(freq);
+    const cdsmodel::Expected<DateInterval> iv = cdsmodel::frequency_to_interval(freq);
     ASSERT_TRUE(iv.has_value()) << freq;
-    const std::optional<double> back = cdsmodel::interval_to_frequency(*iv);
+    const cdsmodel::Expected<double> back = cdsmodel::interval_to_frequency(*iv);
     ASSERT_TRUE(back.has_value()) << freq;
     EXPECT_DOUBLE_EQ(*back, static_cast<double>(freq)) << freq;
   }
   // And does not where it cannot: 12/5 truncates to 2, giving 6 per year.
-  const std::optional<DateInterval> five = cdsmodel::frequency_to_interval(5);
+  const cdsmodel::Expected<DateInterval> five = cdsmodel::frequency_to_interval(5);
   ASSERT_TRUE(five.has_value());
   EXPECT_DOUBLE_EQ(*cdsmodel::interval_to_frequency(*five), 6.0);
 }
@@ -98,7 +98,7 @@ TEST(DateSup, OffsetAtZeroIsIdentityAndNegativeGoesBack) {
 
 TEST(DateSup, MakeDateArrayIsTheOffsetSequence) {
   const DateInterval month{1, PeriodUnit::Months};
-  const std::optional<std::vector<Date>> got =
+  const cdsmodel::Expected<std::vector<Date>> got =
       cdsmodel::make_date_array(d(2024, 1, 31), month, 2, 4);
   ASSERT_TRUE(got.has_value());
   ASSERT_EQ(got->size(), 4u);
@@ -119,11 +119,11 @@ TEST(DateSup, CountDatesIsConsistentWithSteppingTheSameInterval) {
   const DateInterval quarter{3, PeriodUnit::Months};
   const Date from = d(2024, 3, 20);
   for (Date to : {d(2024, 6, 20), d(2025, 1, 1), d(2029, 6, 20), d(2031, 12, 20)}) {
-    const std::optional<cdsmodel::DateCount> got = cdsmodel::count_dates(from, to, quarter);
+    const cdsmodel::Expected<cdsmodel::DateCount> got = cdsmodel::count_dates(from, to, quarter);
     ASSERT_TRUE(got.has_value()) << cdsmodel::to_tdate(to);
-    const std::optional<Date> last =
+    const cdsmodel::Expected<Date> last =
         cdsmodel::date_from_date_and_offset(from, quarter, got->intervals);
-    const std::optional<Date> past =
+    const cdsmodel::Expected<Date> past =
         cdsmodel::date_from_date_and_offset(from, quarter, got->intervals + 1);
     ASSERT_TRUE(last.has_value());
     ASSERT_TRUE(past.has_value());
@@ -151,7 +151,7 @@ TEST(DateSup, BusinessDaysOffsetAlwaysLandsOnABusinessDay) {
       const cdsmodel::AdjustedOffset offset{DateInterval{count, PeriodUnit::Days},
                                             cdsmodel::OffsetBasis::BusinessDays,
                                             cdsmodel::BadDayConv::None};
-      const std::optional<Date> got = cdsmodel::advance_adjusted(start, offset, cal);
+      const cdsmodel::Expected<Date> got = cdsmodel::advance_adjusted(start, offset, cal);
       ASSERT_TRUE(got.has_value()) << count;
       const std::chrono::weekday wd = cdsmodel::day_of_week(*got);
       EXPECT_NE(wd, std::chrono::Saturday) << count;
@@ -168,12 +168,12 @@ TEST(DateSup, BusinessPeriodCarriesTheMonthEnd) {
   const cdsmodel::AdjustedOffset offset{DateInterval{1, PeriodUnit::Months},
                                         cdsmodel::OffsetBasis::BusinessPeriod,
                                         cdsmodel::BadDayConv::Previous};
-  const std::optional<Date> from_eom = cdsmodel::advance_adjusted(d(2024, 2, 29), offset, cal);
+  const cdsmodel::Expected<Date> from_eom = cdsmodel::advance_adjusted(d(2024, 2, 29), offset, cal);
   ASSERT_TRUE(from_eom.has_value());
   EXPECT_EQ(*from_eom, d(2024, 3, 29)) << "31 Mar 2024 is a Sunday, so Previous gives the 29th";
 
   // A mid-month start gets no carry: the 15th plus a month is the 15th.
-  const std::optional<Date> from_mid = cdsmodel::advance_adjusted(d(2024, 2, 15), offset, cal);
+  const cdsmodel::Expected<Date> from_mid = cdsmodel::advance_adjusted(d(2024, 2, 15), offset, cal);
   ASSERT_TRUE(from_mid.has_value());
   EXPECT_EQ(*from_mid, d(2024, 3, 15));
 }
@@ -197,10 +197,10 @@ TEST(DateSup, WeekdaysBasisRequiresADayInterval) {
 TEST(DateSup, MatchesRecordedIntervalConversions) {
   int checked = 0;
   for (const auto &c : cdsmodel::golden::kIntervalYearsCases) {
-    const std::optional<DateInterval> iv = cdsmodel::make_date_interval(c.periods, c.letter);
+    const cdsmodel::Expected<DateInterval> iv = cdsmodel::make_date_interval(c.periods, c.letter);
     ASSERT_TRUE(iv.has_value()) << c.periods << c.letter;
     EXPECT_EQ(cdsmodel::interval_to_years(*iv), c.years) << c.periods << c.letter;
-    const std::optional<double> freq = cdsmodel::interval_to_frequency(*iv);
+    const cdsmodel::Expected<double> freq = cdsmodel::interval_to_frequency(*iv);
     ASSERT_EQ(freq.has_value(), c.has_frequency) << c.periods << c.letter;
     if (c.has_frequency) {
       EXPECT_EQ(*freq, c.frequency) << c.periods << c.letter;
@@ -213,9 +213,9 @@ TEST(DateSup, MatchesRecordedIntervalConversions) {
 TEST(DateSup, MatchesRecordedOffsets) {
   int checked = 0;
   for (const auto &c : cdsmodel::golden::kOffsetCases) {
-    const std::optional<DateInterval> iv = cdsmodel::make_date_interval(c.periods, c.letter);
+    const cdsmodel::Expected<DateInterval> iv = cdsmodel::make_date_interval(c.periods, c.letter);
     ASSERT_TRUE(iv.has_value());
-    const std::optional<Date> got =
+    const cdsmodel::Expected<Date> got =
         cdsmodel::date_from_date_and_offset(cdsmodel::from_tdate(c.start), *iv, c.index);
     const std::string where = std::to_string(c.periods) + c.letter + " x " +
                               std::to_string(c.index) + " from " + std::to_string(c.start);
@@ -232,9 +232,9 @@ TEST(DateSup, MatchesRecordedCounts) {
   int checked = 0;
   int rejected = 0;
   for (const auto &c : cdsmodel::golden::kCountCases) {
-    const std::optional<DateInterval> iv = cdsmodel::make_date_interval(c.periods, c.letter);
+    const cdsmodel::Expected<DateInterval> iv = cdsmodel::make_date_interval(c.periods, c.letter);
     ASSERT_TRUE(iv.has_value());
-    const std::optional<cdsmodel::DateCount> got =
+    const cdsmodel::Expected<cdsmodel::DateCount> got =
         cdsmodel::count_dates(cdsmodel::from_tdate(c.from), cdsmodel::from_tdate(c.to), *iv);
     const std::string where = std::to_string(c.periods) + c.letter + " " + std::to_string(c.from) +
                               " -> " + std::to_string(c.to);
@@ -255,7 +255,7 @@ TEST(DateSup, MatchesRecordedAdjustedOffsets) {
   const cdsmodel::Calendar cal = weekends();
   int checked = 0;
   for (const auto &c : cdsmodel::golden::kFwdAdjustCases) {
-    const std::optional<DateInterval> iv = cdsmodel::make_date_interval(c.periods, c.letter);
+    const cdsmodel::Expected<DateInterval> iv = cdsmodel::make_date_interval(c.periods, c.letter);
     ASSERT_TRUE(iv.has_value());
     // The recorded basis is upstream's isBusDays; BUSINESS splits on the unit
     // letter, which is why the port names the two cases separately.
@@ -268,7 +268,7 @@ TEST(DateSup, MatchesRecordedAdjustedOffsets) {
     }
     const cdsmodel::AdjustedOffset offset{
         *iv, basis, *cdsmodel::bad_day_conv_from_upstream(static_cast<long>(c.bad_day))};
-    const std::optional<Date> got =
+    const cdsmodel::Expected<Date> got =
         cdsmodel::advance_adjusted(cdsmodel::from_tdate(c.start), offset, cal);
     const std::string where = std::to_string(c.periods) + c.letter + " basis " +
                               std::to_string(c.basis) + " conv " + std::string(1, c.bad_day) +

@@ -22,6 +22,8 @@
 //   - days[] / leapDays[] / cumDays[] / leapCumDays[] month tables.
 //   - the JPMCDS_IS_LEAP macro.
 
+#include <cdsmodel/expected.hpp>
+
 #include <array>
 #include <chrono>
 #include <limits>
@@ -132,18 +134,22 @@ inline constexpr TDate kMaxTDate = static_cast<TDate>(std::numeric_limits<detail
 /// (status code plus out-param). Validation matches upstream: year at or
 /// after the epoch year, month in 1-12, day in 1-31 and no later than the
 /// month's last day.
-[[nodiscard]] constexpr std::optional<Date> make_date(int year, int month, int day) noexcept {
+[[nodiscard]] constexpr Expected<Date> make_date(int year, int month, int day) noexcept {
   if (year < static_cast<int>(kMinYear)) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "year " + detail::num(year) +
+                                             " is before the epoch year " +
+                                             detail::num(static_cast<int>(kMinYear)));
   }
   if (month < 1 || month > 12 || day < 1 || day > 31) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "month " + detail::num(month) + " and day " +
+                                             detail::num(day) + " are not a possible date");
   }
   const std::chrono::year_month_day ymd{std::chrono::year{year},
                                         std::chrono::month{static_cast<unsigned>(month)},
                                         std::chrono::day{static_cast<unsigned>(day)}};
   if (!ymd.ok()) { // e.g. 31 April, or 29 February in a common year
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "day " + detail::num(day) + " does not exist in month " +
+                                             detail::num(month) + " of year " + detail::num(year));
   }
   return Date{ymd};
 }
@@ -203,7 +209,7 @@ inline constexpr TDate kMaxTDate = static_cast<TDate>(std::numeric_limits<detail
 /// lands past it. Confirmed: `stack-buffer-overflow` at convert.c:395. See the
 /// register. Here the token is a `string_view` and its length is checked
 /// before any character is touched.
-[[nodiscard]] inline std::optional<Date> date_from_string(std::string_view text) {
+[[nodiscard]] inline Expected<Date> date_from_string(std::string_view text) {
   // Upstream copies into a 32-byte buffer and truncates, so a longer input is
   // parsed from its first 31 characters. Reproduced, because truncation is
   // observable: "03/15/2024" followed by padding still parses.
@@ -211,6 +217,9 @@ inline constexpr TDate kMaxTDate = static_cast<TDate>(std::numeric_limits<detail
 
   constexpr std::string_view kDelimiters = "-/. ";
 
+  // D7: `optional`, not `Expected`. A token that is not a month name is a
+  // parse ALTERNATIVE -- the caller then reads it as a day -- not a failure to
+  // report. Inventing an error message here would describe a non-event.
   const auto to_month_name = [](std::string_view token) -> std::optional<int> {
     // Upstream compares the lowercased first three characters against three-
     // letter names, so a token of any other length cannot match -- "January"
@@ -237,6 +246,7 @@ inline constexpr TDate kMaxTDate = static_cast<TDate>(std::numeric_limits<detail
   // A non-negative integer, or nullopt. Upstream reaches this through
   // JpmcdsSscanf, which overflows a signed long on a long digit run -- see
   // UPSTREAM-38's second observation. Bounded here.
+  // D7: same -- "not a number" selects the month-name branch.
   const auto to_number = [](std::string_view token) -> std::optional<long> {
     if (token.empty()) {
       return std::nullopt;
@@ -258,7 +268,9 @@ inline constexpr TDate kMaxTDate = static_cast<TDate>(std::numeric_limits<detail
     // The undelimited YYYYMMDD form, which upstream requires to be exactly
     // eight characters.
     if (text.size() != 8) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument,
+                  "an undelimited date must be exactly 8 characters (YYYYMMDD), got " +
+                      detail::num(text.size()));
     }
     const std::optional<long> year = to_number(text.substr(0, 4));
     const std::optional<long> month = to_number(text.substr(4, 2));
@@ -268,7 +280,8 @@ inline constexpr TDate kMaxTDate = static_cast<TDate>(std::numeric_limits<detail
     // can, but reproduces the refusal: a zero month or day is invalid anyway,
     // and a zero YEAR is below the epoch and would be refused next.
     if (!year || !month || !day || *year == 0 || *month == 0 || *day == 0) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument,
+                  "undelimited date \"" + std::string(text) + "\" has a non-numeric or zero field");
     }
     return make_date(static_cast<int>(*year), static_cast<int>(*month), static_cast<int>(*day));
   }
@@ -291,7 +304,9 @@ inline constexpr TDate kMaxTDate = static_cast<TDate>(std::numeric_limits<detail
     pos = end;
   }
   if (found < 3) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "a delimited date needs 3 fields, found " +
+                                             detail::num(found) + " in \"" + std::string(text) +
+                                             "\"");
   }
 
   long month = 0;
@@ -303,7 +318,8 @@ inline constexpr TDate kMaxTDate = static_cast<TDate>(std::numeric_limits<detail
     month = *name;
     first_was_a_name = true;
   } else {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument,
+                "field 1 of \"" + std::string(text) + "\" is neither a number nor a month name");
   }
 
   if (const std::optional<long> n = to_number(tokens[1])) {
@@ -314,7 +330,10 @@ inline constexpr TDate kMaxTDate = static_cast<TDate>(std::numeric_limits<detail
     day = month;
     const std::optional<int> name = to_month_name(tokens[1]);
     if (first_was_a_name || !name) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument,
+                  first_was_a_name
+                      ? std::string("a date cannot have two month names")
+                      : "field 2 of \"" + std::string(text) + "\" is neither a day nor a month");
     }
     month = *name;
   }
@@ -329,13 +348,15 @@ inline constexpr TDate kMaxTDate = static_cast<TDate>(std::numeric_limits<detail
   // the port refuse instead of reproduce. See the register.
   const std::optional<long> parsed_year = to_number(tokens[2]);
   if (!parsed_year) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "field 3 of \"" + std::string(text) + "\" is not a year");
   }
   long year = *parsed_year;
   // Years from 100 to 1600 are refused, which is what keeps the +1900 branch
   // below from ever seeing a three-digit value.
   if (year > 99 && year < static_cast<long>(static_cast<int>(kMinYear))) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "year " + detail::num(year) + " is out of range: 100 to " +
+                                             detail::num(static_cast<int>(kMinYear) - 1) +
+                                             " cannot be read as a 2- or 4-digit year");
   }
   if (year < 60) {
     year += 2000; // CROSSOVER_YEAR
@@ -407,10 +428,10 @@ inline constexpr TDate kMaxTDate = static_cast<TDate>(std::numeric_limits<detail
 ///   - a day outside 1-31 entirely is REJECTED
 /// Note upstream does not range-check the year here, so neither does this;
 /// the epoch floor is enforced by make_date instead.
-[[nodiscard]] constexpr std::optional<std::chrono::year_month_day>
-normalize_ymd(int year, int month, int day) noexcept {
+[[nodiscard]] constexpr Expected<std::chrono::year_month_day> normalize_ymd(int year, int month,
+                                                                            int day) noexcept {
   if (day < 1 || day > 31) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "day " + detail::num(day) + " is not in 1..31");
   }
   // Done in a wider type on purpose. `month` is any int, so `month - 1`
   // overflows at INT_MIN and `year + carry` overflows at either extreme.
@@ -429,7 +450,8 @@ normalize_ymd(int year, int month, int day) noexcept {
   // date. Upstream has no equivalent check -- its month-carry loops would
   // simply run on -- but it cannot produce such a year from a valid TDate.
   if (normalised_year < -32767 || normalised_year > 32767) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument,
+                "year " + detail::num(normalised_year) + " is outside the representable range");
   }
 
   const std::chrono::year y{static_cast<int>(normalised_year)};

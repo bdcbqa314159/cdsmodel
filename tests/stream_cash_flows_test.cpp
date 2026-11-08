@@ -36,7 +36,7 @@ void expect_recorded(double want, double got, const char *what, std::size_t wher
 }
 
 cdsmodel::DayCount dcc_of(long code) {
-  const std::optional<cdsmodel::DayCount> d = cdsmodel::from_upstream_code(code);
+  const cdsmodel::Expected<cdsmodel::DayCount> d = cdsmodel::from_upstream_code(code);
   return d.value_or(cdsmodel::DayCount::Act360);
 }
 
@@ -44,8 +44,8 @@ cdsmodel::DayCount dcc_of(long code) {
 /// separately -- the port's own generator produces them, and coupon_schedule
 /// is pinned by its own vectors, so recording them twice would only let the
 /// two copies disagree.
-std::optional<cdsmodel::CouponSchedule> schedule_of(cdsmodel::Date start, cdsmodel::Date maturity,
-                                                    int months, bool stub_at_end) {
+cdsmodel::Expected<cdsmodel::CouponSchedule>
+schedule_of(cdsmodel::Date start, cdsmodel::Date maturity, int months, bool stub_at_end) {
   return cdsmodel::coupon_schedule(
       {.start = start,
        .maturity = maturity,
@@ -60,7 +60,7 @@ cdsmodel::ZeroCurve recorded_curve() {
     points.push_back(
         cdsmodel::RatePoint{cdsmodel::from_tdate(kStreamCurveDates[i]), kStreamCurveRates[i]});
   }
-  const std::optional<cdsmodel::ZeroCurve> curve = cdsmodel::ZeroCurve::create(
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> curve = cdsmodel::ZeroCurve::create(
       cdsmodel::from_tdate(kStreamCurveBaseDate), points, 1.0, cdsmodel::DayCount::Act365Fixed);
   return *curve;
 }
@@ -69,21 +69,22 @@ TEST(StreamCashFlowsGolden, ReplaysRecordedFixedLegs) {
   ASSERT_GE(kFixedLegCases.size(), 50u);
   int matched = 0;
   for (const FixedLegCase &c : kFixedLegCases) {
-    const std::optional<cdsmodel::CouponSchedule> schedule = schedule_of(
+    const cdsmodel::Expected<cdsmodel::CouponSchedule> schedule = schedule_of(
         cdsmodel::from_tdate(c.start), cdsmodel::from_tdate(c.maturity), c.months, c.stub_at_end);
     ASSERT_TRUE(schedule.has_value());
     ASSERT_EQ(static_cast<long>(schedule->stub), c.stub_location)
         << "the schedule the case was recorded from no longer reproduces";
 
-    const std::optional<std::vector<cdsmodel::CashFlow>> got = cdsmodel::fixed_stream_cash_flows(
-        {.schedule = *schedule,
-         .principal = 1.0e6,
-         .pay_day_count = dcc_of(c.day_count),
-         .principal_flows = {.subtract_initial = c.subtract_initial != 0,
-                             .add_final = c.add_final != 0},
-         .first_coupon_rate = c.first_coupon_rate,
-         .final_coupon_rate = c.final_coupon_rate,
-         .fixed_rate = c.fixed_rate});
+    const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got =
+        cdsmodel::fixed_stream_cash_flows(
+            {.schedule = *schedule,
+             .principal = 1.0e6,
+             .pay_day_count = dcc_of(c.day_count),
+             .principal_flows = {.subtract_initial = c.subtract_initial != 0,
+                                 .add_final = c.add_final != 0},
+             .first_coupon_rate = c.first_coupon_rate,
+             .final_coupon_rate = c.final_coupon_rate,
+             .fixed_rate = c.fixed_rate});
     ASSERT_TRUE(got.has_value());
     ASSERT_EQ(got->size(), c.flow_count);
     for (std::size_t i = 0; i < c.flow_count; ++i) {
@@ -102,7 +103,7 @@ TEST(StreamCashFlowsGolden, ReplaysRecordedFloatingLegs) {
   int matched = 0;
   int refused = 0;
   for (const FloatLegCase &c : kFloatLegCases) {
-    const std::optional<cdsmodel::CouponSchedule> schedule = schedule_of(
+    const cdsmodel::Expected<cdsmodel::CouponSchedule> schedule = schedule_of(
         cdsmodel::from_tdate(c.start), cdsmodel::from_tdate(c.maturity), c.months, c.stub_at_end);
     ASSERT_TRUE(schedule.has_value());
 
@@ -120,8 +121,9 @@ TEST(StreamCashFlowsGolden, ReplaysRecordedFloatingLegs) {
                  .spot_offset = cdsmodel::calendar_day_offset(c.spot_offset_days),
                  .spread = c.spread,
                  .weight = 1.0}};
-    const std::optional<std::vector<cdsmodel::CashFlow>> got = cdsmodel::float_stream_cash_flows(
-        curve, interp, stream, cdsmodel::BadDayConv::None, cdsmodel::Calendar::none());
+    const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got =
+        cdsmodel::float_stream_cash_flows(curve, interp, stream, cdsmodel::BadDayConv::None,
+                                          cdsmodel::Calendar::none());
     if (!c.accepted) {
       EXPECT_FALSE(got.has_value());
       ++refused;
@@ -147,7 +149,7 @@ TEST(StreamCashFlowsGolden, ReplaysRecordedFloatingLegs) {
 // would not catch if the generator had ignored it too.
 TEST(StreamCashFlowsGolden, InterpolationTypeChangesFloatingAmounts) {
   const cdsmodel::ZeroCurve curve = recorded_curve();
-  const std::optional<cdsmodel::CouponSchedule> schedule = schedule_of(
+  const cdsmodel::Expected<cdsmodel::CouponSchedule> schedule = schedule_of(
       cdsmodel::from_tdate(kStreamCurveBaseDate), *cdsmodel::make_date(2029, 4, 15), 6, false);
   ASSERT_TRUE(schedule.has_value());
   const cdsmodel::FloatStream stream{
@@ -158,10 +160,10 @@ TEST(StreamCashFlowsGolden, InterpolationTypeChangesFloatingAmounts) {
                .pay_interval = {6, cdsmodel::PeriodUnit::Months},
                .day_count = cdsmodel::DayCount::Act360}};
 
-  const std::optional<std::vector<cdsmodel::CashFlow>> linear =
+  const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> linear =
       cdsmodel::float_stream_cash_flows(curve, cdsmodel::InterpType::Linear, stream,
                                         cdsmodel::BadDayConv::None, cdsmodel::Calendar::none());
-  const std::optional<std::vector<cdsmodel::CashFlow>> flat =
+  const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> flat =
       cdsmodel::float_stream_cash_flows(curve, cdsmodel::InterpType::FlatForwards, stream,
                                         cdsmodel::BadDayConv::None, cdsmodel::Calendar::none());
   ASSERT_TRUE(linear.has_value());
@@ -179,7 +181,7 @@ TEST(StreamCashFlowsGolden, InterpolationTypeChangesFloatingAmounts) {
 
 // One flow per period, plus one if the initial principal is paid out.
 TEST(StreamCashFlowsGolden, FlowCountFollowsThePrincipalFlags) {
-  const std::optional<cdsmodel::CouponSchedule> schedule =
+  const cdsmodel::Expected<cdsmodel::CouponSchedule> schedule =
       schedule_of(*cdsmodel::make_date(2024, 1, 15), *cdsmodel::make_date(2029, 4, 15), 6, false);
   ASSERT_TRUE(schedule.has_value());
   const std::size_t periods = schedule->periods.size();
@@ -187,12 +189,13 @@ TEST(StreamCashFlowsGolden, FlowCountFollowsThePrincipalFlags) {
 
   for (const bool subtract_initial : {false, true}) {
     for (const bool add_final : {false, true}) {
-      const std::optional<std::vector<cdsmodel::CashFlow>> got = cdsmodel::fixed_stream_cash_flows(
-          {.schedule = *schedule,
-           .principal = 1.0e6,
-           .pay_day_count = cdsmodel::DayCount::Act360,
-           .principal_flows = {.subtract_initial = subtract_initial, .add_final = add_final},
-           .fixed_rate = 0.04});
+      const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got =
+          cdsmodel::fixed_stream_cash_flows(
+              {.schedule = *schedule,
+               .principal = 1.0e6,
+               .pay_day_count = cdsmodel::DayCount::Act360,
+               .principal_flows = {.subtract_initial = subtract_initial, .add_final = add_final},
+               .fixed_rate = 0.04});
       ASSERT_TRUE(got.has_value());
       EXPECT_EQ(got->size(), periods + (subtract_initial ? 1u : 0u));
       if (subtract_initial) {
@@ -210,7 +213,7 @@ TEST(StreamCashFlowsGolden, FlowCountFollowsThePrincipalFlags) {
 // A zero principal and an absurd fixed rate are both refused, which is
 // upstream's CheckFixedStreamDetails -- minus the value date it never read.
 TEST(StreamCashFlowsGolden, AMalformedFixedStreamIsRefused) {
-  const std::optional<cdsmodel::CouponSchedule> schedule =
+  const cdsmodel::Expected<cdsmodel::CouponSchedule> schedule =
       schedule_of(*cdsmodel::make_date(2024, 1, 15), *cdsmodel::make_date(2029, 1, 15), 6, false);
   ASSERT_TRUE(schedule.has_value());
 

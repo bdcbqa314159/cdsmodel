@@ -242,7 +242,7 @@ TEST_F(ZeroCurveDifferential, ConstructionAcceptsAndRejectsTheSameRates) {
       TCurve *ref =
           JpmcdsMakeTCurve(cdsmodel::to_tdate(base), dates, rates, 1, basis, JPMCDS_ACT_365F);
       const std::vector<cdsmodel::RatePoint> pts{{mat, rate}};
-      const std::optional<cdsmodel::ZeroCurve> got =
+      const cdsmodel::Expected<cdsmodel::ZeroCurve> got =
           cdsmodel::ZeroCurve::create(base, pts, basis, cdsmodel::DayCount::Act365Fixed);
       EXPECT_EQ(got.has_value(), ref != nullptr) << "basis " << basis << " rate " << rate;
       if (ref != nullptr) {
@@ -273,7 +273,7 @@ TEST_F(ZeroCurveDifferential, Upstream15_AValidatingConstructorAdmitsUnpriceable
     JpmcdsFreeTCurve(ref);
 
     // The port refuses the curve instead, so there is nothing to misprice.
-    const std::optional<cdsmodel::DayCount> ported = cdsmodel::from_upstream_code(dcc);
+    const cdsmodel::Expected<cdsmodel::DayCount> ported = cdsmodel::from_upstream_code(dcc);
     ASSERT_TRUE(ported.has_value());
     const std::vector<cdsmodel::RatePoint> pts{{mat, 0.05}};
     EXPECT_FALSE(cdsmodel::ZeroCurve::create(base, pts, 1.0, *ported).has_value())

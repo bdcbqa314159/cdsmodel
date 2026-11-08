@@ -712,7 +712,7 @@ void u14() {
   std::printf("\n  interpolating a {0.01, 0.02} curve at -50 with 30/360:\n");
   std::printf("    upstream -> %.10g   (reported %s)\n", garbage,
               rc == SUCCESS ? "SUCCESS" : "FAILURE");
-  const std::optional<double> ported =
+  const cdsmodel::Expected<double> ported =
       cdsmodel::linear_interpolate(std::vector<long>{100, 200}, std::vector<double>{0.01, 0.02},
                                    -50.0, cdsmodel::Metric::Bond30_360);
   std::printf("    port     -> %.10g   (a defined extrapolation below the first node)\n",
@@ -789,7 +789,7 @@ void u15() {
     JpmcdsFreeTCurve(over);
   }
   const std::vector<cdsmodel::RatePoint> pts{{cdsmodel::from_tdate(three[0]), -400.0}};
-  const std::optional<cdsmodel::ZeroCurve> ported = cdsmodel::ZeroCurve::create(
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> ported = cdsmodel::ZeroCurve::create(
       cdsmodel::from_tdate(base), pts, cdsmodel::kContinuousBasis, cdsmodel::DayCount::Act365Fixed);
   std::printf("  port     -> %g\n",
               ported ? ported->zero_price(cdsmodel::from_tdate(three[0])) : 0.0);
@@ -850,7 +850,7 @@ void u16() {
 
   std::printf("The port, same two inputs:\n\n");
   for (const TDate date : {JpmcdsDate(2029, 1, 1), value_date}) {
-    std::optional<cdsmodel::ZeroCurveBuilder> b = cdsmodel::ZeroCurveBuilder::create(
+    cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> b = cdsmodel::ZeroCurveBuilder::create(
         cdsmodel::from_tdate(value_date), 4, 1, cdsmodel::DayCount::Act365Fixed);
     const bool ok =
         b->add_general_rate(cdsmodel::from_tdate(date), 0.05, 1, cdsmodel::DayCount::Act365Fixed);
@@ -926,12 +926,13 @@ void u17() {
               "Here the general path is on record calling the same input an ERROR.\n\n");
 
   std::printf("The port, same three rates:\n\n");
-  std::optional<cdsmodel::ZeroCurveBuilder> port = cdsmodel::ZeroCurveBuilder::create(
+  cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> port = cdsmodel::ZeroCurveBuilder::create(
       cdsmodel::from_tdate(value_date), 4, 1, cdsmodel::DayCount::Act365Fixed);
   std::printf("  %-12s %-26s %s\n", "rate", "compute_discount", "general path");
   for (const double rate : {-0.9999999, -1.0, -1.5}) {
-    const std::optional<double> fast = port->compute_discount(cdsmodel::from_tdate(date), rate);
-    const std::optional<double> general =
+    const cdsmodel::Expected<double> fast =
+        port->compute_discount(cdsmodel::from_tdate(date), rate);
+    const cdsmodel::Expected<double> general =
         cdsmodel::rate_to_discount(rate, cdsmodel::from_tdate(value_date),
                                    cdsmodel::from_tdate(date), cdsmodel::DayCount::Act365Fixed, 1);
     char a[40] = "refused";
@@ -1008,15 +1009,15 @@ void u18() {
   std::printf("The port, same sweep:\n\n");
   std::printf("  %-10s %-16s %s\n", "rate", "df(start)", "forward discount factor");
   for (const double rate : {20.0, 24.0, 25.0, 30.0}) {
-    std::optional<cdsmodel::ZeroCurveBuilder> b = cdsmodel::ZeroCurveBuilder::create(
+    cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> b = cdsmodel::ZeroCurveBuilder::create(
         cdsmodel::from_tdate(value_date), 8, 5000, cdsmodel::DayCount::Act365Fixed);
     if (!b->add_rate(cdsmodel::from_tdate(start), rate) ||
         !b->add_rate(cdsmodel::from_tdate(end), rate)) {
       continue;
     }
-    const std::optional<double> df =
+    const cdsmodel::Expected<double> df =
         b->discount_factor(cdsmodel::from_tdate(start), cdsmodel::InterpType::Linear);
-    const std::optional<double> fwd = b->forward_discount_factor(
+    const cdsmodel::Expected<double> fwd = b->forward_discount_factor(
         cdsmodel::from_tdate(start), cdsmodel::from_tdate(end), cdsmodel::InterpType::Linear);
     char shown[40] = "refused";
     if (fwd) {
@@ -1083,7 +1084,7 @@ void u19() {
   std::printf("Straight at the conversion, no curve involved:\n\n"
               "  JpmcdsDiscountToRate(NaN, ...) -> %s  rate=%g\n",
               rc_direct == SUCCESS ? "SUCCESS" : "FAILURE", direct);
-  const std::optional<double> ported =
+  const cdsmodel::Expected<double> ported =
       cdsmodel::discount_to_rate(nan_value, cdsmodel::from_tdate(start), cdsmodel::from_tdate(end),
                                  cdsmodel::DayCount::Act365Fixed, 0);
   std::printf("  port discount_to_rate(NaN, ...) -> %s\n\n", ported ? "SUCCESS (!)" : "refused");
@@ -1272,7 +1273,7 @@ void u21(bool unsafe) {
   }
 
   std::printf("\nThe port refuses an empty span before anything reads from it:\n");
-  std::optional<cdsmodel::ZeroCurveBuilder> port = cdsmodel::ZeroCurveBuilder::create(
+  cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> port = cdsmodel::ZeroCurveBuilder::create(
       cdsmodel::from_tdate(JpmcdsDate(2024, 1, 1)), 8, 1, cdsmodel::DayCount::Act365Fixed);
   (void)port->add_rate(cdsmodel::from_tdate(JpmcdsDate(2025, 1, 1)), 0.05);
   std::printf(
@@ -1321,7 +1322,7 @@ void u22() {
               "caller believes, which is how one silent no-op becomes a wrong curve\n"
               "rather than a missing point.\n\n");
 
-  std::optional<cdsmodel::ZeroCurveBuilder> port = cdsmodel::ZeroCurveBuilder::create(
+  cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> port = cdsmodel::ZeroCurveBuilder::create(
       cdsmodel::from_tdate(JpmcdsDate(2024, 1, 1)), 16, 1, cdsmodel::DayCount::Act365Fixed);
   for (int i = 1; i <= 3; ++i) {
     (void)port->add_rate(cdsmodel::from_tdate(JpmcdsDate(2024 + i, 1, 1)),
@@ -1707,7 +1708,7 @@ void u26() {
   const std::vector<cdsmodel::Calendar> calendars{cdsmodel::Calendar::none()};
   const std::vector<cdsmodel::BadDayPair> port_table{
       {cdsmodel::from_tdate(listed), cdsmodel::from_tdate(monday)}};
-  const auto show = [](const char *tag, std::optional<cdsmodel::Date> date) {
+  const auto show = [](const char *tag, const cdsmodel::Expected<cdsmodel::Date> &date) {
     std::printf("  %-42s %s\n", tag,
                 date ? std::to_string(cdsmodel::to_tdate(*date)).c_str() : "refused");
   };
@@ -1909,7 +1910,7 @@ void u28() {
   const std::vector<cdsmodel::RatePoint> points{{cdsmodel::from_tdate(dates[0]), rates[0]},
                                                 {cdsmodel::from_tdate(dates[1]), rates[1]},
                                                 {cdsmodel::from_tdate(dates[2]), rates[2]}};
-  const std::optional<cdsmodel::ZeroCurve> ported = cdsmodel::ZeroCurve::create(
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> ported = cdsmodel::ZeroCurve::create(
       cdsmodel::from_tdate(base), points, 1.0, cdsmodel::DayCount::Act365Fixed);
   if (ported) {
     for (int i = 0; i < 3; ++i) {

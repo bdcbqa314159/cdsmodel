@@ -16,6 +16,7 @@
 
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_interval.hpp>
+#include <cdsmodel/expected.hpp>
 
 #include <cmath>
 #include <cstdlib>
@@ -93,11 +94,10 @@ inline constexpr double kMonthsPerYear = 12.0;
 /// Returns nullopt for a non-positive interval, which upstream reports as
 /// "interval is zero" -- its test is `years > 0.`, so a negative interval is
 /// rejected by the same branch despite the message.
-[[nodiscard]] constexpr std::optional<double>
-interval_to_frequency(DateInterval interval) noexcept {
+[[nodiscard]] constexpr Expected<double> interval_to_frequency(DateInterval interval) noexcept {
   const double years = interval_to_years(interval);
   if (!(years > 0.0)) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the year count must be positive");
   }
   return 1.0 / years;
 }
@@ -109,9 +109,9 @@ interval_to_frequency(DateInterval interval) noexcept {
 /// 5 gives a 2-month interval (2.4 months intended), 7 through 11 all give 1.
 /// That truncation is preserved -- it is observable, and a caller passing 5
 /// has asked for something the type cannot express.
-[[nodiscard]] constexpr std::optional<DateInterval> frequency_to_interval(long freq) noexcept {
+[[nodiscard]] constexpr Expected<DateInterval> frequency_to_interval(long freq) noexcept {
   if (freq <= 0 || freq > 12) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "frequency must be 1 to 12, got " + detail::num(freq));
   }
   return DateInterval{12 / static_cast<int>(freq), PeriodUnit::Months};
 }
@@ -127,8 +127,8 @@ interval_to_frequency(DateInterval interval) noexcept {
 /// Upstream multiplies `prd` by `index` in `int` with no check, so a large
 /// index wraps. The product is formed wide here and the call is rejected
 /// rather than wrapped.
-[[nodiscard]] constexpr std::optional<Date>
-date_from_date_and_offset(Date start, DateInterval interval, int index) noexcept {
+[[nodiscard]] constexpr Expected<Date> date_from_date_and_offset(Date start, DateInterval interval,
+                                                                 int index) noexcept {
   return detail::advance_multiple(start, interval, index);
 }
 
@@ -141,10 +141,11 @@ date_from_date_and_offset(Date start, DateInterval interval, int index) noexcept
 /// is returned in forward order and a caller wanting the other order reverses
 /// it. Writing backwards through a raw pointer is the shape of a buffer
 /// overrun, and the only thing lost is an idiom.
-[[nodiscard]] inline std::optional<std::vector<Date>>
-make_date_array(Date base, DateInterval interval, int start_index, int count) {
+[[nodiscard]] inline Expected<std::vector<Date>> make_date_array(Date base, DateInterval interval,
+                                                                 int start_index, int count) {
   if (count < 0) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument,
+                "the period count must not be negative, got " + detail::num(count));
   }
   std::vector<Date> dates;
   dates.reserve(static_cast<std::size_t>(count));
@@ -152,12 +153,11 @@ make_date_array(Date base, DateInterval interval, int start_index, int count) {
     // Upstream computes `interval->prd * (startIdx + idx)` in int. Widened.
     const long long index = static_cast<long long>(start_index) + i;
     if (index < std::numeric_limits<int>::min() || index > std::numeric_limits<int>::max()) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument, "the period index is not representable as an int");
     }
-    const std::optional<Date> date =
-        date_from_date_and_offset(base, interval, static_cast<int>(index));
+    const Expected<Date> date = date_from_date_and_offset(base, interval, static_cast<int>(index));
     if (!date) {
-      return std::nullopt;
+      return unexpected(date.error());
     }
     dates.push_back(*date);
   }
@@ -188,16 +188,15 @@ struct DateCount {
 /// landing outside the span -- which upstream detects after the fact by
 /// checking that the answer did not come out below the estimate it started
 /// from.
-[[nodiscard]] inline std::optional<DateCount> count_dates(Date from, Date to,
-                                                          DateInterval interval) {
+[[nodiscard]] inline Expected<DateCount> count_dates(Date from, Date to, DateInterval interval) {
   // Upstream's checkDateInterval. Note it is declared TBoolean and returns
   // FAILURE, which only works because TBoolean is a plain int.
   if (interval.periods == 0) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "a zero-period interval cannot step a schedule");
   }
   const long long span = static_cast<long long>(to_tdate(to)) - to_tdate(from);
   if (span * interval.periods < 0) {
-    return std::nullopt; // interval points the wrong way
+    return fail(ErrorKind::bad_argument, "the interval runs away from the target date");
   }
 
   const double interval_years = interval_to_years(interval);
@@ -210,9 +209,9 @@ struct DateCount {
   const int low = estimate > 0.0 ? static_cast<int>(estimate) : 0;
 
   int index = low;
-  std::optional<Date> current = date_from_date_and_offset(from, interval, index);
+  Expected<Date> current = date_from_date_and_offset(from, interval, index);
   if (!current) {
-    return std::nullopt;
+    return unexpected(current.error());
   }
   Date last = *current;
 
@@ -224,13 +223,13 @@ struct DateCount {
     last = *current;
     current = date_from_date_and_offset(from, interval, index);
     if (!current) {
-      return std::nullopt;
+      return unexpected(current.error());
     }
   }
 
   const int intervals = index - 1;
   if (intervals < low) {
-    return std::nullopt; // the low estimate was not inside the span
+    return fail(ErrorKind::bad_argument, "the interval count is below the permitted minimum");
   }
   return DateCount{intervals, std::labs(to_tdate(to) - to_tdate(last))};
 }

@@ -52,22 +52,22 @@ std::vector<double> benchmark_rates(int strip) {
   return out;
 }
 
-std::optional<cdsmodel::ZeroCurveBuilder> seeded_builder() {
-  std::optional<cdsmodel::ZeroCurveBuilder> curve = cdsmodel::ZeroCurveBuilder::create(
+cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> seeded_builder() {
+  cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> curve = cdsmodel::ZeroCurveBuilder::create(
       cdsmodel::from_tdate(kSwapBootstrapValueDate), 8, 1L, cdsmodel::DayCount::Act365Fixed);
   if (!curve) {
-    return std::nullopt;
+    return cdsmodel::unexpected(curve.error());
   }
   for (std::size_t i = 0; i < kSwapBootstrapStubPoints; ++i) {
     if (!curve->add_rate(cdsmodel::from_tdate(kSwapBootstrapStubDates[i]),
                          kSwapBootstrapStubRates[i])) {
-      return std::nullopt;
+      return cdsmodel::unexpected(curve.error());
     }
   }
   return curve;
 }
 
-std::optional<cdsmodel::ZeroCurve> discount_curve() {
+cdsmodel::Expected<cdsmodel::ZeroCurve> discount_curve() {
   std::vector<cdsmodel::RatePoint> points;
   for (std::size_t i = 0; i < kSwapBootstrapDiscountPoints; ++i) {
     points.push_back(cdsmodel::RatePoint{cdsmodel::from_tdate(kSwapBootstrapDiscountDates[i]),
@@ -78,8 +78,9 @@ std::optional<cdsmodel::ZeroCurve> discount_curve() {
 }
 
 cdsmodel::SwapConventions conventions_of(const SwapBootstrapCase &c) {
-  const std::optional<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
-  const std::optional<cdsmodel::BadDayConv> conv = cdsmodel::bad_day_conv_from_upstream(c.conv);
+  const cdsmodel::Expected<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
+  const cdsmodel::Expected<cdsmodel::BadDayConv> conv =
+      cdsmodel::bad_day_conv_from_upstream(c.conv);
   return cdsmodel::SwapConventions{.fixed_frequency = c.frequency,
                                    .float_frequency = c.frequency,
                                    .fixed_day_count = dcc.value_or(cdsmodel::DayCount::Act360),
@@ -91,12 +92,16 @@ cdsmodel::SwapConventions conventions_of(const SwapBootstrapCase &c) {
 
 TEST(SwapBootstrapGolden, ReplaysRecordedCurves) {
   ASSERT_GE(kSwapBootstrapCases.size(), 50u);
-  const std::optional<cdsmodel::ZeroCurve> disc = discount_curve();
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> built = discount_curve();
+  ASSERT_TRUE(built.has_value());
+  // Passed as an optional PARAMETER: "no discount curve" is a valid request,
+  // not a failure, so the call site needs an optional and not an Expected.
+  const std::optional<cdsmodel::ZeroCurve> disc{*built};
   ASSERT_TRUE(disc.has_value());
 
   int matched = 0;
   for (const SwapBootstrapCase &c : kSwapBootstrapCases) {
-    std::optional<cdsmodel::ZeroCurveBuilder> curve = seeded_builder();
+    cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> curve = seeded_builder();
     ASSERT_TRUE(curve.has_value());
 
     const bool ok = cdsmodel::add_swaps(
@@ -132,7 +137,7 @@ TEST(SwapBootstrapGolden, EveryBenchmarkRepricesToParOnItsOwnCurve) {
     if (c.with_discount_curve != 0 || !c.accepted) {
       continue;
     }
-    std::optional<cdsmodel::ZeroCurveBuilder> curve = seeded_builder();
+    cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> curve = seeded_builder();
     ASSERT_TRUE(curve.has_value());
     const cdsmodel::SwapConventions conventions = conventions_of(c);
     const std::vector<cdsmodel::Date> dates = benchmark_dates(c.strip);
@@ -140,9 +145,9 @@ TEST(SwapBootstrapGolden, EveryBenchmarkRepricesToParOnItsOwnCurve) {
     ASSERT_TRUE(cdsmodel::add_swaps(*curve, std::nullopt, dates, rates, conventions, std::nullopt,
                                     cdsmodel::Calendar::none()));
 
-    const std::optional<cdsmodel::ZeroCurve> built = curve->to_zero_curve();
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> built = curve->to_zero_curve();
     ASSERT_TRUE(built.has_value());
-    const std::optional<cdsmodel::DateInterval> interval =
+    const cdsmodel::Expected<cdsmodel::DateInterval> interval =
         cdsmodel::frequency_to_interval(conventions.fixed_frequency);
     ASSERT_TRUE(interval.has_value());
     const std::vector<cdsmodel::Calendar> calendars{cdsmodel::Calendar::none()};
@@ -153,7 +158,7 @@ TEST(SwapBootstrapGolden, EveryBenchmarkRepricesToParOnItsOwnCurve) {
     // benchmark and failed every off-cycle one, which is how this oracle
     // earned its place: it was reporting a real mismatch between what the
     // bootstrap priced and what this test re-priced.
-    const std::optional<std::vector<cdsmodel::SwapDate>> swap_dates =
+    const cdsmodel::Expected<std::vector<cdsmodel::SwapDate>> swap_dates =
         cdsmodel::swap_dates_from_original(curve->value_date(), conventions.fixed_frequency, dates,
                                            std::nullopt, conventions.bad_day, calendars);
     ASSERT_TRUE(swap_dates.has_value());
@@ -162,16 +167,17 @@ TEST(SwapBootstrapGolden, EveryBenchmarkRepricesToParOnItsOwnCurve) {
     for (std::size_t i = 0; i < dates.size(); ++i) {
       bool end_stub = true;
       if (!(*swap_dates)[i].on_cycle) {
-        const std::optional<bool> detected = cdsmodel::is_end_stub(
+        const cdsmodel::Expected<bool> detected = cdsmodel::is_end_stub(
             curve->value_date(), (*swap_dates)[i].original, *interval, conventions.stub_position);
         ASSERT_TRUE(detected.has_value());
         end_stub = *detected;
       }
-      const std::optional<std::vector<cdsmodel::CashFlow>> flows = cdsmodel::swap_cash_flows(
+      const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> flows = cdsmodel::swap_cash_flows(
           curve->value_date(), (*swap_dates)[i].original, end_stub, rates[i], *interval,
           conventions.fixed_day_count, {.conv = conventions.bad_day}, calendars);
       ASSERT_TRUE(flows.has_value()) << "benchmark " << i;
-      const std::optional<double> pv = cdsmodel::cash_flow_pv(*built, *flows, conventions.interp);
+      const cdsmodel::Expected<double> pv =
+          cdsmodel::cash_flow_pv(*built, *flows, conventions.interp);
       ASSERT_TRUE(pv.has_value()) << "benchmark " << i;
       // Par: the bond-equivalent benchmark is worth 1.0.
       EXPECT_NEAR(*pv, 1.0, kSwapBootstrapParTolerance)
@@ -209,9 +215,13 @@ TEST(SwapBootstrapGolden, EveryCurveIsWellFormed) {
 // added even when that point is not the curve's latest, which is the input
 // that defeats upstream's `&zc->rate[zc->numItems-1]`.
 TEST(SwapBootstrapGolden, Upstream33ABenchmarkInsideTheCurveStillSolves) {
-  const std::optional<cdsmodel::ZeroCurve> disc = discount_curve();
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> built = discount_curve();
+  ASSERT_TRUE(built.has_value());
+  // Passed as an optional PARAMETER: "no discount curve" is a valid request,
+  // not a failure, so the call site needs an optional and not an Expected.
+  const std::optional<cdsmodel::ZeroCurve> disc{*built};
   ASSERT_TRUE(disc.has_value());
-  std::optional<cdsmodel::ZeroCurveBuilder> curve = seeded_builder();
+  cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> curve = seeded_builder();
   ASSERT_TRUE(curve.has_value());
   // A point well beyond the benchmark, so the added point lands in the middle.
   ASSERT_TRUE(curve->add_rate(*cdsmodel::make_date(2035, 1, 15), 0.040));

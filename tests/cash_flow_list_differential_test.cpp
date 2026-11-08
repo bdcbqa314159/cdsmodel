@@ -92,7 +92,8 @@ TEST_F(CashFlowDifferential, TheMergeMatchesOverEveryPairOfSubsets) {
       ASSERT_TRUE(rb) << "b mask " << mb;
 
       const Ref merged(JpmcdsMergeCFL(ra.cfl, rb.cfl));
-      const std::optional<std::vector<cdsmodel::CashFlow>> got = cdsmodel::merge_cash_flows(a, b);
+      const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got =
+          cdsmodel::merge_cash_flows(a, b);
       ASSERT_TRUE(merged) << "masks " << ma << "," << mb;
       ASSERT_TRUE(got.has_value()) << "masks " << ma << "," << mb;
 
@@ -131,7 +132,8 @@ TEST_F(CashFlowDifferential, DuplicateDatesWithinOneListAreHandledTheSameWay) {
       ASSERT_TRUE(rb);
       const Ref merged(JpmcdsMergeCFL(ra.cfl, rb.cfl));
       ASSERT_TRUE(merged);
-      const std::optional<std::vector<cdsmodel::CashFlow>> got = cdsmodel::merge_cash_flows(a, b);
+      const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got =
+          cdsmodel::merge_cash_flows(a, b);
       ASSERT_TRUE(got.has_value());
       EXPECT_EQ(*got, as_flows(merged.cfl)) << "a=" << a.size() << " b=" << b.size();
       ++compared;
@@ -154,7 +156,7 @@ TEST_F(CashFlowDifferential, TheSummationOrderIsUpstreamsOrder) {
   ASSERT_TRUE(rb);
   const Ref merged(JpmcdsMergeCFL(ra.cfl, rb.cfl));
   ASSERT_TRUE(merged);
-  const std::optional<std::vector<cdsmodel::CashFlow>> got = cdsmodel::merge_cash_flows(a, b);
+  const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got = cdsmodel::merge_cash_flows(a, b);
   ASSERT_TRUE(got.has_value());
   ASSERT_EQ(got->size(), 1u);
   EXPECT_EQ((*got)[0].amount, merged.cfl->fArray[0].fAmount);
@@ -178,7 +180,7 @@ TEST_F(CashFlowDifferential, NewCFLMatchesIncludingTheEmptyList) {
     ASSERT_TRUE(ref) << n;
     EXPECT_EQ(ref.cfl->fNumItems, n);
 
-    const std::optional<std::vector<cdsmodel::CashFlow>> got =
+    const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got =
         cdsmodel::make_cash_flows(dates, amounts);
     ASSERT_TRUE(got.has_value()) << n;
     EXPECT_EQ(*got, as_flows(ref.cfl)) << n;

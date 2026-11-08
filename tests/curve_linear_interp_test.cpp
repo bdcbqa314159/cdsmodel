@@ -92,10 +92,10 @@ TEST(CurveLinearInterpGolden, ReplaysRecordedCurves) {
   ASSERT_GE(kLinInterpCases.size(), 50u);
   int matched = 0;
   for (const CurveLinInterpCase &c : kLinInterpCases) {
-    const std::optional<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
+    const cdsmodel::Expected<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
     ASSERT_TRUE(dcc.has_value());
     const std::vector<cdsmodel::RatePoint> points = curve_of(c.curve);
-    const std::optional<cdsmodel::ZeroCurve> old_curve = cdsmodel::ZeroCurve::create(
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> old_curve = cdsmodel::ZeroCurve::create(
         cdsmodel::from_tdate(kLinInterpBaseDate), points, c.basis, *dcc);
     if (!old_curve) {
       // The port refuses day counts or bases the conversion cannot support,
@@ -104,7 +104,7 @@ TEST(CurveLinearInterpGolden, ReplaysRecordedCurves) {
       continue;
     }
 
-    const std::optional<cdsmodel::ZeroCurve> got =
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> got =
         cdsmodel::linear_interp_curve(wanted_of(c.wanted), *old_curve);
     ASSERT_EQ(got.has_value(), c.accepted)
         << "curve " << c.curve << " wanted " << c.wanted << " dcc " << c.day_count;
@@ -188,14 +188,15 @@ TEST(CurveLinearInterpGolden, NoRateEscapesTheOldCurvesRange) {
 TEST(CurveLinearInterpGolden, AOnePointCurveIsFlat) {
   const std::vector<cdsmodel::RatePoint> points = curve_of(2);
   ASSERT_EQ(points.size(), 1u);
-  const std::optional<cdsmodel::ZeroCurve> old_curve = cdsmodel::ZeroCurve::create(
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> old_curve = cdsmodel::ZeroCurve::create(
       cdsmodel::from_tdate(kLinInterpBaseDate), points, 1.0, cdsmodel::DayCount::Act365Fixed);
   ASSERT_TRUE(old_curve.has_value());
 
   const std::vector<cdsmodel::Date> wanted{*cdsmodel::make_date(2020, 1, 1),
                                            *cdsmodel::make_date(2025, 1, 15),
                                            *cdsmodel::make_date(2045, 1, 1)};
-  const std::optional<cdsmodel::ZeroCurve> got = cdsmodel::linear_interp_curve(wanted, *old_curve);
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> got =
+      cdsmodel::linear_interp_curve(wanted, *old_curve);
   ASSERT_TRUE(got.has_value());
   ASSERT_EQ(got->points().size(), 3u);
   for (const cdsmodel::RatePoint &p : got->points()) {
@@ -206,7 +207,7 @@ TEST(CurveLinearInterpGolden, AOnePointCurveIsFlat) {
 // An empty request is refused. Upstream also refuses it, by reaching
 // JpmcdsMallocSafe(0).
 TEST(CurveLinearInterpGolden, AnEmptyRequestIsRefused) {
-  const std::optional<cdsmodel::ZeroCurve> old_curve = cdsmodel::ZeroCurve::create(
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> old_curve = cdsmodel::ZeroCurve::create(
       cdsmodel::from_tdate(kLinInterpBaseDate), curve_of(0), 1.0, cdsmodel::DayCount::Act365Fixed);
   ASSERT_TRUE(old_curve.has_value());
   EXPECT_FALSE(cdsmodel::linear_interp_curve({}, *old_curve).has_value());

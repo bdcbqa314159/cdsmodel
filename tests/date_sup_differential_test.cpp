@@ -61,10 +61,10 @@ cdsmodel::Date d(int y, int m, int day) { return *cdsmodel::make_date(y, m, day)
 /// against hand-built raw structs and reported three failures. The port was
 /// right; the comparison was not like for like. Hand-built structs now appear
 /// only in the UPSTREAM-12 test, where they are the point.
-std::optional<TDateInterval> reference_interval(int periods, char letter) {
+cdsmodel::Expected<TDateInterval> reference_interval(int periods, char letter) {
   TDateInterval iv{};
   if (JpmcdsMakeDateInterval(periods, letter, &iv) != SUCCESS) {
-    return std::nullopt;
+    return cdsmodel::fail(cdsmodel::ErrorKind::bad_argument, "test fixture could not be built");
   }
   return iv;
 }
@@ -90,13 +90,13 @@ TEST_F(DateSupDifferential, IntervalToYearsSurvivesNormalisation) {
       continue;
     }
     for (int periods : {1, 2, 3, 4, 5, 6, 7, 11, 12, 13, 24, 37, 100, 365, 1000}) {
-      const std::optional<TDateInterval> built = reference_interval(periods, u.letter);
+      const cdsmodel::Expected<TDateInterval> built = reference_interval(periods, u.letter);
       ASSERT_TRUE(built.has_value()) << periods << u.letter;
       TDateInterval raw = *built;
       double expected = 0.0;
       const bool ref_ok = JpmcdsDateIntervalToYears(&raw, &expected) == SUCCESS;
 
-      const std::optional<cdsmodel::DateInterval> iv =
+      const cdsmodel::Expected<cdsmodel::DateInterval> iv =
           cdsmodel::make_date_interval(periods, u.letter);
       ASSERT_TRUE(iv.has_value()) << periods << u.letter;
       const double got = cdsmodel::interval_to_years(*iv);
@@ -138,7 +138,7 @@ TEST_F(DateSupDifferential, Upstream12_LunarMonthComputesCorrectlyThenFails) {
   EXPECT_NE(JpmcdsDateIntervalToFreq(&lunar, &freq), SUCCESS);
 
   // The port has no such case: 'U' normalises to 28 days and works.
-  const std::optional<cdsmodel::DateInterval> iv = cdsmodel::make_date_interval(1, 'U');
+  const cdsmodel::Expected<cdsmodel::DateInterval> iv = cdsmodel::make_date_interval(1, 'U');
   ASSERT_TRUE(iv.has_value());
   EXPECT_EQ(iv->unit, cdsmodel::PeriodUnit::Days);
   EXPECT_EQ(iv->periods, 28);
@@ -150,7 +150,7 @@ TEST_F(DateSupDifferential, FrequencyConversionsMatchIncludingTheIntegerTruncati
   for (long freq = -2; freq <= 15; ++freq) {
     TDateInterval expected{};
     const bool ref_ok = JpmcdsFreq2TDateInterval(freq, &expected) == SUCCESS;
-    const std::optional<cdsmodel::DateInterval> got = cdsmodel::frequency_to_interval(freq);
+    const cdsmodel::Expected<cdsmodel::DateInterval> got = cdsmodel::frequency_to_interval(freq);
     ASSERT_EQ(got.has_value(), ref_ok) << freq;
     if (!ref_ok) {
       continue;
@@ -174,15 +174,15 @@ TEST_F(DateSupDifferential, IntervalToFrequencyMatches) {
       continue;
     }
     for (int periods : {1, 2, 3, 6, 12, 24}) {
-      const std::optional<TDateInterval> built = reference_interval(periods, u.letter);
+      const cdsmodel::Expected<TDateInterval> built = reference_interval(periods, u.letter);
       ASSERT_TRUE(built.has_value());
       TDateInterval raw = *built;
       double expected = 0.0;
       const bool ref_ok = JpmcdsDateIntervalToFreq(&raw, &expected) == SUCCESS;
-      const std::optional<cdsmodel::DateInterval> iv =
+      const cdsmodel::Expected<cdsmodel::DateInterval> iv =
           cdsmodel::make_date_interval(periods, u.letter);
       ASSERT_TRUE(iv.has_value());
-      const std::optional<double> got = cdsmodel::interval_to_frequency(*iv);
+      const cdsmodel::Expected<double> got = cdsmodel::interval_to_frequency(*iv);
       ASSERT_EQ(got.has_value(), ref_ok) << periods << u.letter;
       if (ref_ok) {
         EXPECT_EQ(*got, expected) << periods << u.letter;
@@ -200,7 +200,7 @@ TEST_F(DateSupDifferential, DateFromDateAndOffsetMatches) {
       continue;
     }
     for (int periods : {1, 3, 6}) {
-      const std::optional<cdsmodel::DateInterval> iv =
+      const cdsmodel::Expected<cdsmodel::DateInterval> iv =
           cdsmodel::make_date_interval(periods, u.letter);
       ASSERT_TRUE(iv.has_value());
       TDateInterval raw = *reference_interval(periods, u.letter);
@@ -210,7 +210,7 @@ TEST_F(DateSupDifferential, DateFromDateAndOffsetMatches) {
           TDate expected = 0;
           const bool ref_ok = JpmcdsDateFromDateAndOffset(cdsmodel::to_tdate(start), &raw, index,
                                                           &expected) == SUCCESS;
-          const std::optional<cdsmodel::Date> got =
+          const cdsmodel::Expected<cdsmodel::Date> got =
               cdsmodel::date_from_date_and_offset(start, *iv, index);
           const std::string where = std::to_string(periods) + u.letter + " from " +
                                     std::to_string(cdsmodel::to_tdate(start)) + " x " +
@@ -232,7 +232,7 @@ TEST_F(DateSupDifferential, MakeDateArrayMatches) {
     if (!u.port_accepts) {
       continue;
     }
-    const std::optional<cdsmodel::DateInterval> iv = cdsmodel::make_date_interval(1, u.letter);
+    const cdsmodel::Expected<cdsmodel::DateInterval> iv = cdsmodel::make_date_interval(1, u.letter);
     ASSERT_TRUE(iv.has_value());
     TDateInterval raw = *reference_interval(1, u.letter);
     for (int start_index : {0, 1, 3}) {
@@ -240,7 +240,7 @@ TEST_F(DateSupDifferential, MakeDateArrayMatches) {
         std::vector<TDate> expected(static_cast<std::size_t>(count == 0 ? 1 : count));
         const bool ref_ok = JpmcdsMakeTDateArray(cdsmodel::to_tdate(d(2024, 1, 31)), &raw,
                                                  start_index, 1, count, expected.data()) == SUCCESS;
-        const std::optional<std::vector<cdsmodel::Date>> got =
+        const cdsmodel::Expected<std::vector<cdsmodel::Date>> got =
             cdsmodel::make_date_array(d(2024, 1, 31), *iv, start_index, count);
         ASSERT_EQ(got.has_value(), ref_ok) << u.letter << " start " << start_index;
         if (!ref_ok) {
@@ -265,7 +265,7 @@ TEST_F(DateSupDifferential, CountDatesMatchesAcrossSpansAndIntervals) {
       continue;
     }
     for (int periods : {1, 2, 3, 6, -1, -3}) {
-      const std::optional<cdsmodel::DateInterval> iv =
+      const cdsmodel::Expected<cdsmodel::DateInterval> iv =
           cdsmodel::make_date_interval(periods, u.letter);
       if (!iv) {
         continue;
@@ -278,7 +278,7 @@ TEST_F(DateSupDifferential, CountDatesMatchesAcrossSpansAndIntervals) {
           int ref_extra = 0;
           const bool ref_ok = JpmcdsCountDates(cdsmodel::to_tdate(from), cdsmodel::to_tdate(to),
                                                &raw, &ref_n, &ref_extra) == SUCCESS;
-          const std::optional<cdsmodel::DateCount> got = cdsmodel::count_dates(from, to, *iv);
+          const cdsmodel::Expected<cdsmodel::DateCount> got = cdsmodel::count_dates(from, to, *iv);
           const std::string where = std::to_string(periods) + u.letter + " " +
                                     std::to_string(cdsmodel::to_tdate(from)) + " -> " +
                                     std::to_string(cdsmodel::to_tdate(to));
@@ -308,7 +308,8 @@ TEST_F(DateSupDifferential, DateFwdThenAdjustMatches) {
       if (!u.port_accepts) {
         continue;
       }
-      const std::optional<cdsmodel::DateInterval> iv = cdsmodel::make_date_interval(2, u.letter);
+      const cdsmodel::Expected<cdsmodel::DateInterval> iv =
+          cdsmodel::make_date_interval(2, u.letter);
       ASSERT_TRUE(iv.has_value());
       TDateInterval raw = *reference_interval(2, u.letter);
       for (cdsmodel::Date start :
@@ -318,7 +319,7 @@ TEST_F(DateSupDifferential, DateFwdThenAdjustMatches) {
             JpmcdsDateFwdThenAdjust(cdsmodel::to_tdate(start), &raw,
                                     static_cast<long>(static_cast<char>(conv)),
                                     const_cast<char *>("NONE"), &expected) == SUCCESS;
-        const std::optional<cdsmodel::Date> got =
+        const cdsmodel::Expected<cdsmodel::Date> got =
             cdsmodel::date_fwd_then_adjust(start, *iv, conv, cal);
         ASSERT_EQ(got.has_value(), ref_ok) << u.letter << " " << static_cast<char>(conv);
         if (ref_ok) {
@@ -363,11 +364,12 @@ TEST_F(DateSupDifferential, AdvanceAdjustedMatchesOnEveryBasis) {
           TDate expected = 0;
           const bool ref_ok = JpmcdsDtFwdAdj(cdsmodel::to_tdate(start), &raw, &expected) == SUCCESS;
 
-          const std::optional<cdsmodel::DateInterval> iv =
+          const cdsmodel::Expected<cdsmodel::DateInterval> iv =
               cdsmodel::make_date_interval(periods, b.letter);
           ASSERT_TRUE(iv.has_value());
           const cdsmodel::AdjustedOffset offset{*iv, b.port, conv};
-          const std::optional<cdsmodel::Date> got = cdsmodel::advance_adjusted(start, offset, cal);
+          const cdsmodel::Expected<cdsmodel::Date> got =
+              cdsmodel::advance_adjusted(start, offset, cal);
 
           const std::string where = std::to_string(periods) + b.letter + " basis " +
                                     std::to_string(static_cast<int>(b.port)) + " conv " +

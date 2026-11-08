@@ -115,7 +115,7 @@ TEST_F(SwapBootstrapDifferential, AddSwapsMatchesOnTheParFloatPath) {
              {cdsmodel::BadDayConv::None, cdsmodel::BadDayConv::Follow}) {
           RefZC ref(cdsmodel::to_tdate(vd), 8, 1L, JPMCDS_ACT_365F);
           ASSERT_TRUE(ref);
-          std::optional<cdsmodel::ZeroCurveBuilder> got =
+          cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> got =
               cdsmodel::ZeroCurveBuilder::create(vd, 8, 1L, cdsmodel::DayCount::Act365Fixed);
           ASSERT_TRUE(got.has_value());
           seed(ref.zc, *got);
@@ -165,7 +165,7 @@ TEST_F(SwapBootstrapDifferential, AddSwapMatchesForASingleBenchmark) {
       for (const bool on_cycle : {false, true}) {
         RefZC ref(cdsmodel::to_tdate(vd), 8, 1L, JPMCDS_ACT_365F);
         ASSERT_TRUE(ref);
-        std::optional<cdsmodel::ZeroCurveBuilder> got =
+        cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> got =
             cdsmodel::ZeroCurveBuilder::create(vd, 8, 1L, cdsmodel::DayCount::Act365Fixed);
         ASSERT_TRUE(got.has_value());
         seed(ref.zc, *got);
@@ -208,7 +208,7 @@ TEST_F(SwapBootstrapDifferential, ValueFixedFloatSwapMatchesWithADiscountCurve) 
   disc.tc = JpmcdsMakeTCurve(cdsmodel::to_tdate(vd), disc_dates.data(), disc_rates.data(), 2, 1.0,
                              JPMCDS_ACT_365F);
   ASSERT_NE(disc.tc, nullptr);
-  const std::optional<cdsmodel::ZeroCurve> port_disc =
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> port_disc =
       cdsmodel::ZeroCurve::create(vd, disc_points, 1.0, cdsmodel::DayCount::Act365Fixed);
   ASSERT_TRUE(port_disc.has_value());
 
@@ -218,7 +218,7 @@ TEST_F(SwapBootstrapDifferential, ValueFixedFloatSwapMatchesWithADiscountCurve) 
            {cdsmodel::InterpType::Linear, cdsmodel::InterpType::FlatForwards}) {
         RefZC ref(cdsmodel::to_tdate(vd), 8, 1L, JPMCDS_ACT_365F);
         ASSERT_TRUE(ref);
-        std::optional<cdsmodel::ZeroCurveBuilder> got =
+        cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> got =
             cdsmodel::ZeroCurveBuilder::create(vd, 8, 1L, cdsmodel::DayCount::Act365Fixed);
         ASSERT_TRUE(got.has_value());
         ASSERT_EQ(JpmcdsZCAddRate(ref.zc, cdsmodel::to_tdate(d(2025, 1, 15)), 0.024), SUCCESS);
@@ -318,11 +318,11 @@ TEST_F(SwapBootstrapDifferential, Upstream33ThePortSolvesForThePointItAdded) {
   const cdsmodel::Date vd = d(2024, 1, 15);
   const std::vector<cdsmodel::RatePoint> disc_points{{d(2030, 1, 15), 0.030},
                                                      {d(2045, 1, 15), 0.035}};
-  const std::optional<cdsmodel::ZeroCurve> disc =
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> disc =
       cdsmodel::ZeroCurve::create(vd, disc_points, 1.0, cdsmodel::DayCount::Act365Fixed);
   ASSERT_TRUE(disc.has_value());
 
-  std::optional<cdsmodel::ZeroCurveBuilder> curve =
+  cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> curve =
       cdsmodel::ZeroCurveBuilder::create(vd, 8, 1L, cdsmodel::DayCount::Act365Fixed);
   ASSERT_TRUE(curve.has_value());
   ASSERT_TRUE(curve->add_rate(d(2025, 1, 15), 0.024));
@@ -351,7 +351,7 @@ TEST_F(SwapBootstrapDifferential, Upstream33ThePortSolvesForThePointItAdded) {
 // and zcswap.c compares those two dates nowhere. The port refuses.
 TEST_F(SwapBootstrapDifferential, ABenchmarkMaturingOnTheValueDateIsRefused) {
   const cdsmodel::Date vd = d(2024, 1, 15);
-  std::optional<cdsmodel::ZeroCurveBuilder> curve =
+  cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> curve =
       cdsmodel::ZeroCurveBuilder::create(vd, 8, 1L, cdsmodel::DayCount::Act365Fixed);
   ASSERT_TRUE(curve.has_value());
   ASSERT_TRUE(curve->add_rate(d(2024, 4, 15), 0.023));
@@ -364,7 +364,7 @@ TEST_F(SwapBootstrapDifferential, ABenchmarkMaturingOnTheValueDateIsRefused) {
   // UPSTREAM-29's trigger: the explicit-float path, through
   // JpmcdsNewCouponDatesSwap and then fArray[fNumItems-1].
   const std::vector<cdsmodel::RatePoint> disc_points{{d(2030, 1, 15), 0.030}};
-  const std::optional<cdsmodel::ZeroCurve> disc =
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> disc =
       cdsmodel::ZeroCurve::create(vd, disc_points, 1.0, cdsmodel::DayCount::Act365Fixed);
   ASSERT_TRUE(disc.has_value());
   EXPECT_FALSE(cdsmodel::value_fixed_float_swap(*curve, *disc, 1.0, vd, 0.04,
@@ -397,7 +397,7 @@ TEST_F(SwapBootstrapDifferential, ATableAndAConventionTogetherAreRefusedByBoth) 
                              packed(cdsmodel::BadDayConv::Follow), const_cast<char *>("NONE")),
             SUCCESS);
 
-  std::optional<cdsmodel::ZeroCurveBuilder> curve =
+  cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> curve =
       cdsmodel::ZeroCurveBuilder::create(vd, 8, 1L, cdsmodel::DayCount::Act365Fixed);
   ASSERT_TRUE(curve.has_value());
   ASSERT_TRUE(curve->add_rate(d(2024, 4, 15), 0.023));

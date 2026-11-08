@@ -59,7 +59,8 @@ TEST_F(RateConversionDifferential, RateToDiscountYearFracMatchesEverywhere) {
       for (double yf : {0.0, 1.0e-17, 0.25, 1.0, 5.0, 30.0, -1.0}) {
         double expected = 0.0;
         const bool ref_ok = JpmcdsRateToDiscountYearFrac(rate, yf, basis, &expected) == SUCCESS;
-        const std::optional<double> got = cdsmodel::rate_to_discount_year_frac(rate, yf, basis);
+        const cdsmodel::Expected<double> got =
+            cdsmodel::rate_to_discount_year_frac(rate, yf, basis);
         const std::string where = "basis " + std::to_string(basis) + " rate " +
                                   std::to_string(rate) + " yf " + std::to_string(yf);
         ASSERT_EQ(got.has_value(), ref_ok) << where;
@@ -90,7 +91,8 @@ TEST_F(RateConversionDifferential, DiscountToRateYearFracMatchesEverywhere) {
       for (double yf : {0.0, 1.0e-17, 0.25, 1.0, 5.0, 30.0, -1.0}) {
         double expected = 0.0;
         const bool ref_ok = JpmcdsDiscountToRateYearFrac(discount, yf, basis, &expected) == SUCCESS;
-        const std::optional<double> got = cdsmodel::discount_to_rate_year_frac(discount, yf, basis);
+        const cdsmodel::Expected<double> got =
+            cdsmodel::discount_to_rate_year_frac(discount, yf, basis);
         const std::string where = "basis " + std::to_string(basis) + " df " +
                                   std::to_string(discount) + " yf " + std::to_string(yf);
         ASSERT_EQ(got.has_value(), ref_ok) << where;
@@ -139,7 +141,7 @@ TEST_F(RateConversionDifferential, TheDateBasedFormsMatchIncludingTheirAsymmetri
               JpmcdsRateToDiscount(value, cdsmodel::to_tdate(s.start), cdsmodel::to_tdate(s.end),
                                    cdsmodel::to_upstream_code(dcc), static_cast<long>(basis),
                                    &ref_disc) == SUCCESS;
-          const std::optional<double> fwd =
+          const cdsmodel::Expected<double> fwd =
               cdsmodel::rate_to_discount(value, s.start, s.end, dcc, static_cast<long>(basis));
           ASSERT_EQ(fwd.has_value(), ref_fwd) << "forward: " << where;
           if (ref_fwd) {
@@ -152,7 +154,7 @@ TEST_F(RateConversionDifferential, TheDateBasedFormsMatchIncludingTheirAsymmetri
               JpmcdsDiscountToRate(value, cdsmodel::to_tdate(s.start), cdsmodel::to_tdate(s.end),
                                    cdsmodel::to_upstream_code(dcc), static_cast<long>(basis),
                                    &ref_rate) == SUCCESS;
-          const std::optional<double> back =
+          const cdsmodel::Expected<double> back =
               cdsmodel::discount_to_rate(value, s.start, s.end, dcc, static_cast<long>(basis));
           ASSERT_EQ(back.has_value(), ref_back) << "backward: " << where;
           if (ref_back) {
@@ -233,7 +235,7 @@ TEST_F(RateConversionDifferential, AFractionalBasisTruncatesForDispatchButNotInT
   for (double basis : {1.5, 4.7, 11.9}) {
     double expected = 0.0;
     ASSERT_EQ(JpmcdsRateToDiscountYearFrac(0.05, 2.0, basis, &expected), SUCCESS) << basis;
-    const std::optional<double> got = cdsmodel::rate_to_discount_year_frac(0.05, 2.0, basis);
+    const cdsmodel::Expected<double> got = cdsmodel::rate_to_discount_year_frac(0.05, 2.0, basis);
     ASSERT_TRUE(got.has_value()) << basis;
     EXPECT_EQ(*got, expected) << basis;
     // And it really is the fractional basis in the exponent, not the integer.

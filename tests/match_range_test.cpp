@@ -37,7 +37,7 @@ TEST(MatchRangeGolden, ReplaysEveryRecordedSearch) {
 
   for (const MatchRangeCase &c : kMatchRangeCases) {
     const std::span<const long> xs = array_of(c);
-    const std::optional<cdsmodel::MatchRange> got = cdsmodel::match_range<long>(c.desired, xs);
+    const cdsmodel::Expected<cdsmodel::MatchRange> got = cdsmodel::match_range<long>(c.desired, xs);
     ASSERT_EQ(got.has_value(), c.accepted) << "length " << c.length << " seek " << c.desired;
     if (!c.accepted) {
       ++refused;
@@ -86,7 +86,7 @@ TEST(MatchRangeGolden, TheRangeIsExactlyTheRunOfEqualElements) {
       continue;
     }
     const std::span<const long> xs = array_of(c);
-    const std::optional<cdsmodel::MatchRange> got = cdsmodel::match_range<long>(c.desired, xs);
+    const cdsmodel::Expected<cdsmodel::MatchRange> got = cdsmodel::match_range<long>(c.desired, xs);
     ASSERT_TRUE(got.has_value());
 
     for (std::size_t i = got->first; i < got->first + got->count; ++i) {
@@ -117,7 +117,7 @@ TEST(MatchRangeGolden, FirstIsAnInsertionPointWhenNothingMatches) {
       continue;
     }
     const std::span<const long> xs = array_of(c);
-    const std::optional<cdsmodel::MatchRange> got = cdsmodel::match_range<long>(c.desired, xs);
+    const cdsmodel::Expected<cdsmodel::MatchRange> got = cdsmodel::match_range<long>(c.desired, xs);
     ASSERT_TRUE(got.has_value());
     if (!got->empty()) {
       continue;
@@ -145,13 +145,13 @@ TEST(MatchRangeGolden, AnEmptyArrayIsRefused) {
 // decoration.
 TEST(MatchRangeGolden, TheSearchIsNotSpecificToLong) {
   const std::vector<int> xs{10, 20, 20, 30};
-  const std::optional<cdsmodel::MatchRange> got = cdsmodel::match_range<int>(20, xs);
+  const cdsmodel::Expected<cdsmodel::MatchRange> got = cdsmodel::match_range<int>(20, xs);
   ASSERT_TRUE(got.has_value());
   EXPECT_EQ(got->first, 1u);
   EXPECT_EQ(got->count, 2u);
 
   const std::vector<double> ds{1.5, 2.5, 2.5, 3.5};
-  const std::optional<cdsmodel::MatchRange> dgot = cdsmodel::match_range<double>(2.5, ds);
+  const cdsmodel::Expected<cdsmodel::MatchRange> dgot = cdsmodel::match_range<double>(2.5, ds);
   ASSERT_TRUE(dgot.has_value());
   EXPECT_EQ(dgot->first, 1u);
   EXPECT_EQ(dgot->count, 2u);

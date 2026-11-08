@@ -25,6 +25,7 @@
 #include <cdsmodel/date_interval.hpp>
 #include <cdsmodel/date_sup.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/expected.hpp>
 
 #include <optional>
 #include <string_view>
@@ -78,8 +79,7 @@ struct StubMethod {
 /// indeterminate varargs slot and dereferences it as a string -- an
 /// out-of-bounds read on the only input class that reaches the branch. The
 /// port returns nullopt and formats nothing, so the defect cannot occur.
-[[nodiscard]] constexpr std::optional<StubMethod>
-parse_stub_method(std::string_view name) noexcept {
+[[nodiscard]] constexpr Expected<StubMethod> parse_stub_method(std::string_view name) noexcept {
   // Upstream uses toupper() on a char, which is undefined for negative values
   // -- any byte above 0x7F on a platform with signed char. Comparing both
   // cases directly is locale-independent and has no such domain.
@@ -88,7 +88,7 @@ parse_stub_method(std::string_view name) noexcept {
   const std::size_t slash = name.find('/');
   const std::string_view location = name.substr(0, slash);
   if (location.empty()) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the stub name has no location field");
   }
 
   StubMethod stub;
@@ -97,7 +97,7 @@ parse_stub_method(std::string_view name) noexcept {
   } else if (match(location.front(), 'b', 'B')) {
     stub.position = StubPosition::Back;
   } else {
-    return std::nullopt;
+    return fail(ErrorKind::unsupported, "stub location must begin with F or B");
   }
 
   if (slash == std::string_view::npos) {
@@ -105,14 +105,14 @@ parse_stub_method(std::string_view name) noexcept {
   }
   const std::string_view length = name.substr(slash + 1);
   if (length.empty()) {
-    return std::nullopt; // "f/" -- present but empty, which upstream rejects
+    return fail(ErrorKind::bad_argument, "the stub name has a slash but no length field");
   }
   if (match(length.front(), 's', 'S')) {
     stub.length = StubLength::Short;
   } else if (match(length.front(), 'l', 'L')) {
     stub.length = StubLength::Long;
   } else {
-    return std::nullopt;
+    return fail(ErrorKind::unsupported, "stub length must begin with S or L");
   }
   return stub;
 }
@@ -129,7 +129,7 @@ enum class StubPosDefault { Auto = 0, Front = 1, Back = 2 };
 
 /// Replaces `JpmcdsStubPosMake`, which is a switch over the three values that
 /// rejects anything else.
-[[nodiscard]] constexpr std::optional<StubPosDefault> stub_pos_from_upstream(long code) noexcept {
+[[nodiscard]] constexpr Expected<StubPosDefault> stub_pos_from_upstream(long code) noexcept {
   switch (code) {
   case 0:
     return StubPosDefault::Auto;
@@ -138,7 +138,7 @@ enum class StubPosDefault { Auto = 0, Front = 1, Back = 2 };
   case 2:
     return StubPosDefault::Back;
   default:
-    return std::nullopt;
+    return fail(ErrorKind::unsupported, "unrecognised stub position code");
   }
 }
 
@@ -159,22 +159,22 @@ enum class StubPosDefault { Auto = 0, Front = 1, Back = 2 };
 /// thing from the other side ("will return TRUE, unless there is a stub"), and
 /// here code and comment agree, which is not true of every function in this
 /// port.
-[[nodiscard]] inline std::optional<bool>
-is_end_stub(Date start, Date maturity, DateInterval interval, StubPosDefault position) {
+[[nodiscard]] inline Expected<bool> is_end_stub(Date start, Date maturity, DateInterval interval,
+                                                StubPosDefault position) {
   switch (position) {
   case StubPosDefault::Back:
     return true;
   case StubPosDefault::Front:
     return false;
   case StubPosDefault::Auto: {
-    const std::optional<DateCount> span = count_dates(start, maturity, interval);
+    const Expected<DateCount> span = count_dates(start, maturity, interval);
     if (!span) {
-      return std::nullopt;
+      return unexpected(span.error());
     }
     return span->extra_days <= 0;
   }
   }
-  return std::nullopt; // unreachable: the enum has no other value
+  return fail(ErrorKind::unsupported, "unrecognised enumerator reached a switch default");
 }
 
 /// Split a packed bad-day-convention-and-stub-position into its two parts.
@@ -233,20 +233,20 @@ is_end_stub(Date start, Date maturity, DateInterval interval, StubPosDefault pos
 /// returns SUCCESS here and fails later, so a caller that splits a packed
 /// value and never adjusts a date would see success from upstream and failure
 /// from the port.
-[[nodiscard]] constexpr std::optional<std::pair<BadDayConv, StubPosDefault>>
+[[nodiscard]] constexpr Expected<std::pair<BadDayConv, StubPosDefault>>
 split_bad_day_and_stub_pos(long packed) noexcept {
   constexpr long kBadDayMask = 0x000000FF;
   constexpr long kStubPosMask = 0x0000FF00;
   constexpr int kStubPosShift = 8;
 
-  const std::optional<StubPosDefault> position =
+  const Expected<StubPosDefault> position =
       stub_pos_from_upstream((packed & kStubPosMask) >> kStubPosShift);
   if (!position) {
-    return std::nullopt;
+    return unexpected(position.error());
   }
-  const std::optional<BadDayConv> conv = bad_day_conv_from_upstream(packed & kBadDayMask);
+  const Expected<BadDayConv> conv = bad_day_conv_from_upstream(packed & kBadDayMask);
   if (!conv) {
-    return std::nullopt; // upstream assigns it unchecked; see above
+    return unexpected(conv.error()); // upstream assigns it unchecked; see above
   }
   return std::pair{*conv, *position};
 }
@@ -315,29 +315,31 @@ split_bad_day_and_stub_pos(long packed) noexcept {
 /// Returns nullopt where upstream fails: a non-positive coupon period, a stub
 /// boundary outside it, a stub touching neither end, or a day count the
 /// fraction cannot compute.
-[[nodiscard]] inline std::optional<double> stub_payment(Date prev_coupon, Date next_coupon,
-                                                        Date stub_start, Date stub_end, double rate,
-                                                        DayCount day_count) {
+[[nodiscard]] inline Expected<double> stub_payment(Date prev_coupon, Date next_coupon,
+                                                   Date stub_start, Date stub_end, double rate,
+                                                   DayCount day_count) {
   if (prev_coupon >= next_coupon) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the previous coupon must come before the next");
   }
   if (stub_start < prev_coupon || stub_start > next_coupon) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the stub start lies outside the coupon period");
   }
   if (stub_end > next_coupon || stub_end < prev_coupon) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the stub end lies outside the coupon period");
   }
   if (stub_start != prev_coupon && stub_end != next_coupon) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument,
+                "a stub must begin at the previous coupon or end at the next");
   }
   // Computed and discarded by upstream, but it can FAIL, and that failure is
   // observable -- so the call stays even though the value does not.
   if (!year_fraction(prev_coupon, next_coupon, day_count)) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument,
+                "the coupon period has no year fraction under this day count");
   }
-  const std::optional<double> stub_years = year_fraction(stub_start, stub_end, day_count);
+  const Expected<double> stub_years = year_fraction(stub_start, stub_end, day_count);
   if (!stub_years) {
-    return std::nullopt;
+    return unexpected(stub_years.error());
   }
   return rate * *stub_years;
 }

@@ -36,9 +36,10 @@ TEST(SwapBootstrapFlowsGolden, ReplaysRecordedCouponDates) {
   ASSERT_GE(kSwapCouponDateCases.size(), 50u);
   int matched = 0;
   for (const SwapCouponDateCase &c : kSwapCouponDateCases) {
-    const std::optional<cdsmodel::BadDayConv> conv = cdsmodel::bad_day_conv_from_upstream(c.conv);
+    const cdsmodel::Expected<cdsmodel::BadDayConv> conv =
+        cdsmodel::bad_day_conv_from_upstream(c.conv);
     ASSERT_TRUE(conv.has_value());
-    const std::optional<std::vector<cdsmodel::Date>> got = cdsmodel::swap_coupon_dates(
+    const cdsmodel::Expected<std::vector<cdsmodel::Date>> got = cdsmodel::swap_coupon_dates(
         cdsmodel::from_tdate(c.value_date), cdsmodel::from_tdate(c.maturity),
         {c.months, cdsmodel::PeriodUnit::Months}, c.stub_at_end, {.conv = *conv}, calendars());
     if (!c.accepted) {
@@ -60,12 +61,13 @@ TEST(SwapBootstrapFlowsGolden, ReplaysRecordedCashFlows) {
   int matched = 0;
   int refused = 0;
   for (const SwapBootstrapFlowCase &c : kSwapBootstrapFlowCases) {
-    const std::optional<cdsmodel::BadDayConv> conv = cdsmodel::bad_day_conv_from_upstream(c.conv);
+    const cdsmodel::Expected<cdsmodel::BadDayConv> conv =
+        cdsmodel::bad_day_conv_from_upstream(c.conv);
     ASSERT_TRUE(conv.has_value());
-    const std::optional<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
+    const cdsmodel::Expected<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
     ASSERT_TRUE(dcc.has_value());
 
-    const std::optional<std::vector<cdsmodel::CashFlow>> got = cdsmodel::swap_cash_flows(
+    const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got = cdsmodel::swap_cash_flows(
         cdsmodel::from_tdate(c.value_date), cdsmodel::from_tdate(c.maturity), c.stub_at_end, c.rate,
         {c.months, cdsmodel::PeriodUnit::Months}, *dcc, {.conv = *conv}, calendars());
 
@@ -144,7 +146,7 @@ TEST(SwapBootstrapFlowsGolden, TheValueDateIsNeverACouponDate) {
 // written through.
 TEST(SwapBootstrapFlowsGolden, Upstream32AnEmptyScheduleIsRefusedNotWrittenThrough) {
   const cdsmodel::Date same = *cdsmodel::make_date(2024, 1, 15);
-  const std::optional<std::vector<cdsmodel::Date>> dates = cdsmodel::swap_coupon_dates(
+  const cdsmodel::Expected<std::vector<cdsmodel::Date>> dates = cdsmodel::swap_coupon_dates(
       same, same, {6, cdsmodel::PeriodUnit::Months}, true, {}, calendars());
   ASSERT_TRUE(dates.has_value()) << "date generation itself does not fail";
   EXPECT_TRUE(dates->empty());
@@ -157,7 +159,7 @@ TEST(SwapBootstrapFlowsGolden, Upstream32AnEmptyScheduleIsRefusedNotWrittenThrou
   // The zero-rate path takes its own route and is safe even here -- which is
   // the irony of UPSTREAM-32: the bizarre RATE got a guard, the bizarre
   // MATURITY did not.
-  const std::optional<std::vector<cdsmodel::CashFlow>> zero =
+  const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> zero =
       cdsmodel::swap_cash_flows(same, same, true, 0.0, {6, cdsmodel::PeriodUnit::Months},
                                 cdsmodel::DayCount::Act360, {}, calendars());
   ASSERT_TRUE(zero.has_value());

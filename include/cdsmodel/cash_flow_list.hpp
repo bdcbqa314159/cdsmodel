@@ -63,6 +63,7 @@
 // allocation site in the remaining 11,000 lines.
 
 #include <cdsmodel/date.hpp>
+#include <cdsmodel/expected.hpp>
 
 #include <algorithm>
 #include <cstddef>
@@ -103,10 +104,12 @@ struct CashFlow {
 /// Upstream also dereferences both pointers without a NULL test, where
 /// `JpmcdsMergeCFL` in the same file does test its inputs -- an inconsistency
 /// that spans cannot express.
-[[nodiscard]] inline std::optional<std::vector<CashFlow>>
+[[nodiscard]] inline Expected<std::vector<CashFlow>>
 make_cash_flows(std::span<const Date> dates, std::span<const double> amounts) {
   if (dates.size() != amounts.size()) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "dates and amounts must be the same length, got " +
+                                             detail::num(dates.size()) + " and " +
+                                             detail::num(amounts.size()));
   }
   std::vector<CashFlow> flows;
   flows.reserve(dates.size());
@@ -155,10 +158,10 @@ make_cash_flows(std::span<const Date> dates, std::span<const double> amounts) {
 /// `checkTCurve` (UPSTREAM-15): refuse at the boundary what cannot produce a
 /// meaningful answer, so the result type does not have to carry a "this is
 /// nonsense" value.
-[[nodiscard]] inline std::optional<std::vector<CashFlow>>
-merge_cash_flows(std::span<const CashFlow> a, std::span<const CashFlow> b) {
+[[nodiscard]] inline Expected<std::vector<CashFlow>> merge_cash_flows(std::span<const CashFlow> a,
+                                                                      std::span<const CashFlow> b) {
   if (!is_ordered_by_date(a) || !is_ordered_by_date(b)) {
-    return std::nullopt; // UPSTREAM-20: upstream merges it anyway
+    return fail(ErrorKind::bad_argument, "both cash flow lists must be ordered by date");
   }
 
   std::vector<CashFlow> merged;

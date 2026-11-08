@@ -25,6 +25,7 @@
 // schedule.c, which is where anything that consumes them would live.
 
 #include <cdsmodel/date.hpp>
+#include <cdsmodel/expected.hpp>
 
 #include <chrono>
 #include <cstddef>
@@ -55,10 +56,10 @@ namespace detail {
 /// 12 and stores a wrapped month count. Checking before multiplying is the
 /// only option -- signed overflow is undefined, so it cannot be detected
 /// afterwards.
-[[nodiscard]] constexpr std::optional<int> scale(int periods, int factor) noexcept {
+[[nodiscard]] constexpr Expected<int> scale(int periods, int factor) noexcept {
   if (periods > std::numeric_limits<int>::max() / factor ||
       periods < std::numeric_limits<int>::min() / factor) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "scaling the interval would overflow an int");
   }
   return periods * factor;
 }
@@ -75,20 +76,26 @@ namespace detail {
 /// by, as well as for genuinely invalid characters.
 /// Build an interval from a count and a unit character. Replaces
 /// `JpmcdsMakeDateInterval`.
-[[nodiscard]] constexpr std::optional<DateInterval> make_date_interval(int periods,
-                                                                       char period_type) noexcept {
+[[nodiscard]] constexpr Expected<DateInterval> make_date_interval(int periods,
+                                                                  char period_type) noexcept {
   const char t = (period_type >= 'a' && period_type <= 'z')
                      ? static_cast<char>(period_type - 'a' + 'A')
                      : period_type;
   // Scaling can overflow for extreme counts, and upstream wraps when it does.
   // Rejecting is the third refusal to reproduce undefined behaviour.
-  const auto months = [periods](int factor) -> std::optional<DateInterval> {
-    const std::optional<int> n = detail::scale(periods, factor);
-    return n ? std::optional{DateInterval{*n, PeriodUnit::Months}} : std::nullopt;
+  const auto months = [periods](int factor) -> Expected<DateInterval> {
+    const Expected<int> n = detail::scale(periods, factor);
+    if (!n) {
+      return unexpected(n.error());
+    }
+    return DateInterval{*n, PeriodUnit::Months};
   };
-  const auto days = [periods](int factor) -> std::optional<DateInterval> {
-    const std::optional<int> n = detail::scale(periods, factor);
-    return n ? std::optional{DateInterval{*n, PeriodUnit::Days}} : std::nullopt;
+  const auto days = [periods](int factor) -> Expected<DateInterval> {
+    const Expected<int> n = detail::scale(periods, factor);
+    if (!n) {
+      return unexpected(n.error());
+    }
+    return DateInterval{*n, PeriodUnit::Days};
   };
 
   switch (t) {
@@ -110,7 +117,8 @@ namespace detail {
   default:
     // Includes F, E, B, G, H, I, J, K, L, T, V -- which upstream's
     // JpmcdsMakeDateInterval accepts and JpmcdsDtFwdAny then refuses.
-    return std::nullopt;
+    return fail(ErrorKind::unsupported,
+                "this interval type is accepted by upstream but cannot be advanced");
   }
 }
 
@@ -130,8 +138,7 @@ namespace detail {
 ///      months. This rejects any digit run that would not fit an `int`.
 ///      Found by auditing the port itself under UBSan, not by differential
 ///      testing: both sides were producing garbage, so they "agreed".
-[[nodiscard]] constexpr std::optional<DateInterval>
-parse_date_interval(std::string_view s) noexcept {
+[[nodiscard]] constexpr Expected<DateInterval> parse_date_interval(std::string_view s) noexcept {
   constexpr std::size_t kMaxDigits = 31; // upstream's buffer, minus the NUL
 
   std::size_t i = 0;
@@ -145,14 +152,15 @@ parse_date_interval(std::string_view s) noexcept {
   std::size_t digits = 0;
   while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
     if (++digits > kMaxDigits) {
-      return std::nullopt; // upstream overflows its buffer here
+      return fail(ErrorKind::bad_argument,
+                  "an interval may have at most " + detail::num(kMaxDigits) + " digits");
     }
     const int digit = s[i] - '0';
     // Check before multiplying: signed overflow is undefined, so it cannot be
     // detected after the fact. Upstream's atoi has the same hole and silently
     // produces a wrapped value.
     if (periods > (std::numeric_limits<int>::max() - digit) / 10) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument, "the interval period count would overflow an int");
     }
     periods = periods * 10 + digit;
     ++i;
@@ -165,7 +173,7 @@ parse_date_interval(std::string_view s) noexcept {
   }
 
   if (i >= s.size()) {
-    return std::nullopt; // no period type character
+    return fail(ErrorKind::bad_argument, "the interval has no period type character");
   }
   return make_date_interval(periods, s[i]);
 }
@@ -213,9 +221,9 @@ parse_date_interval(std::string_view s) noexcept {
 /// Returns nullopt where upstream fails: a start date at or before its epoch
 /// (it requires `startDate > 0`, so 1601-01-01 itself is rejected), or a
 /// month result landing before the epoch year.
-[[nodiscard]] constexpr std::optional<Date> advance(Date start, DateInterval iv) noexcept {
+[[nodiscard]] constexpr Expected<Date> advance(Date start, DateInterval iv) noexcept {
   if (to_tdate(start) <= 0) {
-    return std::nullopt; // upstream: "startDate must be > 0"
+    return fail(ErrorKind::bad_argument, "the start date must be after the epoch");
   }
   if (iv.unit == PeriodUnit::Days) {
     // Upstream does a bare addition with no range check. The port cannot:
@@ -223,7 +231,7 @@ parse_date_interval(std::string_view s) noexcept {
     // to the day number overflows it. Widen, check, then convert.
     const long long result = static_cast<long long>(to_tdate(start)) + iv.periods;
     if (result < static_cast<long long>(kMinTDate) || result > static_cast<long long>(kMaxTDate)) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument, "advancing by days leaves the representable date range");
     }
     return from_tdate(static_cast<TDate>(result));
   }
@@ -236,13 +244,13 @@ parse_date_interval(std::string_view s) noexcept {
   const long long target_month = static_cast<long long>(month) + iv.periods;
   if (target_month < std::numeric_limits<int>::min() ||
       target_month > std::numeric_limits<int>::max()) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "advancing by months overflows the month count");
   }
-  const std::optional<std::chrono::year_month_day> moved =
+  const Expected<std::chrono::year_month_day> moved =
       normalize_ymd(static_cast<int>(ymd.year()), static_cast<int>(target_month),
                     static_cast<int>(static_cast<unsigned>(ymd.day())));
   if (!moved) {
-    return std::nullopt;
+    return unexpected(moved.error());
   }
   return make_date(static_cast<int>(moved->year()),
                    static_cast<int>(static_cast<unsigned>(moved->month())),
@@ -262,11 +270,11 @@ namespace detail {
 /// `periods` by the span length in days -- so while the caller's
 /// `periods > 0` precondition holds, the product cannot overflow. It is kept
 /// because DateInterval is an aggregate with no invariant of its own.
-[[nodiscard]] constexpr std::optional<Date> advance_multiple(Date start, DateInterval iv,
-                                                             int count) noexcept {
+[[nodiscard]] constexpr Expected<Date> advance_multiple(Date start, DateInterval iv,
+                                                        int count) noexcept {
   const long long periods = static_cast<long long>(iv.periods) * count;
   if (periods < std::numeric_limits<int>::min() || periods > std::numeric_limits<int>::max()) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the total period count would overflow an int");
   }
   return advance(start, DateInterval{static_cast<int>(periods), iv.unit});
 }

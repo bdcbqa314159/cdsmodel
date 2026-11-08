@@ -38,11 +38,11 @@ TEST(RateConversion, TheTwoDirectionsInvertEachOther) {
         cdsmodel::kDiscountFactorBasis, 1.0, 2.0, 4.0, 12.0, 365.0}) {
     for (double rate : {0.05, 0.0, -0.05, 0.3, -0.3, 0.9}) {
       for (double t : {0.25, 1.0, 5.0, 30.0}) {
-        const std::optional<double> discount = rate_to_discount_year_frac(rate, t, basis);
+        const cdsmodel::Expected<double> discount = rate_to_discount_year_frac(rate, t, basis);
         if (!discount) {
           continue;
         }
-        const std::optional<double> back = discount_to_rate_year_frac(*discount, t, basis);
+        const cdsmodel::Expected<double> back = discount_to_rate_year_frac(*discount, t, basis);
         if (!back) {
           continue;
         }
@@ -62,7 +62,7 @@ TEST(RateConversion, AZeroRateDiscountsByNothing) {
   for (double basis : {cdsmodel::kSimpleBasis, cdsmodel::kDiscountRateBasis,
                        cdsmodel::kContinuousBasis, 1.0, 2.0, 365.0}) {
     for (double t : {0.0, 0.25, 1.0, 30.0}) {
-      const std::optional<double> discount = rate_to_discount_year_frac(0.0, t, basis);
+      const cdsmodel::Expected<double> discount = rate_to_discount_year_frac(0.0, t, basis);
       ASSERT_TRUE(discount.has_value()) << "basis " << basis << " t " << t;
       EXPECT_DOUBLE_EQ(*discount, 1.0) << "basis " << basis << " t " << t;
     }
@@ -76,14 +76,14 @@ TEST(RateConversion, APositiveRateDiscountsBelowOneAndMonotonically) {
   for (double basis : {cdsmodel::kSimpleBasis, cdsmodel::kContinuousBasis, 1.0, 2.0, 12.0}) {
     std::optional<double> previous;
     for (double t : {0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0}) {
-      const std::optional<double> discount = rate_to_discount_year_frac(0.05, t, basis);
+      const cdsmodel::Expected<double> discount = rate_to_discount_year_frac(0.05, t, basis);
       ASSERT_TRUE(discount.has_value()) << "basis " << basis << " t " << t;
       EXPECT_LT(*discount, 1.0) << "basis " << basis << " t " << t;
       EXPECT_GT(*discount, 0.0) << "basis " << basis << " t " << t;
       if (previous) {
         EXPECT_LT(*discount, *previous) << "basis " << basis << " t " << t;
       }
-      previous = discount;
+      previous = *discount;
     }
   }
 }
@@ -108,7 +108,7 @@ TEST(RateConversion, ZeroTimeHasAnAnswerForwardAndNotBackward) {
   const cdsmodel::Date same = d(2024, 6, 20);
 
   // Forward: no zero-length check. A rate over no time discounts by nothing.
-  const std::optional<double> fwd =
+  const cdsmodel::Expected<double> fwd =
       cdsmodel::rate_to_discount(0.05, same, same, cdsmodel::DayCount::Act365Fixed, 1);
   ASSERT_TRUE(fwd.has_value());
   EXPECT_DOUBLE_EQ(*fwd, 1.0);
@@ -144,9 +144,9 @@ TEST(RateConversion, AFractionalBasisTruncatesForDispatchNotInTheFormula) {
   // dispatches as if it were 1 -- into the compounding branch -- and then
   // computes with 1.5.
   for (double basis : {1.5, 4.7, 11.9}) {
-    const std::optional<double> got = rate_to_discount_year_frac(0.05, 2.0, basis);
+    const cdsmodel::Expected<double> got = rate_to_discount_year_frac(0.05, 2.0, basis);
     ASSERT_TRUE(got.has_value()) << basis;
-    const std::optional<double> truncated =
+    const cdsmodel::Expected<double> truncated =
         rate_to_discount_year_frac(0.05, 2.0, std::floor(basis));
     ASSERT_TRUE(truncated.has_value()) << basis;
     EXPECT_NE(*got, *truncated) << basis << " behaved as if truncated in the formula too";
@@ -187,7 +187,8 @@ TEST(RateConversion, MatchesRecordedConversions) {
     const std::string where = "basis " + std::to_string(c.basis) + " v " + std::to_string(c.value) +
                               " yf " + std::to_string(c.year_fraction);
 
-    const std::optional<double> fwd = rate_to_discount_year_frac(c.value, c.year_fraction, c.basis);
+    const cdsmodel::Expected<double> fwd =
+        rate_to_discount_year_frac(c.value, c.year_fraction, c.basis);
     ASSERT_EQ(fwd.has_value(), c.forward_ok) << where;
     if (c.forward_ok) {
       if (std::isnan(c.discount)) {
@@ -204,7 +205,7 @@ TEST(RateConversion, MatchesRecordedConversions) {
       ++forward;
     }
 
-    const std::optional<double> back =
+    const cdsmodel::Expected<double> back =
         discount_to_rate_year_frac(c.value, c.year_fraction, c.basis);
     ASSERT_EQ(back.has_value(), c.backward_ok) << where;
     if (c.backward_ok) {

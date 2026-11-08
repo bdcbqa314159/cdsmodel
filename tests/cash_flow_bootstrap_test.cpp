@@ -63,7 +63,7 @@ TEST(CashFlowBootstrap, TheInstrumentRepricesToItsOwnInput) {
           if (!cdsmodel::add_cash_flow_list(curve, flows, price, std::nullopt, interp)) {
             continue; // refused is an answer; the fixed point only binds a solve
           }
-          const std::optional<double> repriced =
+          const cdsmodel::Expected<double> repriced =
               cdsmodel::present_value_cash_flows(curve, flows, interp);
           ASSERT_TRUE(repriced.has_value());
           const std::string where = "seed " + std::to_string(seed_rate) + " coupon " +
@@ -95,7 +95,7 @@ TEST(CashFlowBootstrap, ASolveLeavesEveryCachedDiscountConsistent) {
           continue;
         }
         for (const ZeroCurveBuilder::Point &p : curve.points()) {
-          const std::optional<double> fresh = curve.compute_discount(p.date, p.rate);
+          const cdsmodel::Expected<double> fresh = curve.compute_discount(p.date, p.rate);
           ASSERT_TRUE(fresh.has_value());
           EXPECT_EQ(*fresh, p.discount)
               << "price " << price << " at " << cdsmodel::to_tdate(p.date);
@@ -203,7 +203,7 @@ TEST(CashFlowBootstrap, TheInputsThatAreRefused) {
 
 TEST(CashFlowBootstrap, AnEmptyRunOfCashFlowsIsWorthNothing) {
   const ZeroCurveBuilder curve = seeded(0.03);
-  const std::optional<double> none =
+  const cdsmodel::Expected<double> none =
       cdsmodel::present_value_cash_flows(curve, {}, InterpType::Linear);
   ASSERT_TRUE(none.has_value()) << "not an error -- upstream's iLo > iHi check has no subject";
   EXPECT_EQ(*none, 0.0);
@@ -254,7 +254,8 @@ TEST(CashFlowBootstrap, MatchesRecordedBootstraps) {
     const std::optional<std::size_t> at = curve.find_exact(flows.back().date);
     ASSERT_TRUE(at.has_value()) << where;
     const cdsmodel::TDate maturity = cdsmodel::to_tdate(flows.back().date);
-    std::optional<double> recorded_rate;
+    cdsmodel::Expected<double> recorded_rate =
+        cdsmodel::fail(cdsmodel::ErrorKind::bad_argument, "not yet recorded");
     for (std::size_t i = 0; i < c.n; ++i) {
       if (c.dates[i] == maturity) {
         recorded_rate = c.rates[i];

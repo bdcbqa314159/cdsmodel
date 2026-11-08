@@ -42,7 +42,8 @@ TEST(CouponScheduleGolden, ReplaysRecordedSchedules) {
   int matched = 0;
   int refused_by_port = 0;
   for (const cdsmodel::golden::CouponScheduleCase &c : cdsmodel::golden::kCouponScheduleCases) {
-    const std::optional<cdsmodel::BadDayConv> conv = cdsmodel::bad_day_conv_from_upstream(c.conv);
+    const cdsmodel::Expected<cdsmodel::BadDayConv> conv =
+        cdsmodel::bad_day_conv_from_upstream(c.conv);
     ASSERT_TRUE(conv.has_value());
     const cdsmodel::CouponConventions conventions{.pay = *conv,
                                                   .accrual = *conv,
@@ -51,7 +52,7 @@ TEST(CouponScheduleGolden, ReplaysRecordedSchedules) {
                                                   .in_arrears = c.in_arrears,
                                                   .pay_offset_days = c.pay_offset,
                                                   .reset_offset_days = c.reset_offset};
-    const std::optional<cdsmodel::CouponSchedule> got =
+    const cdsmodel::Expected<cdsmodel::CouponSchedule> got =
         cdsmodel::coupon_schedule(terms_of(c), conventions, cdsmodel::Calendar::none());
 
     // UPSTREAM-29: a schedule upstream returned with no periods in it. The
@@ -89,9 +90,10 @@ TEST(CouponScheduleGolden, ReplaysRecordedSchedules) {
 TEST(CouponScheduleGolden, EverySchedulePassesTheValidator) {
   int checked = 0;
   for (const cdsmodel::golden::CouponScheduleCase &c : cdsmodel::golden::kCouponScheduleCases) {
-    const std::optional<cdsmodel::BadDayConv> conv = cdsmodel::bad_day_conv_from_upstream(c.conv);
+    const cdsmodel::Expected<cdsmodel::BadDayConv> conv =
+        cdsmodel::bad_day_conv_from_upstream(c.conv);
     ASSERT_TRUE(conv.has_value());
-    const std::optional<cdsmodel::CouponSchedule> got =
+    const cdsmodel::Expected<cdsmodel::CouponSchedule> got =
         cdsmodel::coupon_schedule(terms_of(c),
                                   {.pay = *conv,
                                    .accrual = *conv,

@@ -63,7 +63,7 @@ TEST(CurveDiscount, TheDiscountFactorAtTheBaseDateIsExactlyOne) {
          {cdsmodel::DayCount::Act365Fixed, cdsmodel::DayCount::Act360}) {
       const cdsmodel::ZeroCurve curve = curve_at(basis, dcc);
       for (const InterpType interp : {InterpType::Linear, InterpType::FlatForwards}) {
-        const std::optional<double> at_base =
+        const cdsmodel::Expected<double> at_base =
             cdsmodel::discount_date(curve, curve.base_date(), interp);
         ASSERT_TRUE(at_base.has_value()) << basis;
         EXPECT_EQ(*at_base, 1.0) << "basis " << basis << " dcc " << cdsmodel::to_upstream_code(dcc);
@@ -85,7 +85,7 @@ TEST(CurveDiscount, APositiveCurveDiscountsMonotonically) {
       std::optional<double> previous;
       for (const cdsmodel::Date at : {d(2024, 1, 1), d(2024, 7, 1), d(2025, 1, 1), d(2026, 1, 1),
                                       d(2027, 6, 1), d(2029, 1, 1)}) {
-        const std::optional<double> discount = cdsmodel::discount_date(curve, at, interp);
+        const cdsmodel::Expected<double> discount = cdsmodel::discount_date(curve, at, interp);
         ASSERT_TRUE(discount.has_value()) << basis;
         EXPECT_GT(*discount, 0.0) << "basis " << basis;
         EXPECT_LE(*discount, 1.0) << "basis " << basis
@@ -94,7 +94,7 @@ TEST(CurveDiscount, APositiveCurveDiscountsMonotonically) {
         if (previous) {
           EXPECT_LT(*discount, *previous) << "basis " << basis << " at " << cdsmodel::to_tdate(at);
         }
-        previous = discount;
+        previous = *discount;
         ++checked;
       }
     }
@@ -131,7 +131,7 @@ TEST(CurveDiscount, TheTwoRoutesToADiscountFactorAgree) {
          {cdsmodel::DayCount::Act365Fixed, cdsmodel::DayCount::Act360}) {
       const cdsmodel::ZeroCurve curve = curve_at(basis, dcc);
       for (const cdsmodel::Date at : {d(2025, 1, 1), d(2026, 7, 1), d(2027, 1, 1), d(2029, 1, 1)}) {
-        const std::optional<double> via_discount =
+        const cdsmodel::Expected<double> via_discount =
             cdsmodel::discount_date(curve, at, InterpType::FlatForwards);
         ASSERT_TRUE(via_discount.has_value());
         const double via_zero_price = curve.zero_price(at);
@@ -152,15 +152,16 @@ TEST(CurveDiscount, ADiscountFactorRoundTripsThroughItsOwnRate) {
   for (const double basis : bases()) {
     const cdsmodel::ZeroCurve curve = curve_at(basis);
     for (const cdsmodel::Date at : {d(2025, 1, 1), d(2026, 7, 1), d(2029, 1, 1)}) {
-      const std::optional<double> discount =
+      const cdsmodel::Expected<double> discount =
           cdsmodel::discount_date(curve, at, InterpType::FlatForwards);
-      const std::optional<double> rate = cdsmodel::interp_rate(curve, at, InterpType::FlatForwards);
+      const cdsmodel::Expected<double> rate =
+          cdsmodel::interp_rate(curve, at, InterpType::FlatForwards);
       ASSERT_TRUE(discount.has_value());
       ASSERT_TRUE(rate.has_value());
-      const std::optional<double> years =
+      const cdsmodel::Expected<double> years =
           cdsmodel::year_fraction(curve.base_date(), at, curve.day_count());
       ASSERT_TRUE(years.has_value());
-      const std::optional<double> back =
+      const cdsmodel::Expected<double> back =
           cdsmodel::discount_to_rate_year_frac(*discount, *years, basis);
       ASSERT_TRUE(back.has_value()) << basis;
       EXPECT_NEAR(*back, *rate, 1.0e-12 * std::max(1.0, std::fabs(*rate)))
@@ -183,11 +184,11 @@ TEST(CurveDiscount, APresentValueIsTheSumOfItsDiscountedFlows) {
   for (const InterpType interp : {InterpType::Linear, InterpType::FlatForwards}) {
     double expected = 0.0;
     for (const CashFlow &flow : flows) {
-      const std::optional<double> discount = cdsmodel::discount_date(curve, flow.date, interp);
+      const cdsmodel::Expected<double> discount = cdsmodel::discount_date(curve, flow.date, interp);
       ASSERT_TRUE(discount.has_value());
       expected += *discount * flow.amount;
     }
-    const std::optional<double> pv = cdsmodel::cash_flow_pv(curve, flows, interp);
+    const cdsmodel::Expected<double> pv = cdsmodel::cash_flow_pv(curve, flows, interp);
     ASSERT_TRUE(pv.has_value());
     EXPECT_EQ(*pv, expected) << static_cast<int>(interp);
   }
@@ -202,16 +203,16 @@ TEST(CurveDiscount, APresentValueScalesLinearlyAndAddsAcrossSubsets) {
     flow.amount *= 2.0;
   }
   for (const InterpType interp : {InterpType::Linear, InterpType::FlatForwards}) {
-    const std::optional<double> single = cdsmodel::cash_flow_pv(curve, flows, interp);
-    const std::optional<double> twice = cdsmodel::cash_flow_pv(curve, doubled, interp);
+    const cdsmodel::Expected<double> single = cdsmodel::cash_flow_pv(curve, flows, interp);
+    const cdsmodel::Expected<double> twice = cdsmodel::cash_flow_pv(curve, doubled, interp);
     ASSERT_TRUE(single.has_value());
     ASSERT_TRUE(twice.has_value());
     EXPECT_NEAR(*twice, 2.0 * *single, 1.0e-14 * std::fabs(*single));
 
     // Splitting the run splits the value. Accumulating, so the relative tier.
-    const std::optional<double> head =
+    const cdsmodel::Expected<double> head =
         cdsmodel::cash_flow_pv(curve, std::span{flows}.first(1), interp);
-    const std::optional<double> tail =
+    const cdsmodel::Expected<double> tail =
         cdsmodel::cash_flow_pv(curve, std::span{flows}.subspan(1), interp);
     ASSERT_TRUE(head.has_value());
     ASSERT_TRUE(tail.has_value());
@@ -222,7 +223,7 @@ TEST(CurveDiscount, APresentValueScalesLinearlyAndAddsAcrossSubsets) {
 TEST(CurveDiscount, NoFlowsIsWorthNothingAndIsNotAnError) {
   const cdsmodel::ZeroCurve curve = curve_at(1.0);
   for (const InterpType interp : {InterpType::Linear, InterpType::FlatForwards}) {
-    const std::optional<double> pv = cdsmodel::cash_flow_pv(curve, {}, interp);
+    const cdsmodel::Expected<double> pv = cdsmodel::cash_flow_pv(curve, {}, interp);
     ASSERT_TRUE(pv.has_value());
     EXPECT_EQ(*pv, 0.0);
   }
@@ -238,7 +239,7 @@ TEST(CurveDiscount, TheFirstDateIsTheMinimumNotTheBaseDate) {
   // the flat-forwards interpolator has a branch for.
   const std::vector<RatePoint> points{{d(2024, 1, 1), 0.03}, {d(2027, 1, 1), 0.05}};
   for (const cdsmodel::Date base : {d(2023, 1, 1), d(2024, 1, 1), d(2025, 6, 1)}) {
-    const std::optional<cdsmodel::ZeroCurve> curve =
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> curve =
         cdsmodel::ZeroCurve::create(base, points, 1.0, cdsmodel::DayCount::Act365Fixed);
     ASSERT_TRUE(curve.has_value()) << cdsmodel::to_tdate(base);
     EXPECT_EQ(curve->first_date(), std::min(base, points.front().date))
@@ -266,17 +267,17 @@ TEST(CurveDiscount, TheDatesAreThePointDatesInOrder) {
 TEST(CurveDiscount, MatchesRecordedDiscountFactors) {
   int checked = 0;
   for (const auto &c : cdsmodel::golden::kDiscountDateCases) {
-    const std::optional<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
+    const cdsmodel::Expected<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
     ASSERT_TRUE(dcc.has_value()) << c.day_count;
     std::vector<RatePoint> points;
     for (std::size_t i = 0; i < c.n; ++i) {
       points.push_back(RatePoint{cdsmodel::from_tdate(c.dates[i]), c.rates[i]});
     }
-    const std::optional<cdsmodel::ZeroCurve> curve =
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> curve =
         cdsmodel::ZeroCurve::create(cdsmodel::from_tdate(c.base_date), points, c.basis, *dcc);
     ASSERT_TRUE(curve.has_value()) << "basis " << c.basis;
     const InterpType interp = c.interp == 0 ? InterpType::Linear : InterpType::FlatForwards;
-    const std::optional<double> got =
+    const cdsmodel::Expected<double> got =
         cdsmodel::discount_date(*curve, cdsmodel::from_tdate(c.at), interp);
     const std::string where = "base " + std::to_string(c.base_date) + " basis " +
                               std::to_string(c.basis) + " dcc " + std::to_string(c.day_count) +
@@ -303,13 +304,13 @@ TEST(CurveDiscount, MatchesRecordedDiscountFactors) {
 TEST(CurveDiscount, MatchesRecordedPresentValues) {
   int checked = 0;
   for (const auto &c : cdsmodel::golden::kCashFlowPvCases) {
-    const std::optional<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
+    const cdsmodel::Expected<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
     ASSERT_TRUE(dcc.has_value()) << c.day_count;
     std::vector<RatePoint> points;
     for (std::size_t i = 0; i < c.n_points; ++i) {
       points.push_back(RatePoint{cdsmodel::from_tdate(c.dates[i]), c.rates[i]});
     }
-    const std::optional<cdsmodel::ZeroCurve> curve =
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> curve =
         cdsmodel::ZeroCurve::create(cdsmodel::from_tdate(c.base_date), points, c.basis, *dcc);
     ASSERT_TRUE(curve.has_value());
     std::vector<CashFlow> flows;
@@ -317,7 +318,7 @@ TEST(CurveDiscount, MatchesRecordedPresentValues) {
       flows.push_back(CashFlow{cdsmodel::from_tdate(c.flow_dates[i]), c.flow_amounts[i]});
     }
     const InterpType interp = c.interp == 0 ? InterpType::Linear : InterpType::FlatForwards;
-    const std::optional<double> got = cdsmodel::cash_flow_pv(*curve, flows, interp);
+    const cdsmodel::Expected<double> got = cdsmodel::cash_flow_pv(*curve, flows, interp);
     const std::string where = "basis " + std::to_string(c.basis) + " dcc " +
                               std::to_string(c.day_count) + " interp " + std::to_string(c.interp) +
                               " flows " + std::to_string(c.n_flows);

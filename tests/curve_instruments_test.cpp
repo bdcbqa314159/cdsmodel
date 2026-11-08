@@ -75,7 +75,7 @@ std::vector<cdsmodel::RatePoint> swap_strip_of(int id) {
   }
 }
 
-std::optional<cdsmodel::ZeroCurve> input_curve(int stub) {
+cdsmodel::Expected<cdsmodel::ZeroCurve> input_curve(int stub) {
   const std::vector<cdsmodel::RatePoint> points = stub_of(stub);
   return cdsmodel::ZeroCurve::create(cdsmodel::from_tdate(kInstrumentsBaseDate), points, 1.0,
                                      cdsmodel::DayCount::Act365Fixed);
@@ -85,12 +85,12 @@ TEST(CurveInstrumentsGolden, ReplaysRecordedCashCurves) {
   ASSERT_GE(kCashCurveCases.size(), 50u);
   int matched = 0;
   for (const CashCurveCase &c : kCashCurveCases) {
-    const std::optional<cdsmodel::ZeroCurve> in = input_curve(c.stub);
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> in = input_curve(c.stub);
     ASSERT_TRUE(in.has_value());
-    const std::optional<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
+    const cdsmodel::Expected<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
     ASSERT_TRUE(dcc.has_value());
 
-    const std::optional<cdsmodel::ZeroCurve> got =
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> got =
         cdsmodel::curve_with_cash(*in, cash_quotes_of(c.quotes), *dcc);
     ASSERT_EQ(got.has_value(), c.accepted) << "stub " << c.stub << " quotes " << c.quotes;
     if (!c.accepted) {
@@ -114,9 +114,10 @@ TEST(CurveInstrumentsGolden, ReplaysRecordedSwapCurves) {
   ASSERT_GE(kSwapCurveCases.size(), 50u);
   int matched = 0;
   for (const SwapCurveCase &c : kSwapCurveCases) {
-    const std::optional<cdsmodel::ZeroCurve> in = input_curve(c.stub);
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> in = input_curve(c.stub);
     ASSERT_TRUE(in.has_value());
-    const std::optional<cdsmodel::BadDayConv> conv = cdsmodel::bad_day_conv_from_upstream(c.conv);
+    const cdsmodel::Expected<cdsmodel::BadDayConv> conv =
+        cdsmodel::bad_day_conv_from_upstream(c.conv);
     ASSERT_TRUE(conv.has_value());
 
     const std::vector<cdsmodel::RatePoint> strip = swap_strip_of(c.strip);
@@ -127,7 +128,7 @@ TEST(CurveInstrumentsGolden, ReplaysRecordedSwapCurves) {
       rates.push_back(p.rate);
     }
 
-    const std::optional<cdsmodel::ZeroCurve> got =
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> got =
         cdsmodel::curve_with_swaps(*in, std::nullopt, maturities, rates,
                                    {.fixed_frequency = c.frequency,
                                     .float_frequency = c.frequency,
@@ -222,15 +223,15 @@ TEST(CurveInstrumentsGolden, EveryProducedCurveIsStrictlyIncreasing) {
 // No instruments: the curve comes back unchanged. Upstream takes that shortcut
 // before validating anything, which is why the port does too.
 TEST(CurveInstrumentsGolden, NoInstrumentsReturnsTheCurveUnchanged) {
-  const std::optional<cdsmodel::ZeroCurve> in = input_curve(1);
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> in = input_curve(1);
   ASSERT_TRUE(in.has_value());
 
-  const std::optional<cdsmodel::ZeroCurve> cash =
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> cash =
       cdsmodel::curve_with_cash(*in, {}, cdsmodel::DayCount::Act360);
   ASSERT_TRUE(cash.has_value());
   EXPECT_EQ(cash->points().size(), in->points().size());
 
-  const std::optional<cdsmodel::ZeroCurve> swaps = cdsmodel::curve_with_swaps(
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> swaps = cdsmodel::curve_with_swaps(
       *in, std::nullopt, {}, {}, {.interp = cdsmodel::InterpType::FlatForwards},
       cdsmodel::Calendar::none());
   ASSERT_TRUE(swaps.has_value());
@@ -240,7 +241,7 @@ TEST(CurveInstrumentsGolden, NoInstrumentsReturnsTheCurveUnchanged) {
 // The two validators in one upstream file disagree about equal dates: the cash
 // one permits them, the swaps one rejects them. Pinned without the oracle.
 TEST(CurveInstrumentsGolden, TheSwapsPathRejectsEqualMaturities) {
-  const std::optional<cdsmodel::ZeroCurve> in = input_curve(0);
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> in = input_curve(0);
   ASSERT_TRUE(in.has_value());
   const cdsmodel::Date same = *cdsmodel::make_date(2026, 1, 15);
   const std::vector<cdsmodel::Date> dup{same, same};

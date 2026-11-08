@@ -38,6 +38,7 @@
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_interval.hpp>
 #include <cdsmodel/date_sup.hpp>
+#include <cdsmodel/expected.hpp>
 
 #include <algorithm>
 #include <cstddef>
@@ -61,18 +62,16 @@ struct Grid {
   int count = 0;
 };
 
-[[nodiscard]] inline std::optional<Grid> grid_for(Date start, Date maturity, DateInterval interval,
-                                                  bool stub_at_end) {
+[[nodiscard]] inline Expected<Grid> grid_for(Date start, Date maturity, DateInterval interval,
+                                             bool stub_at_end) {
   DateInterval step = interval;
-  std::optional<DateCount> counted;
-  if (stub_at_end) {
-    counted = count_dates(start, maturity, step);
-  } else {
+  if (!stub_at_end) {
     step.periods = -step.periods;
-    counted = count_dates(maturity, start, step);
   }
+  const Expected<DateCount> counted =
+      stub_at_end ? count_dates(start, maturity, step) : count_dates(maturity, start, step);
   if (!counted) {
-    return std::nullopt;
+    return unexpected(counted.error());
   }
   return Grid{step, counted->intervals + (counted->extra_days > 0 ? 2 : 1)};
 }
@@ -86,17 +85,17 @@ struct Grid {
 /// then the far boundary is overwritten with the requested date -- so the stub
 /// shows up as one short period against its neighbour rather than as a date
 /// off the grid.
-[[nodiscard]] inline std::optional<std::vector<Date>>
+[[nodiscard]] inline Expected<std::vector<Date>>
 date_list(Date start, Date maturity, DateInterval interval, bool stub_at_end) {
-  const std::optional<detail::Grid> grid = detail::grid_for(start, maturity, interval, stub_at_end);
+  const Expected<detail::Grid> grid = detail::grid_for(start, maturity, interval, stub_at_end);
   if (!grid) {
-    return std::nullopt;
+    return unexpected(grid.error());
   }
   // One fewer than the grid: the boundary date is assigned, not generated.
-  std::optional<std::vector<Date>> dates =
+  Expected<std::vector<Date>> dates =
       make_date_array(stub_at_end ? start : maturity, grid->interval, 0, grid->count - 1);
   if (!dates) {
-    return std::nullopt;
+    return unexpected(dates.error());
   }
   if (stub_at_end) {
     dates->push_back(maturity);
@@ -120,16 +119,16 @@ date_list(Date start, Date maturity, DateInterval interval, bool stub_at_end) {
 /// With no stub this is exactly `date_list`, and that equivalence is asserted
 /// rather than assumed -- it is the cheapest check that the two generators
 /// share the grid they are supposed to share.
-[[nodiscard]] inline std::optional<std::vector<Date>>
+[[nodiscard]] inline Expected<std::vector<Date>>
 date_list_extended(Date start, Date maturity, DateInterval interval, bool stub_at_end) {
-  const std::optional<detail::Grid> grid = detail::grid_for(start, maturity, interval, stub_at_end);
+  const Expected<detail::Grid> grid = detail::grid_for(start, maturity, interval, stub_at_end);
   if (!grid) {
-    return std::nullopt;
+    return unexpected(grid.error());
   }
-  std::optional<std::vector<Date>> dates =
+  Expected<std::vector<Date>> dates =
       make_date_array(stub_at_end ? start : maturity, grid->interval, 0, grid->count);
   if (!dates) {
-    return std::nullopt;
+    return unexpected(dates.error());
   }
   if (!stub_at_end) {
     std::ranges::reverse(*dates);
@@ -234,18 +233,19 @@ date_list_extended(Date start, Date maturity, DateInterval interval, bool stub_a
 /// comment is not a porting decision, and PORT-9 is the standing reminder of
 /// what happens when a porter decides which of two disagreeing sources was
 /// right. The behaviour is reproduced and the disagreement is recorded.
-[[nodiscard]] inline std::optional<std::vector<Date>>
-date_list_extended_roll(Date start, Date maturity, std::optional<Date> roll, DateInterval interval,
-                        bool stub_at_end) {
+[[nodiscard]] inline Expected<std::vector<Date>> date_list_extended_roll(Date start, Date maturity,
+                                                                         std::optional<Date> roll,
+                                                                         DateInterval interval,
+                                                                         bool stub_at_end) {
   // Upstream's `rollDate == 0` is a sentinel, and TDate 0 is 1601-01-01, a
   // real date. std::optional says "no roll date" without spending one.
   if (!roll || stub_at_end) {
     return date_list_extended(start, maturity, interval, stub_at_end);
   }
 
-  const std::optional<DateCount> span = count_dates(start, maturity, interval);
+  const Expected<DateCount> span = count_dates(start, maturity, interval);
   if (!span) {
-    return std::nullopt;
+    return unexpected(span.error());
   }
   if (span->extra_days != 0) {
     // UPSTREAM-24: the roll date is dropped in exactly the case the
@@ -254,19 +254,18 @@ date_list_extended_roll(Date start, Date maturity, std::optional<Date> roll, Dat
   }
 
   if (start < *roll) {
-    return std::nullopt; // upstream: "Start date cannot be before roll date."
+    return fail(ErrorKind::bad_argument, "the roll date is after the start date");
   }
-  const std::optional<DateCount> from_roll = count_dates(*roll, start, interval);
+  const Expected<DateCount> from_roll = count_dates(*roll, start, interval);
   if (!from_roll) {
-    return std::nullopt;
+    return unexpected(from_roll.error());
   }
   // Either the start sits on the roll grid, or take the grid date before it.
   Date first = start;
   if (from_roll->extra_days != 0) {
-    const std::optional<Date> offset =
-        date_from_date_and_offset(*roll, interval, from_roll->intervals);
+    const Expected<Date> offset = date_from_date_and_offset(*roll, interval, from_roll->intervals);
     if (!offset) {
-      return std::nullopt;
+      return unexpected(offset.error());
     }
     first = *offset;
   }
@@ -280,11 +279,11 @@ date_list_extended_roll(Date start, Date maturity, std::optional<Date> roll, Dat
 /// is `erase(begin())`. A one-date list becomes empty rather than an error --
 /// removing the start date from a list containing only the start date leaves
 /// nothing, which is the right answer and not a degenerate case.
-[[nodiscard]] inline std::optional<std::vector<Date>>
+[[nodiscard]] inline Expected<std::vector<Date>>
 pay_dates(Date start, Date maturity, DateInterval interval, bool stub_at_end) {
-  std::optional<std::vector<Date>> dates = date_list(start, maturity, interval, stub_at_end);
+  Expected<std::vector<Date>> dates = date_list(start, maturity, interval, stub_at_end);
   if (!dates) {
-    return std::nullopt;
+    return unexpected(dates.error());
   }
   if (!dates->empty()) {
     dates->erase(dates->begin());
@@ -310,15 +309,15 @@ pay_dates(Date start, Date maturity, DateInterval interval, bool stub_at_end) {
 /// increasing. Upstream has the same property and nothing downstream of it
 /// re-checks, so the duplicates are kept rather than coalesced: dropping one
 /// would change how many payments a schedule has.
-[[nodiscard]] inline std::optional<std::vector<Date>>
+[[nodiscard]] inline Expected<std::vector<Date>>
 adjust_date_list(std::span<const Date> dates, BadDayConv conv,
                  std::span<const Calendar> calendars) {
   std::vector<Date> adjusted;
   adjusted.reserve(dates.size());
   for (const Date date : dates) {
-    const std::optional<Date> moved = adjust(date, conv, calendars);
+    const Expected<Date> moved = adjust(date, conv, calendars);
     if (!moved) {
-      return std::nullopt;
+      return unexpected(moved.error());
     }
     adjusted.push_back(*moved);
   }

@@ -58,7 +58,7 @@ TEST(InterpCurve, EveryCurvePointInterpolatesToItsOwnRate) {
       const cdsmodel::ZeroCurve curve = curve_at(basis, dcc);
       for (const InterpType interp : {InterpType::Linear, InterpType::FlatForwards}) {
         for (const RatePoint &point : curve.points()) {
-          const std::optional<double> got = cdsmodel::interp_rate(curve, point.date, interp);
+          const cdsmodel::Expected<double> got = cdsmodel::interp_rate(curve, point.date, interp);
           ASSERT_TRUE(got.has_value()) << basis;
           EXPECT_EQ(*got, point.rate) << "basis " << basis << " interp " << static_cast<int>(interp)
                                       << " at " << cdsmodel::to_tdate(point.date);
@@ -78,11 +78,11 @@ TEST(InterpCurve, ExtrapolationIsFlatInBothDirections) {
     const double last = curve.points().back().rate;
     for (const InterpType interp : {InterpType::Linear, InterpType::FlatForwards}) {
       for (const cdsmodel::Date before : {d(1990, 1, 1), d(2020, 6, 1), d(2024, 12, 31)}) {
-        EXPECT_EQ(cdsmodel::interp_rate(curve, before, interp), std::optional{first})
+        EXPECT_EQ(cdsmodel::interp_rate(curve, before, interp), first)
             << "before the curve, at " << cdsmodel::to_tdate(before);
       }
       for (const cdsmodel::Date after : {d(2030, 1, 2), d(2050, 1, 1), d(2099, 12, 31)}) {
-        EXPECT_EQ(cdsmodel::interp_rate(curve, after, interp), std::optional{last})
+        EXPECT_EQ(cdsmodel::interp_rate(curve, after, interp), last)
             << "after the curve, at " << cdsmodel::to_tdate(after);
       }
     }
@@ -104,7 +104,7 @@ TEST(InterpCurve, AnInterpolatedRateStaysWithinItsBracket) {
         for (const double fraction : {0.1, 0.25, 0.5, 0.75, 0.9}) {
           const cdsmodel::Date at = cdsmodel::from_tdate(
               lo + static_cast<cdsmodel::TDate>(fraction * static_cast<double>(hi - lo)));
-          const std::optional<double> got = cdsmodel::interp_rate(curve, at, interp);
+          const cdsmodel::Expected<double> got = cdsmodel::interp_rate(curve, at, interp);
           ASSERT_TRUE(got.has_value());
           const std::string where = "basis " + std::to_string(basis) + " segment " +
                                     std::to_string(i) + " at " + std::to_string(fraction);
@@ -128,7 +128,8 @@ TEST(InterpCurve, LinearInterpolationIsExactlyLinearInTheDate) {
     const double hi = static_cast<double>(cdsmodel::to_tdate(points[i].date));
     for (const double fraction : {0.25, 0.5, 0.75}) {
       const double at = lo + fraction * (hi - lo);
-      const std::optional<double> got = cdsmodel::interp_rate_exact(curve, at, InterpType::Linear);
+      const cdsmodel::Expected<double> got =
+          cdsmodel::interp_rate_exact(curve, at, InterpType::Linear);
       ASSERT_TRUE(got.has_value());
       const double expected =
           points[i - 1].rate + (points[i].rate - points[i - 1].rate) * (at - lo) / (hi - lo);
@@ -149,13 +150,13 @@ TEST(InterpCurve, TheDiscountFactorAtTheBaseDateIsExactlyOne) {
   const std::vector<RatePoint> straddling{{d(2024, 1, 1), 0.03}, {d(2027, 1, 1), 0.05}};
   int checked = 0;
   for (const double basis : {1.0, 2.0, 12.0, cdsmodel::kContinuousBasis}) {
-    const std::optional<cdsmodel::ZeroCurve> curve = cdsmodel::ZeroCurve::create(
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> curve = cdsmodel::ZeroCurve::create(
         d(2025, 6, 1), straddling, basis, cdsmodel::DayCount::Act365Fixed);
     ASSERT_TRUE(curve.has_value()) << basis;
-    const std::optional<double> rate =
+    const cdsmodel::Expected<double> rate =
         cdsmodel::interp_rate(*curve, curve->base_date(), InterpType::FlatForwards);
     ASSERT_TRUE(rate.has_value()) << basis;
-    const std::optional<double> discount =
+    const cdsmodel::Expected<double> discount =
         cdsmodel::rate_to_discount(*rate, curve->base_date(), curve->base_date(),
                                    curve->day_count(), static_cast<long>(basis));
     ASSERT_TRUE(discount.has_value()) << basis;
@@ -169,18 +170,18 @@ TEST(InterpCurve, TheRateIsFlatOnEachSideOfAStraddledBaseDate) {
   // The other half of the same branch: between the two bracketing points the
   // rate does not vary, it jumps once at the base date. That is the "kink".
   const std::vector<RatePoint> straddling{{d(2024, 1, 1), 0.03}, {d(2027, 1, 1), 0.05}};
-  const std::optional<cdsmodel::ZeroCurve> curve =
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> curve =
       cdsmodel::ZeroCurve::create(d(2025, 6, 1), straddling, 1.0, cdsmodel::DayCount::Act365Fixed);
   ASSERT_TRUE(curve.has_value());
   const auto rate_at = [&](cdsmodel::Date at) {
     return cdsmodel::interp_rate(*curve, at, InterpType::FlatForwards);
   };
   // Before the base date: flat at the lower rate.
-  EXPECT_EQ(rate_at(d(2024, 6, 1)), std::optional{0.03});
-  EXPECT_EQ(rate_at(d(2025, 5, 31)), std::optional{0.03});
+  EXPECT_EQ(rate_at(d(2024, 6, 1)), 0.03);
+  EXPECT_EQ(rate_at(d(2025, 5, 31)), 0.03);
   // On and after it: flat at the upper rate.
-  EXPECT_EQ(rate_at(d(2025, 6, 1)), std::optional{0.05});
-  EXPECT_EQ(rate_at(d(2026, 6, 1)), std::optional{0.05});
+  EXPECT_EQ(rate_at(d(2025, 6, 1)), 0.05);
+  EXPECT_EQ(rate_at(d(2026, 6, 1)), 0.05);
 }
 
 // =====================================================================
@@ -191,12 +192,13 @@ TEST(InterpCurve, AFractionalDateInterpolatesBetweenItsWholeNeighbours) {
   const cdsmodel::ZeroCurve curve = curve_at(1.0);
   const double anchor = static_cast<double>(cdsmodel::to_tdate(d(2026, 1, 1)));
   for (const InterpType interp : {InterpType::Linear, InterpType::FlatForwards}) {
-    const std::optional<double> at_whole = cdsmodel::interp_rate_exact(curve, anchor, interp);
-    const std::optional<double> at_next = cdsmodel::interp_rate_exact(curve, anchor + 1.0, interp);
+    const cdsmodel::Expected<double> at_whole = cdsmodel::interp_rate_exact(curve, anchor, interp);
+    const cdsmodel::Expected<double> at_next =
+        cdsmodel::interp_rate_exact(curve, anchor + 1.0, interp);
     ASSERT_TRUE(at_whole.has_value());
     ASSERT_TRUE(at_next.has_value());
     for (const double offset : {0.25, 0.5, 0.75}) {
-      const std::optional<double> at_fraction =
+      const cdsmodel::Expected<double> at_fraction =
           cdsmodel::interp_rate_exact(curve, anchor + offset, interp);
       ASSERT_TRUE(at_fraction.has_value()) << offset;
       const double lo = std::min(*at_whole, *at_next);
@@ -237,17 +239,17 @@ TEST(InterpCurve, MatchesRecordedInterpolations) {
   int checked = 0;
   int fractional = 0;
   for (const auto &c : cdsmodel::golden::kInterpCurveCases) {
-    const std::optional<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
+    const cdsmodel::Expected<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
     ASSERT_TRUE(dcc.has_value()) << c.day_count;
     std::vector<RatePoint> points;
     for (std::size_t i = 0; i < c.n; ++i) {
       points.push_back(RatePoint{cdsmodel::from_tdate(c.dates[i]), c.rates[i]});
     }
-    const std::optional<cdsmodel::ZeroCurve> curve =
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> curve =
         cdsmodel::ZeroCurve::create(cdsmodel::from_tdate(c.base_date), points, c.basis, *dcc);
     ASSERT_TRUE(curve.has_value()) << "basis " << c.basis << " dcc " << c.day_count;
     const InterpType interp = c.interp == 0 ? InterpType::Linear : InterpType::FlatForwards;
-    const std::optional<double> got = cdsmodel::interp_rate_exact(*curve, c.at, interp);
+    const cdsmodel::Expected<double> got = cdsmodel::interp_rate_exact(*curve, c.at, interp);
     const std::string where = "base " + std::to_string(c.base_date) + " basis " +
                               std::to_string(c.basis) + " dcc " + std::to_string(c.day_count) +
                               " interp " + std::to_string(c.interp) + " at " + std::to_string(c.at);

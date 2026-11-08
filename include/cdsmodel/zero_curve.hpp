@@ -21,6 +21,7 @@
 
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/match_range.hpp>
 #include <cdsmodel/rate_conversion.hpp>
 
@@ -118,21 +119,25 @@ public:
   /// difference from `JpmcdsMakeTCurve` is that it skips the rate check, and
   /// that check is what `create` exists to perform -- porting it would
   /// reintroduce the silent-NaN hazard described above behind a second door.
-  [[nodiscard]] static std::optional<ZeroCurve>
-  create(Date base_date, std::span<const RatePoint> points, double basis, DayCount day_count) {
+  [[nodiscard]] static Expected<ZeroCurve> create(Date base_date, std::span<const RatePoint> points,
+                                                  double basis, DayCount day_count) {
     if (points.empty()) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument, "a zero curve needs at least one point");
     }
     for (std::size_t i = 1; i < points.size(); ++i) {
       if (points[i].date <= points[i - 1].date) {
-        return std::nullopt;
+        return fail(ErrorKind::bad_argument, "curve dates must strictly increase: point " +
+                                                 detail::num(i) + " is not after point " +
+                                                 detail::num(i - 1));
       }
     }
     if (day_count != DayCount::Act365Fixed && day_count != DayCount::Act360) {
-      return std::nullopt; // the only conventions the conversion supports
+      return fail(ErrorKind::unsupported, "a zero curve supports only ACT/365F and ACT/360");
     }
     if (basis != kContinuousBasis && !(basis >= 1.0 && basis <= 365.0)) {
-      return std::nullopt;
+      return fail(ErrorKind::unsupported,
+                  "basis " + detail::num(basis) +
+                      " is neither continuous nor 1 to 365 periods per year");
     }
     // PORT-11. Upstream's checkTCurve calls JpmcdsRateValid on every point,
     // "to guarantee we can generate positive discount factors". The port had
@@ -146,7 +151,9 @@ public:
     // The third time that shape has hidden a defect, after PORT-9.
     for (const RatePoint &point : points) {
       if (!rate_valid_year_frac(point.rate, 1.0, basis)) {
-        return std::nullopt;
+        return fail(ErrorKind::bad_argument, "rate " + detail::num(point.rate) +
+                                                 " cannot be discounted at basis " +
+                                                 detail::num(basis));
       }
     }
     return ZeroCurve{base_date, std::vector<RatePoint>{points.begin(), points.end()}, basis,
@@ -342,11 +349,10 @@ private:
 /// paths do not compute the same thing in floating point -- the general path
 /// would route an unchanged rate through `log` and `exp` and return a
 /// different number.
-[[nodiscard]] inline std::optional<double> convert_compound_rate(double in_rate, double in_basis,
-                                                                 DayCount in_day_count,
-                                                                 double out_basis,
-                                                                 DayCount out_day_count) {
-  const auto day_factor = [](DayCount from, DayCount to) -> std::optional<double> {
+[[nodiscard]] inline Expected<double> convert_compound_rate(double in_rate, double in_basis,
+                                                            DayCount in_day_count, double out_basis,
+                                                            DayCount out_day_count) {
+  const auto day_factor = [](DayCount from, DayCount to) -> Expected<double> {
     if (from == to) {
       return 1.0;
     }
@@ -356,22 +362,23 @@ private:
     if (from == DayCount::Act360 && to == DayCount::Act365Fixed) {
       return 365.0 / 360.0;
     }
-    return std::nullopt; // upstream converts between these two and no others
+    // upstream converts between these two and no others
+    return fail(ErrorKind::unsupported, "no conversion between these two day counts");
   };
 
   // Upstream's IS_EQUAL is an exact `==` in the build configuration shipped,
   // so these comparisons are exact and not tolerant.
   if (in_basis == out_basis) {
-    const std::optional<double> factor = day_factor(in_day_count, out_day_count);
+    const Expected<double> factor = day_factor(in_day_count, out_day_count);
     if (!factor) {
-      return std::nullopt;
+      return unexpected(factor.error());
     }
     return in_day_count == out_day_count ? in_rate : in_rate * *factor;
   }
 
-  const std::optional<double> factor = day_factor(in_day_count, out_day_count);
+  const Expected<double> factor = day_factor(in_day_count, out_day_count);
   if (!factor) {
-    return std::nullopt;
+    return unexpected(factor.error());
   }
 
   double cc_rate = 0.0;
@@ -380,7 +387,8 @@ private:
   } else if (in_basis >= 1.0 && in_basis <= 365.0) {
     cc_rate = *factor * in_basis * std::log(1.0 + in_rate / in_basis);
   } else {
-    return std::nullopt;
+    return fail(ErrorKind::unsupported,
+                "the input basis is neither continuous nor 1 to 365 periods per year");
   }
 
   if (out_basis == kContinuousBasis) {
@@ -389,7 +397,8 @@ private:
   if (out_basis >= 1.0 && out_basis <= 365.0) {
     return out_basis * (std::exp(cc_rate / out_basis) - 1.0);
   }
-  return std::nullopt;
+  return fail(ErrorKind::unsupported,
+              "the output basis is neither continuous nor 1 to 365 periods per year");
 }
 
 } // namespace cdsmodel

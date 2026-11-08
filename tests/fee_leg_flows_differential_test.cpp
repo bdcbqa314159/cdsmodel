@@ -141,7 +141,8 @@ TEST_F(FeeLegFlowsDifferential, FeeLegFlowsMatchesOnHandBuiltLegs) {
 
           const cdsmodel::FeeLeg port = cdsmodel::make_fee_leg(schedule, notional, coupon, dcc,
                                                                cdsmodel::AccrualPayment::All, true);
-          const std::optional<std::vector<cdsmodel::CashFlow>> got = cdsmodel::fee_leg_flows(port);
+          const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got =
+              cdsmodel::fee_leg_flows(port);
 
           ASSERT_EQ(static_cast<bool>(ref), got.has_value()) << "acceptance differs";
           if (ref) {
@@ -162,18 +163,18 @@ TEST_F(FeeLegFlowsDifferential, TheAmountUsesAccrualDatesAndTheDateUsesThePayDat
       {d(2024, 1, 15), d(2024, 4, 15), d(2024, 5, 20)}};
   const cdsmodel::FeeLeg leg = cdsmodel::make_fee_leg(
       schedule, 1.0e6, 0.01, cdsmodel::DayCount::Act360, cdsmodel::AccrualPayment::All, true);
-  const std::optional<std::vector<cdsmodel::CashFlow>> got = cdsmodel::fee_leg_flows(leg);
+  const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got = cdsmodel::fee_leg_flows(leg);
   ASSERT_TRUE(got.has_value());
   ASSERT_EQ(got->size(), 1u);
 
   EXPECT_EQ(got->front().date, d(2024, 5, 20)) << "the flow is dated at the PAY date";
   // 91 days from 15 January to 15 April, ACT/360.
-  const std::optional<double> year_frac =
+  const cdsmodel::Expected<double> year_frac =
       cdsmodel::year_fraction(d(2024, 1, 15), d(2024, 4, 15), cdsmodel::DayCount::Act360);
   ASSERT_TRUE(year_frac.has_value());
   EXPECT_DOUBLE_EQ(got->front().amount, *year_frac * 0.01 * 1.0e6);
   // And the accrual really is the shorter span, not the span to the pay date.
-  const std::optional<double> to_pay =
+  const cdsmodel::Expected<double> to_pay =
       cdsmodel::year_fraction(d(2024, 1, 15), d(2024, 5, 20), cdsmodel::DayCount::Act360);
   ASSERT_TRUE(to_pay.has_value());
   EXPECT_NE(got->front().amount, *to_pay * 0.01 * 1.0e6)
@@ -213,7 +214,7 @@ TEST_F(FeeLegFlowsDifferential, CdsFeeLegFlowsMatchesAcrossSchedulesAndConventio
                                   .coupon_interval = {months, cdsmodel::PeriodUnit::Months},
                                   .day_count = dcc,
                                   .bad_day = conv};
-          const std::optional<std::vector<cdsmodel::CashFlow>> got =
+          const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> got =
               cdsmodel::cds_fee_leg_flows(cds, 1.0e7, calendars);
 
           ASSERT_EQ(static_cast<bool>(ref), got.has_value())
@@ -242,10 +243,10 @@ TEST_F(FeeLegFlowsDifferential, TheAccrualConventionCannotChangeNonContingentFlo
                     .day_count = cdsmodel::DayCount::Act360};
 
   cds.pay_accrual_on_default = true;
-  const std::optional<std::vector<cdsmodel::CashFlow>> with =
+  const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> with =
       cdsmodel::cds_fee_leg_flows(cds, 1.0e7, calendars);
   cds.pay_accrual_on_default = false;
-  const std::optional<std::vector<cdsmodel::CashFlow>> without =
+  const cdsmodel::Expected<std::vector<cdsmodel::CashFlow>> without =
       cdsmodel::cds_fee_leg_flows(cds, 1.0e7, calendars);
 
   ASSERT_TRUE(with.has_value());

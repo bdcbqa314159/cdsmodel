@@ -14,6 +14,7 @@
 #include <cdsmodel/cds.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/fee_leg.hpp>
 
 #include <chrono>
@@ -103,22 +104,23 @@ struct DefaultAccrual {
 /// instead means a late settlement still returns what is owed. That is the
 /// intended behaviour -- a debt does not lapse because the question was asked
 /// late -- but it is a divergence, not just a sign fix.
-[[nodiscard]] inline std::optional<DefaultAccrual>
-default_accrual(const Cds &cds, Date trade_date, Date event_determination_date, double notional,
-                std::span<const Calendar> calendars) {
+[[nodiscard]] inline Expected<DefaultAccrual> default_accrual(const Cds &cds, Date trade_date,
+                                                              Date event_determination_date,
+                                                              double notional,
+                                                              std::span<const Calendar> calendars) {
   if (trade_date < event_determination_date) {
     return DefaultAccrual{}; // nothing determined yet; upstream returns zeros
   }
   if (event_determination_date < cds.start) {
-    return std::nullopt; // upstream: a credit event before the contract began
+    return fail(ErrorKind::bad_argument, "the event determination date is before the trade start");
   }
 
   Cds terms = cds;
   terms.pay_accrual_on_default = true; // forced by upstream regardless
   terms.protect_start = true;          // likewise
-  const std::optional<FeeLeg> leg = cds_fee_leg(terms, notional, calendars);
+  const Expected<FeeLeg> leg = cds_fee_leg(terms, notional, calendars);
   if (!leg) {
-    return std::nullopt;
+    return unexpected(leg.error());
   }
 
   for (const FeePayment &period : leg->payments) {
@@ -127,10 +129,10 @@ default_accrual(const Cds &cds, Date trade_date, Date event_determination_date, 
     if (period.accrual_start <= event_determination_date &&
         event_determination_date < period.accrual_end) {
       const Date accrual_end = event_determination_date + std::chrono::days{1};
-      const std::optional<double> fraction =
+      const Expected<double> fraction =
           year_fraction(period.accrual_start, accrual_end, cds.day_count);
       if (!fraction) {
-        return std::nullopt;
+        return unexpected(fraction.error());
       }
       // Association matters. Upstream computes the year fraction into the
       // output and then does `*defaultAccrual *= couponRate * notional`, so
@@ -142,7 +144,7 @@ default_accrual(const Cds &cds, Date trade_date, Date event_determination_date, 
                             *fraction * (cds.coupon_rate * notional)};
     }
   }
-  return std::nullopt; // no coupon period contains the credit event
+  return fail(ErrorKind::bad_argument, "the credit event falls outside every coupon period");
 }
 
 } // namespace cdsmodel

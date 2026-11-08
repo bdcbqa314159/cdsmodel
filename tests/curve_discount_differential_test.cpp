@@ -72,11 +72,11 @@ std::vector<cdsmodel::RatePoint> rising(int count = 5) {
 
 struct Pair {
   Ref ref;
-  std::optional<cdsmodel::ZeroCurve> port;
+  cdsmodel::Expected<cdsmodel::ZeroCurve> port;
 
   Pair(cdsmodel::Date base, const std::vector<cdsmodel::RatePoint> &points, double basis,
        cdsmodel::DayCount dcc)
-      : ref(nullptr) {
+      : ref(nullptr), port(cdsmodel::fail(cdsmodel::ErrorKind::bad_argument, "not built")) {
     std::vector<TDate> dates;
     std::vector<double> rates;
     for (const cdsmodel::RatePoint &p : points) {
@@ -108,7 +108,7 @@ TEST_F(CurveDiscountDifferential, DiscountDateMatchesAcrossBasesDayCountsAndInte
           double want = 0.0;
           const int rc = JpmcdsDiscountDate(cdsmodel::to_tdate(at), pair.ref.curve,
                                             upstream_interp(interp), &want);
-          const std::optional<double> got = cdsmodel::discount_date(*pair.port, at, interp);
+          const cdsmodel::Expected<double> got = cdsmodel::discount_date(*pair.port, at, interp);
           JpmcdsBSearchCheckOrder(TRUE);
           const std::string where = "basis " + std::to_string(basis) + " dcc " +
                                     std::to_string(cdsmodel::to_upstream_code(dcc)) + " interp " +
@@ -166,7 +166,7 @@ TEST_F(CurveDiscountDifferential, DiscountDateAndZeroPriceAgreeOnBothSides) {
             << where << ": upstream's two routes diverged";
 
         const double port_zero_price = pair.port->zero_price(at);
-        const std::optional<double> port_discount_date =
+        const cdsmodel::Expected<double> port_discount_date =
             cdsmodel::discount_date(*pair.port, at, cdsmodel::InterpType::FlatForwards);
         ASSERT_TRUE(port_discount_date.has_value()) << where;
         EXPECT_NEAR(*port_discount_date, port_zero_price,
@@ -217,7 +217,7 @@ TEST_F(CurveDiscountDifferential, CashFlowPvMatchesIncludingTheSummationOrder) {
         JpmcdsBSearchCheckOrder(TRUE);
         double want = 0.0;
         const int rc = JpmcdsCashFlowPV(cfl, pair.ref.curve, upstream_interp(interp), &want);
-        const std::optional<double> got = cdsmodel::cash_flow_pv(*pair.port, flows, interp);
+        const cdsmodel::Expected<double> got = cdsmodel::cash_flow_pv(*pair.port, flows, interp);
         JpmcdsBSearchCheckOrder(TRUE);
         const std::string where =
             "basis " + std::to_string(basis) + " interp " + std::to_string(upstream_interp(interp));
@@ -246,7 +246,7 @@ TEST_F(CurveDiscountDifferential, AnEmptyRunOfFlowsIsWorthNothingOnBothSides) {
   EXPECT_EQ(want, 0.0);
   JpmcdsFreeCFL(empty);
 
-  const std::optional<double> got =
+  const cdsmodel::Expected<double> got =
       cdsmodel::cash_flow_pv(*pair.port, {}, cdsmodel::InterpType::Linear);
   ASSERT_TRUE(got.has_value()) << "no flows is an answer, not an error";
   EXPECT_EQ(*got, 0.0);

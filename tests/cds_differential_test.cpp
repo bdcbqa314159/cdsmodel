@@ -123,9 +123,9 @@ std::string label(const Case &c) {
 }
 
 /// The port's price, or nullopt.
-std::optional<double> port_price(const Market &m, const Case &c, cdsmodel::Date today,
-                                 cdsmodel::Date settle, cdsmodel::Date stepin,
-                                 std::span<const cdsmodel::Calendar> cals) {
+cdsmodel::Expected<double> port_price(const Market &m, const Case &c, cdsmodel::Date today,
+                                      cdsmodel::Date settle, cdsmodel::Date stepin,
+                                      std::span<const cdsmodel::Calendar> cals) {
   cdsmodel::Cds cds;
   cds.start = c.start;
   cds.end = c.end;
@@ -140,8 +140,8 @@ std::optional<double> port_price(const Market &m, const Case &c, cdsmodel::Date 
 }
 
 /// Upstream's price, or nullopt if it returned FAILURE.
-std::optional<double> reference_price(const Market &m, const Case &c, cdsmodel::Date today,
-                                      cdsmodel::Date settle, cdsmodel::Date stepin) {
+cdsmodel::Expected<double> reference_price(const Market &m, const Case &c, cdsmodel::Date today,
+                                           cdsmodel::Date settle, cdsmodel::Date stepin) {
   TDateInterval iv{c.interval_months, 'M', 0};
   TStubMethod stub;
   stub.stubAtEnd = c.stub_pos == cdsmodel::StubPosition::Back ? TRUE : FALSE;
@@ -154,7 +154,7 @@ std::optional<double> reference_price(const Market &m, const Case &c, cdsmodel::
       static_cast<long>(static_cast<char>(c.bad_day)), const_cast<char *>(c.calendar),
       m.ref_discount, m.ref_hazard, c.recovery, c.clean ? TRUE : FALSE, &price);
   if (rc != SUCCESS) {
-    return std::nullopt;
+    return cdsmodel::fail(cdsmodel::ErrorKind::bad_argument, "test fixture could not be built");
   }
   return price;
 }
@@ -197,8 +197,8 @@ TEST_F(CdsDifferential, PriceMatchesBitExactlyAcrossTheContractSpace) {
   for (const Case &c : cases) {
     const std::vector<cdsmodel::Calendar> cals = calendars_for(c.calendar);
     const cdsmodel::Date stepin = today + std::chrono::days{c.stepin_offset};
-    const std::optional<double> expected = reference_price(market, c, today, today, stepin);
-    const std::optional<double> got = port_price(market, c, today, today, stepin, cals);
+    const cdsmodel::Expected<double> expected = reference_price(market, c, today, today, stepin);
+    const cdsmodel::Expected<double> got = port_price(market, c, today, today, stepin, cals);
     ASSERT_EQ(got.has_value(), expected.has_value()) << label(c);
     if (!expected) {
       ++rejected;
@@ -238,8 +238,9 @@ TEST_F(CdsDifferential, PriceMatchesAcrossBadDayConventionsAndCalendars) {
                        0.4,
                        0};
           const std::vector<cdsmodel::Calendar> cals = calendars_for(cal);
-          const std::optional<double> expected = reference_price(market, c, today, today, today);
-          const std::optional<double> got = port_price(market, c, today, today, today, cals);
+          const cdsmodel::Expected<double> expected =
+              reference_price(market, c, today, today, today);
+          const cdsmodel::Expected<double> got = port_price(market, c, today, today, today, cals);
           ASSERT_EQ(got.has_value(), expected.has_value()) << label(c);
           if (expected) {
             EXPECT_EQ(*got, *expected) << label(c);
@@ -278,8 +279,9 @@ TEST_F(CdsDifferential, PriceMatchesForStepInAndSettlementOffCycle) {
         const cdsmodel::Date stepin = today + std::chrono::days{stepin_offset};
         const cdsmodel::Date settle = today + std::chrono::days{settle_offset};
         const std::vector<cdsmodel::Calendar> cals = calendars_for(c.calendar);
-        const std::optional<double> expected = reference_price(market, c, today, settle, stepin);
-        const std::optional<double> got = port_price(market, c, today, settle, stepin, cals);
+        const cdsmodel::Expected<double> expected =
+            reference_price(market, c, today, settle, stepin);
+        const cdsmodel::Expected<double> got = port_price(market, c, today, settle, stepin, cals);
         ASSERT_EQ(got.has_value(), expected.has_value()) << label(c) << " settle+" << settle_offset;
         if (expected) {
           EXPECT_EQ(*got, *expected) << label(c) << " settle+" << settle_offset;
@@ -312,8 +314,8 @@ TEST_F(CdsDifferential, RecoverySweepMatches) {
                    recovery,
                    0};
       const std::vector<cdsmodel::Calendar> cals = calendars_for(c.calendar);
-      const std::optional<double> expected = reference_price(m, c, today, today, today);
-      const std::optional<double> got = port_price(m, c, today, today, today, cals);
+      const cdsmodel::Expected<double> expected = reference_price(m, c, today, today, today);
+      const cdsmodel::Expected<double> got = port_price(m, c, today, today, today, cals);
       ASSERT_EQ(got.has_value(), expected.has_value()) << label(c);
       if (expected) {
         EXPECT_EQ(*got, *expected) << label(c);
@@ -351,7 +353,7 @@ TEST_F(CdsDifferential, ParSpreadMatches) {
           cds.day_count = dcc;
           cds.pay_accrual_on_default = accr;
           const std::vector<cdsmodel::Calendar> cals = calendars_for("NONE");
-          const std::optional<double> got =
+          const cdsmodel::Expected<double> got =
               cdsmodel::cds_par_spread(cds, today, today, cals, m.discount, m.hazard, 0.4);
           ASSERT_EQ(got.has_value(), rc == SUCCESS)
               << "level=" << level << " end=" << cdsmodel::to_tdate(end);
@@ -381,11 +383,11 @@ TEST_F(CdsDifferential, ParSpreadIgnoresTheContractCoupon) {
     cds.start = d(2024, 3, 20);
     cds.end = d(2029, 6, 20);
     cds.coupon_rate = coupon;
-    const std::optional<double> got =
+    const cdsmodel::Expected<double> got =
         cdsmodel::cds_par_spread(cds, today, today, cals, m.discount, m.hazard, 0.4);
     ASSERT_TRUE(got.has_value()) << coupon;
     if (!first) {
-      first = got;
+      first = *got;
     }
     EXPECT_EQ(*got, *first) << "coupon " << coupon << " changed the par spread";
   }
@@ -410,8 +412,8 @@ TEST_F(CdsDifferential, ZeroLengthProtectStartAccruesOneDay) {
                0.4,
                0};
   const std::vector<cdsmodel::Calendar> cals = calendars_for(c.calendar);
-  const std::optional<double> expected = reference_price(m, c, today, today, today);
-  const std::optional<double> got = port_price(m, c, today, today, today, cals);
+  const cdsmodel::Expected<double> expected = reference_price(m, c, today, today, today);
+  const cdsmodel::Expected<double> got = port_price(m, c, today, today, today, cals);
   ASSERT_EQ(got.has_value(), expected.has_value());
   if (expected) {
     EXPECT_EQ(*got, *expected);
@@ -422,7 +424,7 @@ TEST_F(CdsDifferential, ZeroLengthProtectStartAccruesOneDay) {
   cds.start = c.start;
   cds.end = c.end;
   cds.coupon_rate = c.coupon;
-  const std::optional<cdsmodel::FeeLeg> leg = cdsmodel::cds_fee_leg(cds, 1.0, cals);
+  const cdsmodel::Expected<cdsmodel::FeeLeg> leg = cdsmodel::cds_fee_leg(cds, 1.0, cals);
   ASSERT_TRUE(leg.has_value());
   ASSERT_EQ(leg->payments.size(), 1u);
   EXPECT_EQ(leg->payments[0].accrual_start, c.start);
@@ -456,7 +458,7 @@ TEST_F(CdsDifferential, FeeLegScheduleMatchesUpstreamDateForDate) {
           cds.bad_day = bdc;
           cds.protect_start = protect_start;
           const std::vector<cdsmodel::Calendar> cals = calendars_for(cal);
-          const std::optional<cdsmodel::FeeLeg> got = cdsmodel::cds_fee_leg(cds, 1.0, cals);
+          const cdsmodel::Expected<cdsmodel::FeeLeg> got = cdsmodel::cds_fee_leg(cds, 1.0, cals);
 
           ASSERT_EQ(got.has_value(), ref != nullptr)
               << cal << " " << static_cast<char>(bdc) << " " << cdsmodel::to_tdate(end);

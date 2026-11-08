@@ -46,7 +46,7 @@ TEST(CashFlowList, AMergeIsOrderedConservesMoneyAndLosesNoDate) {
     for (unsigned mb = 0; mb < 32; ++mb) {
       const std::vector<CashFlow> a = subset(ma, 1.0, 5);
       const std::vector<CashFlow> b = subset(mb, 100.0, 5);
-      const std::optional<std::vector<CashFlow>> merged = cdsmodel::merge_cash_flows(a, b);
+      const cdsmodel::Expected<std::vector<CashFlow>> merged = cdsmodel::merge_cash_flows(a, b);
       ASSERT_TRUE(merged.has_value()) << ma << "," << mb;
       const std::string where = std::to_string(ma) + "," + std::to_string(mb);
 
@@ -88,7 +88,7 @@ TEST(CashFlowList, MergingTheSameDatesCoalescesThemAndTheSizeIsExact) {
   for (unsigned mask = 1; mask < 32; ++mask) {
     const std::vector<CashFlow> a = subset(mask, 1.0, 5);
     const std::vector<CashFlow> b = subset(mask, 100.0, 5);
-    const std::optional<std::vector<CashFlow>> merged = cdsmodel::merge_cash_flows(a, b);
+    const cdsmodel::Expected<std::vector<CashFlow>> merged = cdsmodel::merge_cash_flows(a, b);
     ASSERT_TRUE(merged.has_value()) << mask;
     // Identical date sets: every pair coalesces, so the result is one list.
     EXPECT_EQ(merged->size(), a.size()) << mask;
@@ -99,7 +99,7 @@ TEST(CashFlowList, MergingTheSameDatesCoalescesThemAndTheSizeIsExact) {
   // Disjoint date sets coalesce nothing, so sizes add.
   const std::vector<CashFlow> evens{cf(40000, 1.0), cf(41000, 2.0)};
   const std::vector<CashFlow> odds{cf(40500, 3.0), cf(41500, 4.0)};
-  const std::optional<std::vector<CashFlow>> merged = cdsmodel::merge_cash_flows(evens, odds);
+  const cdsmodel::Expected<std::vector<CashFlow>> merged = cdsmodel::merge_cash_flows(evens, odds);
   ASSERT_TRUE(merged.has_value());
   EXPECT_EQ(merged->size(), 4u);
 }
@@ -107,14 +107,14 @@ TEST(CashFlowList, MergingTheSameDatesCoalescesThemAndTheSizeIsExact) {
 TEST(CashFlowList, MergingWithAnEmptyListReturnsTheOtherOne) {
   const std::vector<CashFlow> a{cf(40000, 1.0), cf(40500, 2.0), cf(41000, 3.0)};
   const std::vector<CashFlow> none{};
-  const std::optional<std::vector<CashFlow>> left = cdsmodel::merge_cash_flows(a, none);
-  const std::optional<std::vector<CashFlow>> right = cdsmodel::merge_cash_flows(none, a);
+  const cdsmodel::Expected<std::vector<CashFlow>> left = cdsmodel::merge_cash_flows(a, none);
+  const cdsmodel::Expected<std::vector<CashFlow>> right = cdsmodel::merge_cash_flows(none, a);
   ASSERT_TRUE(left.has_value());
   ASSERT_TRUE(right.has_value());
   EXPECT_EQ(*left, a);
   EXPECT_EQ(*right, a);
   // Two empties merge to an empty, not to a failure.
-  const std::optional<std::vector<CashFlow>> neither = cdsmodel::merge_cash_flows(none, none);
+  const cdsmodel::Expected<std::vector<CashFlow>> neither = cdsmodel::merge_cash_flows(none, none);
   ASSERT_TRUE(neither.has_value());
   EXPECT_TRUE(neither->empty());
   // And an empty list is trivially ordered.
@@ -132,8 +132,8 @@ TEST(CashFlowList, TheDatesComeOutTheSameWhicheverWayRoundTheMergeRuns) {
     for (unsigned mb = 0; mb < 32; ++mb) {
       const std::vector<CashFlow> a = subset(ma, 1.0, 5);
       const std::vector<CashFlow> b = subset(mb, 100.0, 5);
-      const std::optional<std::vector<CashFlow>> forward = cdsmodel::merge_cash_flows(a, b);
-      const std::optional<std::vector<CashFlow>> backward = cdsmodel::merge_cash_flows(b, a);
+      const cdsmodel::Expected<std::vector<CashFlow>> forward = cdsmodel::merge_cash_flows(a, b);
+      const cdsmodel::Expected<std::vector<CashFlow>> backward = cdsmodel::merge_cash_flows(b, a);
       ASSERT_TRUE(forward.has_value());
       ASSERT_TRUE(backward.has_value());
       ASSERT_EQ(forward->size(), backward->size()) << ma << "," << mb;
@@ -170,7 +170,7 @@ TEST(CashFlowList, ParallelArraysOfDifferentLengthsAreRefused) {
   EXPECT_FALSE(cdsmodel::make_cash_flows(std::vector<cdsmodel::Date>{}, two).has_value())
       << "no dates, two amounts";
   const std::vector<double> matching{1.0, 2.0, 3.0};
-  const std::optional<std::vector<CashFlow>> made = cdsmodel::make_cash_flows(three, matching);
+  const cdsmodel::Expected<std::vector<CashFlow>> made = cdsmodel::make_cash_flows(three, matching);
   ASSERT_TRUE(made.has_value());
   ASSERT_EQ(made->size(), 3u);
   for (std::size_t i = 0; i < made->size(); ++i) {
@@ -178,7 +178,7 @@ TEST(CashFlowList, ParallelArraysOfDifferentLengthsAreRefused) {
     EXPECT_EQ((*made)[i].amount, matching[i]) << i;
   }
   // Two empties is a legal pairing and makes an empty list.
-  const std::optional<std::vector<CashFlow>> empty =
+  const cdsmodel::Expected<std::vector<CashFlow>> empty =
       cdsmodel::make_cash_flows(std::vector<cdsmodel::Date>{}, std::vector<double>{});
   ASSERT_TRUE(empty.has_value());
   EXPECT_TRUE(empty->empty());
@@ -193,7 +193,7 @@ TEST(CashFlowList, MatchesRecordedMerges) {
   for (const auto &c : cdsmodel::golden::kMergeCases) {
     const std::vector<CashFlow> a = subset(c.a_mask, 1.0);
     const std::vector<CashFlow> b = subset(c.b_mask, 100.0);
-    const std::optional<std::vector<CashFlow>> merged = cdsmodel::merge_cash_flows(a, b);
+    const cdsmodel::Expected<std::vector<CashFlow>> merged = cdsmodel::merge_cash_flows(a, b);
     const std::string where = "masks " + std::to_string(c.a_mask) + "," + std::to_string(c.b_mask);
     ASSERT_TRUE(merged.has_value()) << where;
     ASSERT_EQ(merged->size(), c.n) << where;

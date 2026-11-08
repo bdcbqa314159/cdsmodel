@@ -94,6 +94,7 @@
 #include <cdsmodel/calendar.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/swap_bootstrap.hpp>
 #include <cdsmodel/zero_curve.hpp>
 #include <cdsmodel/zero_curve_builder.hpp>
@@ -147,7 +148,7 @@ inline constexpr DayCount kCashCurveDayCount = DayCount::Act365Fixed;
 /// `stream_cash_flows.hpp`'s `is_well_formed` does exactly that safely -- and
 /// the lesson is narrower than "return early": an accumulating validator is
 /// safe only when no check guards another.
-[[nodiscard]] inline std::optional<ZeroCurve>
+[[nodiscard]] inline Expected<ZeroCurve>
 curve_with_cash(const ZeroCurve &curve, std::span<const RatePoint> quotes, DayCount day_count) {
   if (quotes.empty()) {
     return curve; // upstream copies the curve and returns before validating
@@ -157,35 +158,39 @@ curve_with_cash(const ZeroCurve &curve, std::span<const RatePoint> quotes, DayCo
   // negative-count check a span makes unrepresentable.
   for (std::size_t i = 0; i < quotes.size(); ++i) {
     if (i > 0 && quotes[i - 1].date > quotes[i].date) {
-      return std::nullopt; // note `>`: upstream permits equal dates here
+      return fail(ErrorKind::bad_argument, "cash quote dates must not decrease: quote " +
+                                               detail::num(i) + " predates quote " +
+                                               detail::num(i - 1));
     }
     if (quotes[i].rate <= -1.0) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument,
+                  "cash rate " + detail::num(quotes[i].rate) + " is at or below -100%");
     }
     if (quotes[i].date <= curve.base_date()) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument, "a cash quote matures on or before the curve base date");
     }
   }
 
-  std::optional<ZeroCurveBuilder> cash = ZeroCurveBuilder::create(
+  Expected<ZeroCurveBuilder> cash = ZeroCurveBuilder::create(
       curve.base_date(), static_cast<int>(quotes.size()) + 2, kCashCurveBasis, kCashCurveDayCount);
   if (!cash) {
-    return std::nullopt;
+    return unexpected(cash.error());
   }
   if (!cash->add_money_market(quotes, day_count)) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the money-market quotes could not be added to the curve");
   }
 
   // Upstream only converts the stub curve when it has points -- "only want it
   // if we need it" -- and merges it on both sides, so stub points before the
   // first cash date and after the last are both kept.
   if (!curve.points().empty()) {
-    const std::optional<ZeroCurveBuilder> stub = ZeroCurveBuilder::from_zero_curve(curve);
+    const Expected<ZeroCurveBuilder> stub = ZeroCurveBuilder::from_zero_curve(curve);
     if (!stub) {
-      return std::nullopt;
+      return unexpected(stub.error());
     }
     if (!cash->add_prefix(*stub) || !cash->add_suffix(*stub)) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument,
+                  "the stub curve could not be merged around the cash points");
     }
   }
   return cash->to_zero_curve();
@@ -202,29 +207,33 @@ curve_with_cash(const ZeroCurve &curve, std::span<const RatePoint> quotes, DayCo
 ///
 /// Same validation as the curve-taking overload, except that the "quote on or
 /// before the value date" check compares against `value_date` directly.
-[[nodiscard]] inline std::optional<ZeroCurve>
+[[nodiscard]] inline Expected<ZeroCurve>
 curve_with_cash(Date value_date, std::span<const RatePoint> quotes, DayCount day_count) {
   if (quotes.empty()) {
-    return std::nullopt; // no input curve and no quotes is nothing at all
+    return fail(ErrorKind::bad_argument,
+                "no input curve and no cash quotes is nothing to build from");
   }
   for (std::size_t i = 0; i < quotes.size(); ++i) {
     if (i > 0 && quotes[i - 1].date > quotes[i].date) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument, "cash quote dates must not decrease: quote " +
+                                               detail::num(i) + " predates quote " +
+                                               detail::num(i - 1));
     }
     if (quotes[i].rate <= -1.0) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument,
+                  "cash rate " + detail::num(quotes[i].rate) + " is at or below -100%");
     }
     if (quotes[i].date <= value_date) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument, "a cash quote matures on or before the value date");
     }
   }
-  std::optional<ZeroCurveBuilder> cash = ZeroCurveBuilder::create(
+  Expected<ZeroCurveBuilder> cash = ZeroCurveBuilder::create(
       value_date, static_cast<int>(quotes.size()) + 2, kCashCurveBasis, kCashCurveDayCount);
   if (!cash) {
-    return std::nullopt;
+    return unexpected(cash.error());
   }
   if (!cash->add_money_market(quotes, day_count)) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the money-market quotes could not be added to the curve");
   }
   return cash->to_zero_curve();
 }
@@ -237,12 +246,14 @@ curve_with_cash(Date value_date, std::span<const RatePoint> quotes, DayCount day
 ///
 /// Carries the same UPSTREAM-34 difference as `curve_with_cash`, at
 /// gtozc.c:464.
-[[nodiscard]] inline std::optional<ZeroCurve>
+[[nodiscard]] inline Expected<ZeroCurve>
 curve_with_swaps(const ZeroCurve &curve, const std::optional<ZeroCurve> &discount_curve,
                  std::span<const Date> maturities, std::span<const double> rates,
                  const SwapConventions &conventions, const Calendar &calendar) {
   if (maturities.size() != rates.size()) {
-    return std::nullopt; // upstream takes one count for two arrays
+    return fail(ErrorKind::bad_argument, "maturities and rates must be the same length, got " +
+                                             detail::num(maturities.size()) + " and " +
+                                             detail::num(rates.size()));
   }
   if (maturities.empty()) {
     return curve; // as above: nothing to add, and nothing validated
@@ -251,7 +262,8 @@ curve_with_swaps(const ZeroCurve &curve, const std::optional<ZeroCurve> &discoun
   // CheckZCSwapsInputs. Its frequency and day-count checks are types here.
   for (const double rate : rates) {
     if (rate <= -1.0) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument,
+                  "swap rate " + detail::num(rate) + " is at or below -100%");
     }
   }
   for (std::size_t i = 0; i + 1 < maturities.size(); ++i) {
@@ -259,22 +271,24 @@ curve_with_swaps(const ZeroCurve &curve, const std::optional<ZeroCurve> &discoun
     // increasing dates. The two validators in the same file disagree about
     // whether equal dates are acceptable, and both are reproduced.
     if (maturities[i + 1] <= maturities[i]) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument, "swap maturities must strictly increase: maturity " +
+                                               detail::num(i + 1) + " is not after maturity " +
+                                               detail::num(i));
     }
   }
   for (const Date date : maturities) {
     if (date < curve.base_date()) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument, "a swap matures before the curve base date");
     }
   }
   // Upstream requires the value date itself to be a business day.
   if (!calendar.is_business_day(curve.base_date())) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the curve base date is not a business day");
   }
 
-  std::optional<ZeroCurveBuilder> builder = ZeroCurveBuilder::from_zero_curve(curve);
+  Expected<ZeroCurveBuilder> builder = ZeroCurveBuilder::from_zero_curve(curve);
   if (!builder) {
-    return std::nullopt;
+    return unexpected(builder.error());
   }
 
   // "only want to add swap points not already covered by stub curve, don't
@@ -289,7 +303,8 @@ curve_with_swaps(const ZeroCurve &curve, const std::optional<ZeroCurve> &discoun
   if (offset < maturities.size()) {
     if (!add_swaps(*builder, discount_curve, maturities.subspan(offset), rates.subspan(offset),
                    conventions, std::nullopt, calendar)) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument,
+                  "the swap benchmarks could not be bootstrapped onto the curve");
     }
   }
   return builder->to_zero_curve();
@@ -303,39 +318,45 @@ curve_with_swaps(const ZeroCurve &curve, const std::optional<ZeroCurve> &discoun
 /// `lastStubDate` falls back to the curve's base date --
 /// `if (zeroCurve->fNumItems < 1) lastStubDate = zeroCurve->fBaseDate;` --
 /// which is what this does.
-[[nodiscard]] inline std::optional<ZeroCurve>
+[[nodiscard]] inline Expected<ZeroCurve>
 curve_with_swaps(Date value_date, const std::optional<ZeroCurve> &discount_curve,
                  std::span<const Date> maturities, std::span<const double> rates,
                  const SwapConventions &conventions, const Calendar &calendar) {
   if (maturities.size() != rates.size()) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "maturities and rates must be the same length, got " +
+                                             detail::num(maturities.size()) + " and " +
+                                             detail::num(rates.size()));
   }
   if (maturities.empty()) {
-    return std::nullopt; // no input curve and no benchmarks is nothing at all
+    return fail(ErrorKind::bad_argument,
+                "no input curve and no swap benchmarks is nothing to build from");
   }
   for (const double rate : rates) {
     if (rate <= -1.0) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument,
+                  "swap rate " + detail::num(rate) + " is at or below -100%");
     }
   }
   for (std::size_t i = 0; i + 1 < maturities.size(); ++i) {
     if (maturities[i + 1] <= maturities[i]) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument, "swap maturities must strictly increase: maturity " +
+                                               detail::num(i + 1) + " is not after maturity " +
+                                               detail::num(i));
     }
   }
   for (const Date date : maturities) {
     if (date < value_date) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument, "a swap matures before the value date");
     }
   }
   if (!calendar.is_business_day(value_date)) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the value date is not a business day");
   }
 
-  std::optional<ZeroCurveBuilder> builder = ZeroCurveBuilder::create(
+  Expected<ZeroCurveBuilder> builder = ZeroCurveBuilder::create(
       value_date, static_cast<int>(maturities.size()) + 2, kCashCurveBasis, kCashCurveDayCount);
   if (!builder) {
-    return std::nullopt;
+    return unexpected(builder.error());
   }
 
   // lastStubDate is the base date when the curve has no points.
@@ -344,11 +365,12 @@ curve_with_swaps(Date value_date, const std::optional<ZeroCurve> &discount_curve
     ++offset;
   }
   if (offset >= maturities.size()) {
-    return std::nullopt; // every benchmark was dropped; nothing to build from
+    return fail(ErrorKind::bad_argument, "every swap benchmark matures before the value date");
   }
   if (!add_swaps(*builder, discount_curve, maturities.subspan(offset), rates.subspan(offset),
                  conventions, std::nullopt, calendar)) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument,
+                "the swap benchmarks could not be bootstrapped onto the curve");
   }
   return builder->to_zero_curve();
 }

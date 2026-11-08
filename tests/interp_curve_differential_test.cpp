@@ -64,11 +64,11 @@ long upstream_interp(cdsmodel::InterpType t) {
 /// A curve on both sides, built from the same points.
 struct Pair {
   Ref ref;
-  std::optional<cdsmodel::ZeroCurve> port;
+  cdsmodel::Expected<cdsmodel::ZeroCurve> port;
 
   Pair(cdsmodel::Date base, const std::vector<cdsmodel::RatePoint> &points, double basis,
        cdsmodel::DayCount dcc)
-      : ref(nullptr) {
+      : ref(nullptr), port(cdsmodel::fail(cdsmodel::ErrorKind::bad_argument, "not built")) {
     std::vector<TDate> dates;
     std::vector<double> rates;
     for (const cdsmodel::RatePoint &p : points) {
@@ -111,7 +111,7 @@ TEST_F(InterpCurveDifferential, MatchesAcrossBasesDayCountsAndBothInterpTypes) {
           double want = 0.0;
           const int rc = JpmcdsInterpRate(cdsmodel::to_tdate(at), pair.ref.curve,
                                           upstream_interp(interp), &want);
-          const std::optional<double> got = cdsmodel::interp_rate(*pair.port, at, interp);
+          const cdsmodel::Expected<double> got = cdsmodel::interp_rate(*pair.port, at, interp);
           const std::string where = "basis " + std::to_string(basis) + " dcc " +
                                     std::to_string(cdsmodel::to_upstream_code(dcc)) + " interp " +
                                     std::to_string(upstream_interp(interp)) + " at " +
@@ -149,7 +149,7 @@ TEST_F(InterpCurveDifferential, TheBaseDateBranchKeepsTheDiscountFactorAtOne) {
       double want = 0.0;
       const int rc =
           JpmcdsInterpRate(cdsmodel::to_tdate(at), pair.ref.curve, JPMCDS_FLAT_FORWARDS, &want);
-      const std::optional<double> got =
+      const cdsmodel::Expected<double> got =
           cdsmodel::interp_rate(*pair.port, at, cdsmodel::InterpType::FlatForwards);
       ASSERT_EQ(got.has_value(), rc == SUCCESS) << basis << " at " << cdsmodel::to_tdate(at);
       if (got) {
@@ -183,7 +183,8 @@ TEST_F(InterpCurveDifferential, FractionalDatesMatchForTheConventionsThatAllowTh
              {cdsmodel::InterpType::Linear, cdsmodel::InterpType::FlatForwards}) {
           double want = 0.0;
           const int rc = JpmcdsInterpRateExact(at, pair.ref.curve, upstream_interp(interp), &want);
-          const std::optional<double> got = cdsmodel::interp_rate_exact(*pair.port, at, interp);
+          const cdsmodel::Expected<double> got =
+              cdsmodel::interp_rate_exact(*pair.port, at, interp);
           const std::string where = "dcc " + std::to_string(cdsmodel::to_upstream_code(dcc)) +
                                     " basis " + std::to_string(basis) + " at " + std::to_string(at);
           ASSERT_EQ(got.has_value(), rc == SUCCESS) << where;
@@ -333,19 +334,19 @@ TEST_F(InterpCurveDifferential, TheTwoFlatForwardsImplementationsAgree) {
   const std::vector<cdsmodel::RatePoint> points = points_from(base, 5);
   int compared = 0;
   for (const long basis : {1L, 2L, 4L, 12L}) {
-    const std::optional<cdsmodel::ZeroCurve> curve = cdsmodel::ZeroCurve::create(
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> curve = cdsmodel::ZeroCurve::create(
         base, points, static_cast<double>(basis), cdsmodel::DayCount::Act365Fixed);
     ASSERT_TRUE(curve.has_value()) << basis;
-    std::optional<cdsmodel::ZeroCurveBuilder> builder =
+    cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> builder =
         cdsmodel::ZeroCurveBuilder::create(base, 16, basis, cdsmodel::DayCount::Act365Fixed);
     ASSERT_TRUE(builder.has_value()) << basis;
     for (const cdsmodel::RatePoint &p : points) {
       ASSERT_TRUE(builder->add_rate(p.date, p.rate)) << basis;
     }
     for (const cdsmodel::Date at : {d(2025, 4, 1), d(2026, 7, 15), d(2028, 2, 29)}) {
-      const std::optional<double> from_curve =
+      const cdsmodel::Expected<double> from_curve =
           cdsmodel::interp_rate(*curve, at, cdsmodel::InterpType::FlatForwards);
-      const std::optional<double> from_builder =
+      const cdsmodel::Expected<double> from_builder =
           builder->interpolate(at, cdsmodel::InterpType::FlatForwards);
       ASSERT_TRUE(from_curve.has_value()) << basis;
       ASSERT_TRUE(from_builder.has_value()) << basis;

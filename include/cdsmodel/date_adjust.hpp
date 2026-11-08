@@ -30,6 +30,7 @@
 #include <cdsmodel/calendar.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_interval.hpp>
+#include <cdsmodel/expected.hpp>
 
 #include <optional>
 
@@ -37,11 +38,11 @@ namespace cdsmodel {
 
 /// Advance by an interval, then land on a business day. Replaces
 /// `JpmcdsDateFwdThenAdjust`.
-[[nodiscard]] inline std::optional<Date>
+[[nodiscard]] inline Expected<Date>
 date_fwd_then_adjust(Date date, DateInterval interval, BadDayConv conv, const Calendar &calendar) {
-  const std::optional<Date> advanced = advance(date, interval);
+  const Expected<Date> advanced = advance(date, interval);
   if (!advanced) {
-    return std::nullopt;
+    return unexpected(advanced.error());
   }
   return adjust(*advanced, conv, calendar);
 }
@@ -95,20 +96,20 @@ struct AdjustedOffset {
 /// that by unit letter; here the interval must have `PeriodUnit::Days`, which
 /// is the same condition for a 'D' interval and additionally admits 'W' and
 /// 'U' -- see the header note.
-[[nodiscard]] inline std::optional<Date> advance_adjusted(Date start, const AdjustedOffset &offset,
-                                                          const Calendar &calendar) {
+[[nodiscard]] inline Expected<Date> advance_adjusted(Date start, const AdjustedOffset &offset,
+                                                     const Calendar &calendar) {
   switch (offset.basis) {
   case OffsetBasis::BusinessDays:
     return add_business_days(start, offset.interval.periods, calendar);
 
   case OffsetBasis::BusinessPeriod: {
-    const std::optional<Date> business_eom = business_end_of_month(start, calendar);
+    const Expected<Date> business_eom = business_end_of_month(start, calendar);
     if (!business_eom) {
-      return std::nullopt;
+      return unexpected(business_eom.error());
     }
-    std::optional<Date> end = advance(start, offset.interval);
+    Expected<Date> end = advance(start, offset.interval);
     if (!end) {
-      return std::nullopt;
+      return unexpected(end.error());
     }
     // Order matters: the end-of-month carry happens BEFORE the bad day
     // adjustment, so a month end rolled off a weekend keeps the roll.
@@ -123,24 +124,24 @@ struct AdjustedOffset {
 
   case OffsetBasis::Weekdays: {
     if (offset.interval.unit != PeriodUnit::Days) {
-      return std::nullopt; // upstream: "requires date interval to be in days"
+      return fail(ErrorKind::unsupported, "a calendar-day offset must be expressed in days");
     }
     // Upstream steps against the built-in "NONE" calendar: no holidays, with
     // a Saturday/Sunday weekend. Synthesised here rather than looked up.
-    const std::optional<Calendar> weekends_only = Calendar::create({}, Weekend::Standard);
+    const Expected<Calendar> weekends_only = Calendar::create({}, Weekend::Standard);
     if (!weekends_only) {
-      return std::nullopt;
+      return unexpected(weekends_only.error());
     }
-    const std::optional<Date> stepped =
+    const Expected<Date> stepped =
         add_business_days(start, offset.interval.periods, *weekends_only);
     if (!stepped) {
-      return std::nullopt;
+      return unexpected(stepped.error());
     }
     // Then adjusted against the REAL calendar, which may well move it again.
     return adjust(*stepped, offset.bad_day, calendar);
   }
   }
-  return std::nullopt;
+  return fail(ErrorKind::bad_argument, "stepping the offset leaves the representable date range");
 }
 
 } // namespace cdsmodel

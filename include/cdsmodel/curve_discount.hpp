@@ -33,6 +33,7 @@
 #include <cdsmodel/cash_flow_list.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/interp_curve.hpp>
 #include <cdsmodel/rate_conversion.hpp>
 #include <cdsmodel/zero_curve.hpp>
@@ -63,15 +64,15 @@ namespace cdsmodel {
 /// Returns nullopt where upstream fails: an interpolation that fails, a day
 /// count whose year fraction cannot be computed, or a rate the conversion
 /// refuses for the curve's basis.
-[[nodiscard]] inline std::optional<double> discount_date(const ZeroCurve &curve, Date date,
-                                                         InterpType interp) {
-  const std::optional<double> rate = interp_rate(curve, date, interp);
+[[nodiscard]] inline Expected<double> discount_date(const ZeroCurve &curve, Date date,
+                                                    InterpType interp) {
+  const Expected<double> rate = interp_rate(curve, date, interp);
   if (!rate) {
-    return std::nullopt;
+    return unexpected(rate.error());
   }
-  const std::optional<double> years = year_fraction(curve.base_date(), date, curve.day_count());
+  const Expected<double> years = year_fraction(curve.base_date(), date, curve.day_count());
   if (!years) {
-    return std::nullopt;
+    return unexpected(years.error());
   }
   return rate_to_discount_year_frac(*rate, *years, curve.basis());
 }
@@ -97,13 +98,13 @@ namespace cdsmodel {
 /// one prices off a `ZeroCurveBuilder` and reads its cached discount factors,
 /// this one prices off a finished `ZeroCurve` and interpolates. Upstream has
 /// the same pair for the same reason.
-[[nodiscard]] inline std::optional<double>
+[[nodiscard]] inline Expected<double>
 cash_flow_pv(const ZeroCurve &curve, std::span<const CashFlow> flows, InterpType interp) {
   double pv = 0.0;
   for (const CashFlow &flow : flows) {
-    const std::optional<double> discount = discount_date(curve, flow.date, interp);
+    const Expected<double> discount = discount_date(curve, flow.date, interp);
     if (!discount) {
-      return std::nullopt;
+      return unexpected(discount.error());
     }
     pv += *discount * flow.amount;
   }

@@ -97,7 +97,7 @@ TEST_F(DateScheduleDifferential, DateListMatchesOverEveryStubAndInterval) {
         TDateInterval raw = upstream_interval(iv);
         const Ref ref(JpmcdsNewDateList(cdsmodel::to_tdate(start), cdsmodel::to_tdate(maturity),
                                         &raw, stub_at_end ? TRUE : FALSE));
-        const std::optional<std::vector<cdsmodel::Date>> got =
+        const cdsmodel::Expected<std::vector<cdsmodel::Date>> got =
             cdsmodel::date_list(start, maturity, iv, stub_at_end);
         const std::string where = std::to_string(cdsmodel::to_tdate(start)) + ".." +
                                   std::to_string(cdsmodel::to_tdate(maturity)) + " iv " +
@@ -124,7 +124,7 @@ TEST_F(DateScheduleDifferential, DateListExtendedMatchesOverEveryStubAndInterval
         const Ref ref(JpmcdsNewDateListExtended(cdsmodel::to_tdate(start),
                                                 cdsmodel::to_tdate(maturity), &raw,
                                                 stub_at_end ? TRUE : FALSE));
-        const std::optional<std::vector<cdsmodel::Date>> got =
+        const cdsmodel::Expected<std::vector<cdsmodel::Date>> got =
             cdsmodel::date_list_extended(start, maturity, iv, stub_at_end);
         const std::string where = std::to_string(cdsmodel::to_tdate(start)) + ".." +
                                   std::to_string(cdsmodel::to_tdate(maturity)) + " iv " +
@@ -149,7 +149,7 @@ TEST_F(DateScheduleDifferential, PayDatesMatch) {
         TDateInterval raw = upstream_interval(iv);
         const Ref ref(JpmcdsNewPayDates(cdsmodel::to_tdate(start), cdsmodel::to_tdate(maturity),
                                         &raw, stub_at_end ? TRUE : FALSE));
-        const std::optional<std::vector<cdsmodel::Date>> got =
+        const cdsmodel::Expected<std::vector<cdsmodel::Date>> got =
             cdsmodel::pay_dates(start, maturity, iv, stub_at_end);
         ASSERT_EQ(got.has_value(), static_cast<bool>(ref))
             << cdsmodel::to_tdate(start) << " iv " << iv.periods;
@@ -174,7 +174,7 @@ TEST_F(DateScheduleDifferential, TheRollVariantMatchesIncludingWhereItIgnoresThe
           const Ref ref(JpmcdsNewDateListExtendedRoll(
               cdsmodel::to_tdate(start), cdsmodel::to_tdate(maturity), cdsmodel::to_tdate(roll),
               &raw, stub_at_end ? TRUE : FALSE));
-          const std::optional<std::vector<cdsmodel::Date>> got =
+          const cdsmodel::Expected<std::vector<cdsmodel::Date>> got =
               cdsmodel::date_list_extended_roll(start, maturity, roll, iv, stub_at_end);
           const std::string where = std::to_string(cdsmodel::to_tdate(start)) + " roll " +
                                     std::to_string(cdsmodel::to_tdate(roll)) + " iv " +
@@ -203,7 +203,7 @@ TEST_F(DateScheduleDifferential, NoRollDateMatchesUpstreamsZeroSentinel) {
         const Ref ref(JpmcdsNewDateListExtendedRoll(cdsmodel::to_tdate(start),
                                                     cdsmodel::to_tdate(maturity), 0L, &raw,
                                                     stub_at_end ? TRUE : FALSE));
-        const std::optional<std::vector<cdsmodel::Date>> got =
+        const cdsmodel::Expected<std::vector<cdsmodel::Date>> got =
             cdsmodel::date_list_extended_roll(start, maturity, std::nullopt, iv, stub_at_end);
         ASSERT_EQ(got.has_value(), static_cast<bool>(ref));
         if (got) {
@@ -219,7 +219,7 @@ TEST_F(DateScheduleDifferential, BusinessDayAdjustmentMatchesForEveryConvention)
   // "NONE" is the only name both sides agree on without a file on disk, so
   // that is what this compares -- weekends only, which is the default
   // calendar either way.
-  const std::optional<std::vector<cdsmodel::Date>> schedule = cdsmodel::date_list(
+  const cdsmodel::Expected<std::vector<cdsmodel::Date>> schedule = cdsmodel::date_list(
       d(2024, 1, 6), d(2026, 1, 6), cdsmodel::DateInterval{1, cdsmodel::PeriodUnit::Months}, true);
   ASSERT_TRUE(schedule.has_value());
   // Upstream's built-in "NONE": no holiday dates, standard weekends.
@@ -237,7 +237,7 @@ TEST_F(DateScheduleDifferential, BusinessDayAdjustmentMatchesForEveryConvention)
     }
     const int rc = JpmcdsDateListBusDayAdj(ref.dl, cdsmodel::to_upstream_code(conv),
                                            const_cast<char *>("NONE"));
-    const std::optional<std::vector<cdsmodel::Date>> got =
+    const cdsmodel::Expected<std::vector<cdsmodel::Date>> got =
         cdsmodel::adjust_date_list(*schedule, conv, calendars);
     ASSERT_EQ(got.has_value(), rc == SUCCESS) << "conv " << static_cast<char>(conv);
     if (got) {
@@ -307,11 +307,12 @@ TEST_F(DateScheduleDifferential, Upstream24_TheRollDateIsInertInExactlyTheDocume
       << "and begins before the start";
 
   // The port reproduces all of it -- deliberately. See the header.
-  const std::optional<std::vector<cdsmodel::Date>> ported_inert = cdsmodel::date_list_extended_roll(
-      start, maturity, roll, cdsmodel::DateInterval{3, cdsmodel::PeriodUnit::Months}, false);
+  const cdsmodel::Expected<std::vector<cdsmodel::Date>> ported_inert =
+      cdsmodel::date_list_extended_roll(
+          start, maturity, roll, cdsmodel::DateInterval{3, cdsmodel::PeriodUnit::Months}, false);
   ASSERT_TRUE(ported_inert.has_value());
   EXPECT_EQ(*ported_inert, as_dates(with_roll.dl));
-  const std::optional<std::vector<cdsmodel::Date>> ported_effective =
+  const cdsmodel::Expected<std::vector<cdsmodel::Date>> ported_effective =
       cdsmodel::date_list_extended_roll(aligned_start, aligned_maturity, roll,
                                         cdsmodel::DateInterval{3, cdsmodel::PeriodUnit::Months},
                                         false);
@@ -339,12 +340,12 @@ TEST_F(DateScheduleDifferential, PassingTheStartDateAsTheRollDateIsNotAlwaysANoO
   int differing = 0;
   for (int month = 1; month <= 12; ++month) {
     for (int start_day = 27; start_day <= 31; ++start_day) {
-      const std::optional<cdsmodel::Date> start = cdsmodel::make_date(2024, month, start_day);
+      const cdsmodel::Expected<cdsmodel::Date> start = cdsmodel::make_date(2024, month, start_day);
       if (!start) {
         continue;
       }
       for (int maturity_day = 27; maturity_day <= 31; ++maturity_day) {
-        const std::optional<cdsmodel::Date> maturity =
+        const cdsmodel::Expected<cdsmodel::Date> maturity =
             cdsmodel::make_date(2027, month, maturity_day);
         if (!maturity) {
           continue;
@@ -370,7 +371,7 @@ TEST_F(DateScheduleDifferential, PassingTheStartDateAsTheRollDateIsNotAlwaysANoO
           ASSERT_TRUE(no_roll);
 
           // Whatever upstream does, the port must do.
-          const std::optional<std::vector<cdsmodel::Date>> ported =
+          const cdsmodel::Expected<std::vector<cdsmodel::Date>> ported =
               cdsmodel::date_list_extended_roll(*start, *maturity, *start, iv, false);
           ASSERT_TRUE(ported.has_value());
           const std::string where = std::to_string(month) + "/" + std::to_string(start_day) +

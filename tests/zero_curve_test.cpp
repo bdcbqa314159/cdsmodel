@@ -222,7 +222,7 @@ TEST(ZeroCurve, EveryConstructibleCurveCanBePriced) {
         for (int years = 1; years <= 4; ++years) {
           pts.push_back({*cdsmodel::make_date(2024 + years, 1, 1), rate});
         }
-        const std::optional<cdsmodel::ZeroCurve> curve =
+        const cdsmodel::Expected<cdsmodel::ZeroCurve> curve =
             cdsmodel::ZeroCurve::create(base, pts, basis, dcc);
         if (!curve) {
           ++refused;
@@ -262,7 +262,7 @@ TEST(ZeroCurve, ARateAtOrBelowMinusBasisIsRefused) {
       cdsmodel::ZeroCurve::create(base, below, 1.0, cdsmodel::DayCount::Act365Fixed).has_value());
   // Just inside the boundary is fine, and prices finitely.
   const std::vector<cdsmodel::RatePoint> inside{{*cdsmodel::make_date(2029, 1, 1), -0.9999}};
-  const std::optional<cdsmodel::ZeroCurve> ok =
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> ok =
       cdsmodel::ZeroCurve::create(base, inside, 1.0, cdsmodel::DayCount::Act365Fixed);
   ASSERT_TRUE(ok.has_value());
   EXPECT_TRUE(std::isfinite(ok->zero_price(*cdsmodel::make_date(2029, 1, 1))));

@@ -70,6 +70,7 @@
 #include <cdsmodel/date_interval.hpp>
 #include <cdsmodel/date_sup.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/float_rate.hpp>
 #include <cdsmodel/root_find.hpp>
 #include <cdsmodel/stream_cash_flows.hpp>
@@ -146,7 +147,7 @@ namespace detail {
   if (curve.empty() || rate_old == 0.0) {
     return false; // upstream's two documented, unchecked preconditions
   }
-  const std::optional<double> year_frac = year_fraction(date_old, date_new, day_count);
+  const Expected<double> year_frac = year_fraction(date_old, date_new, day_count);
   if (!year_frac) {
     return false;
   }
@@ -171,21 +172,22 @@ namespace detail {
 /// `price - 1.0` is upstream's: the fixed leg carries notional +1 and the
 /// floating leg -1, so `fixed + float` is the swap's value and the root is
 /// where it equals `1 - price`.
-[[nodiscard]] inline std::optional<double>
-swap_pv(const ZeroCurve &estimation_curve, InterpType interp, std::span<const CashFlow> fixed_flows,
-        const FloatStream &float_stream, double price, BadDayConv rate_bad_day,
-        const Calendar &calendar, const std::optional<ZeroCurve> &discount_curve) {
-  const std::optional<std::vector<CashFlow>> float_flows =
+[[nodiscard]] inline Expected<double> swap_pv(const ZeroCurve &estimation_curve, InterpType interp,
+                                              std::span<const CashFlow> fixed_flows,
+                                              const FloatStream &float_stream, double price,
+                                              BadDayConv rate_bad_day, const Calendar &calendar,
+                                              const std::optional<ZeroCurve> &discount_curve) {
+  const Expected<std::vector<CashFlow>> float_flows =
       float_stream_cash_flows(estimation_curve, interp, float_stream, rate_bad_day, calendar);
   if (!float_flows) {
-    return std::nullopt;
+    return unexpected(float_flows.error());
   }
   // Upstream reassigns its own parameter: `if (discZC == NULL) discZC = zeroCurve;`
   const ZeroCurve &discounting = discount_curve ? *discount_curve : estimation_curve;
-  const std::optional<double> float_pv = cash_flow_pv(discounting, *float_flows, interp);
-  const std::optional<double> fixed_pv = cash_flow_pv(discounting, fixed_flows, interp);
+  const Expected<double> float_pv = cash_flow_pv(discounting, *float_flows, interp);
+  const Expected<double> fixed_pv = cash_flow_pv(discounting, fixed_flows, interp);
   if (!float_pv || !fixed_pv) {
-    return std::nullopt;
+    return unexpected(!float_pv ? float_pv.error() : (fixed_pv.error()));
   }
   return *fixed_pv + *float_pv + price - 1.0;
 }
@@ -225,10 +227,8 @@ swap_pv(const ZeroCurve &estimation_curve, InterpType interp, std::span<const Ca
                                                  Date maturity, double rate,
                                                  const SwapConventions &conventions,
                                                  const Calendar &calendar) {
-  const std::optional<DateInterval> fixed_interval =
-      frequency_to_interval(conventions.fixed_frequency);
-  const std::optional<DateInterval> float_interval =
-      frequency_to_interval(conventions.float_frequency);
+  const Expected<DateInterval> fixed_interval = frequency_to_interval(conventions.fixed_frequency);
+  const Expected<DateInterval> float_interval = frequency_to_interval(conventions.float_frequency);
   if (!fixed_interval || !float_interval) {
     return false;
   }
@@ -239,14 +239,14 @@ swap_pv(const ZeroCurve &estimation_curve, InterpType interp, std::span<const Ca
 
   const std::vector<Calendar> calendars{calendar};
 
-  const std::optional<bool> fixed_end_stub =
+  const Expected<bool> fixed_end_stub =
       is_end_stub(curve.value_date(), maturity, *fixed_interval, conventions.stub_position);
   if (!fixed_end_stub) {
     return false;
   }
   const CouponConventions coupon_conventions{
       .pay = conventions.bad_day, .accrual = conventions.bad_day, .reset = conventions.bad_day};
-  const std::optional<CouponSchedule> fixed_schedule =
+  const Expected<CouponSchedule> fixed_schedule =
       coupon_schedule({.start = curve.value_date(),
                        .maturity = maturity,
                        .coupon_interval = *fixed_interval,
@@ -258,7 +258,7 @@ swap_pv(const ZeroCurve &estimation_curve, InterpType interp, std::span<const Ca
 
   // Notional +1 on the fixed side, and the same rate for stubs and regular
   // periods -- upstream passes `rate, rate, rate`.
-  const std::optional<std::vector<CashFlow>> fixed_flows =
+  const Expected<std::vector<CashFlow>> fixed_flows =
       fixed_stream_cash_flows({.schedule = *fixed_schedule,
                                .principal = 1.0,
                                .pay_day_count = conventions.fixed_day_count,
@@ -269,12 +269,12 @@ swap_pv(const ZeroCurve &estimation_curve, InterpType interp, std::span<const Ca
     return false;
   }
 
-  const std::optional<bool> float_end_stub =
+  const Expected<bool> float_end_stub =
       is_end_stub(curve.value_date(), maturity, *float_interval, conventions.stub_position);
   if (!float_end_stub) {
     return false;
   }
-  const std::optional<CouponSchedule> float_schedule =
+  const Expected<CouponSchedule> float_schedule =
       coupon_schedule({.start = curve.value_date(),
                        .maturity = maturity,
                        .coupon_interval = *float_interval,
@@ -300,11 +300,11 @@ swap_pv(const ZeroCurve &estimation_curve, InterpType interp, std::span<const Ca
   // The furthest-reaching date. UPSTREAM-29 lives at these three reads
   // upstream, where the schedule can be empty; here it cannot be.
   const CouponDates &last = float_schedule->periods.back();
-  const std::optional<Date> unadjusted_index_maturity = advance(last.reset, *float_interval);
+  const Expected<Date> unadjusted_index_maturity = advance(last.reset, *float_interval);
   if (!unadjusted_index_maturity) {
     return false;
   }
-  const std::optional<Date> index_maturity =
+  const Expected<Date> index_maturity =
       adjust(*unadjusted_index_maturity, conventions.bad_day, calendars);
   if (!index_maturity) {
     return false;
@@ -324,7 +324,7 @@ swap_pv(const ZeroCurve &estimation_curve, InterpType interp, std::span<const Ca
     return false;
   }
 
-  const std::optional<ZeroCurve> snapshot = curve.to_zero_curve();
+  const Expected<ZeroCurve> snapshot = curve.to_zero_curve();
   if (!snapshot) {
     return false;
   }
@@ -334,19 +334,19 @@ swap_pv(const ZeroCurve &estimation_curve, InterpType interp, std::span<const Ca
   // snapshot is rebuilt from a builder whose rate is set, so the invariant
   // between rate and discount cannot drift.
   ZeroCurveBuilder trial = curve;
-  const auto objective = [&](double guess) -> std::optional<double> {
+  const auto objective = [&](double guess) -> Expected<double> {
     if (!trial.set_rate(*solved_index, guess)) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument, "the trial rate could not be stored on the curve");
     }
-    const std::optional<ZeroCurve> estimation = trial.to_zero_curve();
+    const Expected<ZeroCurve> estimation = trial.to_zero_curve();
     if (!estimation) {
-      return std::nullopt;
+      return unexpected(estimation.error());
     }
     return detail::swap_pv(*estimation, conventions.interp, *fixed_flows, float_stream, price,
                            conventions.bad_day, calendar, discount_curve);
   };
 
-  const std::optional<double> solved = root_find_brent(objective, swap_solve_options(rate));
+  const Expected<double> solved = root_find_brent(objective, swap_solve_options(rate));
   if (!solved) {
     return false;
   }
@@ -356,17 +356,16 @@ swap_pv(const ZeroCurve &estimation_curve, InterpType interp, std::span<const Ca
 
   // Zero rates at every cash-flow date, so a benchmark re-priced off this
   // curve comes back to par whatever interpolation the pricer uses.
-  const std::optional<ZeroCurve> solved_curve = curve.to_zero_curve();
+  const Expected<ZeroCurve> solved_curve = curve.to_zero_curve();
   if (!solved_curve) {
     return false;
   }
-  const std::optional<std::vector<CashFlow>> float_flows = float_stream_cash_flows(
+  const Expected<std::vector<CashFlow>> float_flows = float_stream_cash_flows(
       *solved_curve, conventions.interp, float_stream, conventions.bad_day, calendar);
   if (!float_flows) {
     return false;
   }
-  const std::optional<std::vector<CashFlow>> swap_flows =
-      merge_cash_flows(*fixed_flows, *float_flows);
+  const Expected<std::vector<CashFlow>> swap_flows = merge_cash_flows(*fixed_flows, *float_flows);
   if (!swap_flows) {
     return false;
   }
@@ -378,7 +377,7 @@ swap_pv(const ZeroCurve &estimation_curve, InterpType interp, std::span<const Ca
   // necessarily the same as the pay date. Add another zero point to help
   // guarantee that the benchmarks price out to par."
   if (min_date != max_date) {
-    const std::optional<double> at_min = curve.interpolate(min_date, conventions.interp);
+    const Expected<double> at_min = curve.interpolate(min_date, conventions.interp);
     if (!at_min) {
       return false;
     }
@@ -403,7 +402,7 @@ add_swap(ZeroCurveBuilder &curve, const std::optional<ZeroCurve> &discount_curve
                                   calendar);
   }
 
-  const std::optional<DateInterval> interval = frequency_to_interval(conventions.fixed_frequency);
+  const Expected<DateInterval> interval = frequency_to_interval(conventions.fixed_frequency);
   if (!interval) {
     return false;
   }
@@ -411,7 +410,7 @@ add_swap(ZeroCurveBuilder &curve, const std::optional<ZeroCurve> &discount_curve
   // stub -- if the schedule needs one -- is at the end.
   bool end_stub = true;
   if (!on_cycle) {
-    const std::optional<bool> detected =
+    const Expected<bool> detected =
         is_end_stub(curve.value_date(), maturity, *interval, conventions.stub_position);
     if (!detected) {
       return false;
@@ -423,13 +422,13 @@ add_swap(ZeroCurveBuilder &curve, const std::optional<ZeroCurve> &discount_curve
   const SwapBadDayRule rule{.substitutions = bad_days, .conv = conventions.bad_day};
 
   // UPSTREAM-32 lives in this call upstream, with matDate == valueDate.
-  const std::optional<std::vector<CashFlow>> flows =
+  const Expected<std::vector<CashFlow>> flows =
       swap_cash_flows(curve.value_date(), maturity, end_stub, rate, *interval,
                       conventions.fixed_day_count, rule, calendars);
   if (!flows) {
     return false;
   }
-  const std::optional<Date> adjusted_maturity =
+  const Expected<Date> adjusted_maturity =
       zc_adjust_date(maturity, bad_days, conventions.bad_day, calendars);
   if (!adjusted_maturity) {
     return false;
@@ -468,7 +467,7 @@ add_swap(ZeroCurveBuilder &curve, const std::optional<ZeroCurve> &discount_curve
   }
 
   const std::vector<Calendar> calendars{calendar};
-  const std::optional<std::vector<SwapDate>> dates =
+  const Expected<std::vector<SwapDate>> dates =
       bad_days ? swap_dates_from_adjusted(curve.value_date(), conventions.fixed_frequency,
                                           maturities, bad_days)
                : swap_dates_from_original(curve.value_date(), conventions.fixed_frequency,

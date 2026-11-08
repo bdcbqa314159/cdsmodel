@@ -93,7 +93,7 @@ bool same_coupon_period(const cdsmodel::Cds &cds, cdsmodel::Date trade, cdsmodel
   cdsmodel::Cds terms = cds;
   terms.pay_accrual_on_default = true;
   terms.protect_start = true;
-  const std::optional<cdsmodel::FeeLeg> leg = cdsmodel::cds_fee_leg(terms, 1.0, cals);
+  const cdsmodel::Expected<cdsmodel::FeeLeg> leg = cdsmodel::cds_fee_leg(terms, 1.0, cals);
   if (!leg) {
     return false;
   }
@@ -122,7 +122,7 @@ TEST_F(DefaultedDifferential, AgreesWhereverTheEventAndTradeShareACouponPeriod) 
             continue;
           }
           const Reference expected = reference_accrual(cds, trade, edd, 1.0e7);
-          const std::optional<cdsmodel::DefaultAccrual> got =
+          const cdsmodel::Expected<cdsmodel::DefaultAccrual> got =
               cdsmodel::default_accrual(cds, trade, edd, 1.0e7, cals);
           const std::string where = "edd+" + std::to_string(event_offset) + " lag " +
                                     std::to_string(lag) + " dcc " +
@@ -150,7 +150,7 @@ TEST_F(DefaultedDifferential, TheTradeDateBeforeTheEventGivesZeroInBoth) {
     const cdsmodel::Date edd = d(2024, 8, 1);
     const cdsmodel::Date trade = edd - std::chrono::days{lead};
     const Reference expected = reference_accrual(cds, trade, edd, 1.0e7);
-    const std::optional<cdsmodel::DefaultAccrual> got =
+    const cdsmodel::Expected<cdsmodel::DefaultAccrual> got =
         cdsmodel::default_accrual(cds, trade, edd, 1.0e7, cals);
     ASSERT_TRUE(expected.ok) << lead;
     ASSERT_TRUE(got.has_value()) << lead;
@@ -184,7 +184,7 @@ TEST_F(DefaultedDifferential, Upstream11_UpstreamGoesNegativeOnceSettlementCross
   const cdsmodel::Cds cds = quarterly(d(2024, 3, 20), d(2029, 3, 20));
   const cdsmodel::Date edd = d(2024, 8, 1);
 
-  const std::optional<cdsmodel::DefaultAccrual> correct =
+  const cdsmodel::Expected<cdsmodel::DefaultAccrual> correct =
       cdsmodel::default_accrual(cds, edd, edd, 1.0e7, cals);
   ASSERT_TRUE(correct.has_value());
   EXPECT_EQ(correct->days, 43) << "the port's own answer moved; the rest of this test assumes 43";
@@ -200,7 +200,7 @@ TEST_F(DefaultedDifferential, Upstream11_UpstreamGoesNegativeOnceSettlementCross
     ++negative_cases;
 
     // The port is independent of the lag, which is the whole point.
-    const std::optional<cdsmodel::DefaultAccrual> got =
+    const cdsmodel::Expected<cdsmodel::DefaultAccrual> got =
         cdsmodel::default_accrual(cds, trade, edd, 1.0e7, cals);
     ASSERT_TRUE(got.has_value()) << lag;
     EXPECT_EQ(got->days, correct->days) << "the port's answer varied with the trade date";
@@ -221,12 +221,12 @@ TEST_F(DefaultedDifferential, Upstream11_UpstreamFailsOnLateSettlementWhereThePo
 
   EXPECT_FALSE(reference_accrual(cds, late_trade, edd, 1.0e7).ok)
       << "upstream now answers for a late settlement -- revisit the correction";
-  const std::optional<cdsmodel::DefaultAccrual> got =
+  const cdsmodel::Expected<cdsmodel::DefaultAccrual> got =
       cdsmodel::default_accrual(cds, late_trade, edd, 1.0e7, cals);
   ASSERT_TRUE(got.has_value());
   EXPECT_GT(got->days, 0);
   // And it equals the answer from asking on the event date itself.
-  const std::optional<cdsmodel::DefaultAccrual> prompt =
+  const cdsmodel::Expected<cdsmodel::DefaultAccrual> prompt =
       cdsmodel::default_accrual(cds, edd, edd, 1.0e7, cals);
   ASSERT_TRUE(prompt.has_value());
   EXPECT_EQ(got->days, prompt->days);

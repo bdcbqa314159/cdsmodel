@@ -67,7 +67,8 @@ cdsmodel::ZeroCurve port_curve(const TCurve *tc) {
   for (int i = 0; i < tc->fNumItems; ++i) {
     pts.push_back({cdsmodel::from_tdate(tc->fArray[i].fDate), tc->fArray[i].fRate});
   }
-  const std::optional<cdsmodel::DayCount> dcc = cdsmodel::from_upstream_code(tc->fDayCountConv);
+  const cdsmodel::Expected<cdsmodel::DayCount> dcc =
+      cdsmodel::from_upstream_code(tc->fDayCountConv);
   return *cdsmodel::ZeroCurve::create(cdsmodel::from_tdate(tc->fBaseDate), pts, tc->fBasis,
                                       dcc.value_or(cdsmodel::DayCount::Act365Fixed));
 }
@@ -137,9 +138,9 @@ std::vector<cdsmodel::Calendar> none_calendar() {
 }
 
 /// Upstream's upfront charge over the same inputs.
-std::optional<double> reference_charge(const cdsmodel::Cds &cds,
-                                       const cdsmodel::UpfrontDates &dates, TCurve *discount,
-                                       double one_spread, double recovery, bool clean) {
+cdsmodel::Expected<double> reference_charge(const cdsmodel::Cds &cds,
+                                            const cdsmodel::UpfrontDates &dates, TCurve *discount,
+                                            double one_spread, double recovery, bool clean) {
   TDateInterval iv{cds.coupon_interval.periods, 'M', 0};
   TStubMethod stub;
   stub.stubAtEnd = cds.stub.position == cdsmodel::StubPosition::Back ? TRUE : FALSE;
@@ -153,14 +154,14 @@ std::optional<double> reference_charge(const cdsmodel::Cds &cds,
       cdsmodel::to_upstream_code(cds.day_count), static_cast<long>(static_cast<char>(cds.bad_day)),
       const_cast<char *>("None"), discount, one_spread, recovery, clean ? TRUE : FALSE, &result);
   if (rc != SUCCESS) {
-    return std::nullopt;
+    return cdsmodel::fail(cdsmodel::ErrorKind::bad_argument, "test fixture could not be built");
   }
   return result;
 }
 
-std::optional<double> reference_spread(const cdsmodel::Cds &cds,
-                                       const cdsmodel::UpfrontDates &dates, TCurve *discount,
-                                       double charge, double recovery, bool clean) {
+cdsmodel::Expected<double> reference_spread(const cdsmodel::Cds &cds,
+                                            const cdsmodel::UpfrontDates &dates, TCurve *discount,
+                                            double charge, double recovery, bool clean) {
   TDateInterval iv{cds.coupon_interval.periods, 'M', 0};
   TStubMethod stub;
   stub.stubAtEnd = FALSE;
@@ -174,7 +175,7 @@ std::optional<double> reference_spread(const cdsmodel::Cds &cds,
       cdsmodel::to_upstream_code(cds.day_count), static_cast<long>(static_cast<char>(cds.bad_day)),
       const_cast<char *>("None"), discount, charge, recovery, clean ? TRUE : FALSE, &result);
   if (rc != SUCCESS) {
-    return std::nullopt;
+    return cdsmodel::fail(cdsmodel::ErrorKind::bad_argument, "test fixture could not be built");
   }
   return result;
 }
@@ -196,12 +197,12 @@ TEST_F(CdsoneDifferential, SpreadSolverInvertsTheUpfrontCharge) {
     for (double spread_bps : {25.0, 100.0, 500.0, 1000.0, 3600.0, 7200.0}) {
       for (double recovery : {0.0, 0.4, 0.8}) {
         const double spread = spread_bps / 10000.0;
-        const std::optional<double> charge = cdsmodel::cdsone_upfront_charge(
+        const cdsmodel::Expected<double> charge = cdsmodel::cdsone_upfront_charge(
             cds, dates, cals, discount, spread, recovery, /*pay_accrued_at_start=*/false);
         if (!charge) {
           continue;
         }
-        const std::optional<double> recovered = cdsmodel::cdsone_spread(
+        const cdsmodel::Expected<double> recovered = cdsmodel::cdsone_spread(
             cds, dates, cals, discount, *charge, recovery, /*pay_accrued_at_start=*/false);
         ASSERT_TRUE(recovered.has_value())
             << "could not invert a charge of " << *charge << " at spread " << spread;
@@ -227,13 +228,13 @@ TEST_F(CdsoneDifferential, ChargeFallsAsTheContractCouponRises) {
 
   std::optional<double> previous;
   for (double coupon_bps : {0.0, 500.0, 1800.0, 3600.0, 5400.0, 7200.0}) {
-    const std::optional<double> charge = cdsmodel::cdsone_upfront_charge(
+    const cdsmodel::Expected<double> charge = cdsmodel::cdsone_upfront_charge(
         example_cds(coupon_bps), example_dates(), cals, discount, 0.36, 0.4, false);
     ASSERT_TRUE(charge.has_value()) << coupon_bps;
     if (previous) {
       EXPECT_LT(*charge, *previous) << "coupon " << coupon_bps << "bps did not reduce the charge";
     }
-    previous = charge;
+    previous = *charge;
   }
   JpmcdsFreeTCurve(ir);
 }
@@ -262,7 +263,7 @@ TEST_F(CdsoneDifferential, ReproducesTheShippedExampleToThePrintedPrecision) {
   // Printed with %f, so six decimals; compare to half a unit of the last one.
   for (const Expected &e : {Expected{0.0, 38651.944609}, Expected{3600.0, -10682.519172},
                             Expected{7200.0, -60016.982954}}) {
-    const std::optional<double> got = cdsmodel::cdsone_upfront_charge(
+    const cdsmodel::Expected<double> got = cdsmodel::cdsone_upfront_charge(
         example_cds(e.coupon_bps), example_dates(), cals, discount, 3600.0 / 10000.0, 0.4,
         /*pay_accrued_at_start=*/false);
     ASSERT_TRUE(got.has_value()) << e.coupon_bps << "bps";
@@ -288,9 +289,9 @@ TEST_F(CdsoneDifferential, TheShippedExampleMatchesUpstreamBitExactly) {
 
   for (double coupon_bps : {0.0, 3600.0, 7200.0}) {
     const cdsmodel::Cds cds = example_cds(coupon_bps);
-    const std::optional<double> expected =
+    const cdsmodel::Expected<double> expected =
         reference_charge(cds, example_dates(), ir, 0.36, 0.4, false);
-    const std::optional<double> got =
+    const cdsmodel::Expected<double> got =
         cdsmodel::cdsone_upfront_charge(cds, example_dates(), cals, discount, 0.36, 0.4, false);
     ASSERT_TRUE(expected.has_value()) << coupon_bps;
     ASSERT_TRUE(got.has_value()) << coupon_bps;
@@ -330,9 +331,9 @@ TEST_F(CdsoneDifferential, UpfrontChargeMatchesBitExactlyAcrossTheQuoteSpace) {
                   " R=" + std::to_string(recovery) + (clean ? " clean" : " dirty") +
                   " dcc=" + std::to_string(cdsmodel::to_upstream_code(dcc));
 
-              const std::optional<double> expected =
+              const cdsmodel::Expected<double> expected =
                   reference_charge(cds, example_dates(), ir, spread_bps / 10000.0, recovery, clean);
-              const std::optional<double> got = cdsmodel::cdsone_upfront_charge(
+              const cdsmodel::Expected<double> got = cdsmodel::cdsone_upfront_charge(
                   cds, example_dates(), cals, discount, spread_bps / 10000.0, recovery, clean);
               ASSERT_EQ(got.has_value(), expected.has_value()) << label;
               if (!expected) {
@@ -366,14 +367,14 @@ TEST_F(CdsoneDifferential, SpreadSolverMatchesUpstream) {
       // Charges spanning both signs, generated from real spreads so each is
       // known to be attainable.
       for (double seed_bps : {100.0, 500.0, 3600.0}) {
-        const std::optional<double> charge =
+        const cdsmodel::Expected<double> charge =
             reference_charge(cds, example_dates(), ir, seed_bps / 10000.0, recovery, false);
         if (!charge) {
           continue;
         }
-        const std::optional<double> expected =
+        const cdsmodel::Expected<double> expected =
             reference_spread(cds, example_dates(), ir, *charge, recovery, false);
-        const std::optional<double> got =
+        const cdsmodel::Expected<double> got =
             cdsmodel::cdsone_spread(cds, example_dates(), cals, discount, *charge, recovery, false);
         ASSERT_EQ(got.has_value(), expected.has_value())
             << "cpn=" << coupon_bps << " R=" << recovery << " seed=" << seed_bps;

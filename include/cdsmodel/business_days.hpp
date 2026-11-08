@@ -23,6 +23,7 @@
 #include <cdsmodel/bad_day.hpp>
 #include <cdsmodel/calendar.hpp>
 #include <cdsmodel/date.hpp>
+#include <cdsmodel/expected.hpp>
 
 #include <array>
 #include <chrono>
@@ -119,13 +120,13 @@ inline constexpr std::array<std::array<long, 7>, 7> kBackwardDiff{{
 ///
 /// Returns nullopt where the dates fall outside the representable range, or
 /// where the calendar admits no business day at all.
-[[nodiscard]] inline std::optional<long> business_days_between(Date from, Date to,
-                                                               const Calendar &calendar) noexcept {
+[[nodiscard]] inline Expected<long> business_days_between(Date from, Date to,
+                                                          const Calendar &calendar) noexcept {
   if (from == to) {
     return 0L;
   }
   if (!is_representable_tdate(to_tdate(from)) || !is_representable_tdate(to_tdate(to))) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "one of the dates is outside the representable range");
   }
 
   const TDate from_t = to_tdate(from);
@@ -216,13 +217,14 @@ inline constexpr long kMaxBusinessDayOffset = 10'000'000;
 /// Returns nullopt when the calendar admits no business day at all (the
 /// walk could not terminate), or when the result would leave the
 /// representable date range.
-[[nodiscard]] inline std::optional<Date> add_business_days(Date from, long count,
-                                                           const Calendar &calendar) noexcept {
+[[nodiscard]] inline Expected<Date> add_business_days(Date from, long count,
+                                                      const Calendar &calendar) noexcept {
   if (count == 0) {
     return from;
   }
   if (!calendar.allows_business_days()) {
-    return std::nullopt; // no business day exists, so no walk can finish
+    return fail(ErrorKind::unsupported,
+                "the calendar has no business weekday, so no offset can be applied");
   }
 
   // Negating the most negative value is undefined, and `long` is the same
@@ -230,14 +232,16 @@ inline constexpr long kMaxBusinessDayOffset = 10'000'000;
   // Found by the test written to check absurd counts -- the guard code needed
   // a guard. See PORT-7 in docs/port-notes.md.
   if (count == std::numeric_limits<long>::min()) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the offset magnitude is not representable");
   }
   const long long signed_count = static_cast<long long>(count);
   const long long magnitude = signed_count < 0 ? -signed_count : signed_count;
   const int direction = signed_count < 0 ? -1 : 1;
 
   if (magnitude > kMaxBusinessDayOffset) {
-    return std::nullopt; // see kMaxBusinessDayOffset
+    return fail(ErrorKind::bad_argument, "offset magnitude " + detail::num(magnitude) +
+                                             " exceeds the supported maximum " +
+                                             detail::num(kMaxBusinessDayOffset));
   }
 
   // Each business day consumes at least one calendar day, so a count larger
@@ -253,7 +257,7 @@ inline constexpr long kMaxBusinessDayOffset = 10'000'000;
   const unsigned long long room = direction > 0 ? static_cast<unsigned long long>(kMaxTDate) - here
                                                 : here - static_cast<unsigned long long>(kMinTDate);
   if (static_cast<unsigned long long>(magnitude) > room) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the offset would leave the representable date range");
   }
 
   // Same reasoning as roll_to_business_day: reaching the next business day
@@ -266,7 +270,8 @@ inline constexpr long kMaxBusinessDayOffset = 10'000'000;
   for (long long step = 0; step < budget && remaining > 0; ++step) {
     const long long next = static_cast<long long>(cursor) + direction;
     if (next < static_cast<long long>(kMinTDate) || next > static_cast<long long>(kMaxTDate)) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument,
+                  "stepping a business day leaves the representable date range");
     }
     cursor = static_cast<TDate>(next);
     if (calendar.is_business_day(from_tdate(cursor))) {
@@ -274,7 +279,8 @@ inline constexpr long kMaxBusinessDayOffset = 10'000'000;
     }
   }
   if (remaining > 0) {
-    return std::nullopt;
+    return fail(ErrorKind::no_convergence,
+                "ran out of candidate dates before the offset was satisfied");
   }
   return from_tdate(cursor);
 }
@@ -286,8 +292,8 @@ inline constexpr long kMaxBusinessDayOffset = 10'000'000;
 /// Upstream is literally `JpmcdsDateToEOM` followed by an adjustment with
 /// `JPMCDS_BAD_DAY_PREVIOUS`, so the port composes the two pieces it already
 /// has. Rolling backwards is what keeps the result inside the month.
-[[nodiscard]] inline std::optional<Date> business_end_of_month(Date date,
-                                                               const Calendar &calendar) noexcept {
+[[nodiscard]] inline Expected<Date> business_end_of_month(Date date,
+                                                          const Calendar &calendar) noexcept {
   return adjust(end_of_month(date), BadDayConv::Previous, calendar);
 }
 

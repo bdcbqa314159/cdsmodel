@@ -26,7 +26,7 @@ TEST(CxGolden, ReplaysEveryRecordedContingentLeg) {
   int matched = 0;
   int refused = 0;
   for (const ContingentLegMakeCase &c : kContingentLegMakeCases) {
-    const std::optional<cdsmodel::ContingentLeg> got = cdsmodel::make_contingent_leg(
+    const cdsmodel::Expected<cdsmodel::ContingentLeg> got = cdsmodel::make_contingent_leg(
         cdsmodel::from_tdate(c.start), cdsmodel::from_tdate(c.end), c.notional,
         cdsmodel::ProtectionPayment::AtDefault, c.protect_start != 0);
     ASSERT_EQ(got.has_value(), c.accepted)

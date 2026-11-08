@@ -29,6 +29,7 @@
 // and nothing to synchronise. That is the whole fix: not a lock, an owner.
 
 #include <cdsmodel/date.hpp>
+#include <cdsmodel/expected.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -73,9 +74,10 @@ enum class Weekend : std::uint8_t {
   return static_cast<long>(static_cast<std::uint8_t>(w));
 }
 
-[[nodiscard]] constexpr std::optional<Weekend> weekend_from_upstream(long flags) noexcept {
+[[nodiscard]] constexpr Expected<Weekend> weekend_from_upstream(long flags) noexcept {
   if (flags < 0 || flags > 0x7F) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument,
+                "weekend flags " + detail::num(flags) + " are outside 0..0x7F");
   }
   return static_cast<Weekend>(static_cast<std::uint8_t>(flags));
 }
@@ -136,8 +138,7 @@ public:
   /// Also rejects a date at or before the epoch: upstream's check starts from
   /// `lastDate = 0` and tests `thisDate <= lastDate`, so TDate 0 can never be
   /// a holiday.
-  [[nodiscard]] static std::optional<Calendar> create(std::span<const Date> holidays,
-                                                      Weekend weekends) {
+  [[nodiscard]] static Expected<Calendar> create(std::span<const Date> holidays, Weekend weekends) {
     std::vector<Date> kept;
     kept.reserve(holidays.size());
 
@@ -145,7 +146,7 @@ public:
     for (Date d : holidays) {
       const TDate t = to_tdate(d);
       if (t <= last) {
-        return std::nullopt; // not strictly increasing (and excludes TDate 0)
+        return fail(ErrorKind::bad_argument, "holiday dates must strictly increase");
       }
       last = t;
       if (!includes(weekends, std::chrono::weekday{d})) {

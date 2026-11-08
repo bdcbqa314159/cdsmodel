@@ -189,7 +189,7 @@ TEST_F(CashFlowBootstrapDifferential, BothSidesRepriceTheirOwnInstrument) {
                                               upstream_interp(interp), nullptr, &ref_pv),
                 SUCCESS)
           << where;
-      const std::optional<double> port_pv =
+      const cdsmodel::Expected<double> port_pv =
           cdsmodel::present_value_cash_flows(port, c.flows, interp);
       ASSERT_TRUE(port_pv.has_value()) << where;
 
@@ -229,7 +229,7 @@ TEST_F(CashFlowBootstrapDifferential, ThePresentValueOfASubrangeMatches) {
         double want = 0.0;
         const int rc = JpmcdsJpmcdsZCPresentValueCFL(ref.zc, ref.cfl, lo, hi,
                                                      upstream_interp(interp), nullptr, &want);
-        const std::optional<double> got = cdsmodel::present_value_cash_flows(
+        const cdsmodel::Expected<double> got = cdsmodel::present_value_cash_flows(
             port,
             std::span<const cdsmodel::CashFlow>{c.flows}.subspan(
                 static_cast<std::size_t>(lo), static_cast<std::size_t>(hi - lo + 1)),
@@ -273,7 +273,7 @@ TEST_F(CashFlowBootstrapDifferential, IndexBoundsAreRejectedTheSameWay) {
   // An empty span is the port's equivalent of iLo > iHi, and it is zero, not
   // an error -- the present value of no cash flows.
   cdsmodel::ZeroCurveBuilder port = build_port(c, 1);
-  const std::optional<double> none = cdsmodel::present_value_cash_flows(
+  const cdsmodel::Expected<double> none = cdsmodel::present_value_cash_flows(
       port, std::span<const cdsmodel::CashFlow>{}, cdsmodel::InterpType::Linear);
   ASSERT_TRUE(none.has_value());
   EXPECT_EQ(*none, 0.0);

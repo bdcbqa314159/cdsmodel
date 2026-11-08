@@ -55,7 +55,7 @@ TEST_F(BuilderDifferential, ConstructionAcceptsAndRejectsTheSameInputs) {
   for (long basis : {-2L, -1L, 0L, 1L, 2L, 4L, 12L, 365L, 5000L, 5001L, 5002L, 10000L}) {
     for (int n : {-1, 0, 1, 8, 64}) {
       Ref ref(cdsmodel::to_tdate(vd), n, basis, JPMCDS_ACT_365F);
-      const std::optional<cdsmodel::ZeroCurveBuilder> got =
+      const cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> got =
           cdsmodel::ZeroCurveBuilder::create(vd, n, basis, cdsmodel::DayCount::Act365Fixed);
       EXPECT_EQ(got.has_value(), static_cast<bool>(ref)) << "basis " << basis << " n " << n;
       ++compared;
@@ -75,7 +75,7 @@ TEST_F(BuilderDifferential, AddRateMatchesPointForPoint) {
     for (cdsmodel::DayCount dcc : {cdsmodel::DayCount::Act365Fixed, cdsmodel::DayCount::Act360}) {
       Ref ref(cdsmodel::to_tdate(vd), 8, basis, cdsmodel::to_upstream_code(dcc));
       ASSERT_TRUE(ref);
-      std::optional<cdsmodel::ZeroCurveBuilder> got =
+      cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> got =
           cdsmodel::ZeroCurveBuilder::create(vd, 8, basis, dcc);
       ASSERT_TRUE(got.has_value());
 
@@ -113,7 +113,7 @@ TEST_F(BuilderDifferential, ADuplicateDateIsIdempotentAndAConflictIsAnError) {
   const cdsmodel::Date at = d(2029, 1, 1);
   Ref ref(cdsmodel::to_tdate(vd), 8, 1, JPMCDS_ACT_365F);
   ASSERT_TRUE(ref);
-  std::optional<cdsmodel::ZeroCurveBuilder> got =
+  cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> got =
       cdsmodel::ZeroCurveBuilder::create(vd, 8, 1, cdsmodel::DayCount::Act365Fixed);
   ASSERT_TRUE(got.has_value());
 
@@ -164,7 +164,7 @@ TEST_F(BuilderDifferential, Upstream17_TheFastDiscountPathDisagreesAtRateMinusOn
       << "upstream no longer stores an infinite discount factor";
 
   // The port takes the general path's answer, so its two paths agree.
-  std::optional<cdsmodel::ZeroCurveBuilder> got =
+  cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> got =
       cdsmodel::ZeroCurveBuilder::create(vd, 8, 1, cdsmodel::DayCount::Act365Fixed);
   ASSERT_TRUE(got.has_value());
   EXPECT_FALSE(got->compute_discount(at, -1.0).has_value());
@@ -176,7 +176,7 @@ TEST_F(BuilderDifferential, Upstream17_TheFastDiscountPathDisagreesAtRateMinusOn
     double expected = 0.0;
     ASSERT_EQ(JpmcdsZCComputeDiscount(ref.zc, cdsmodel::to_tdate(at), rate, &expected), SUCCESS)
         << rate;
-    const std::optional<double> ported = got->compute_discount(at, rate);
+    const cdsmodel::Expected<double> ported = got->compute_discount(at, rate);
     ASSERT_TRUE(ported.has_value()) << rate;
     EXPECT_EQ(*ported, expected) << rate;
   }
@@ -200,7 +200,7 @@ TEST_F(BuilderDifferential, Upstream16_AddGenRateFailsWithTheCurveAlreadyModifie
   }
 
   // The port returns after the matching case, so a failure commits nothing...
-  std::optional<cdsmodel::ZeroCurveBuilder> got =
+  cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> got =
       cdsmodel::ZeroCurveBuilder::create(vd, 8, 1, cdsmodel::DayCount::Act365Fixed);
   ASSERT_TRUE(got.has_value());
   // ...and in fact this case SUCCEEDS in the port, because the only reason it
@@ -224,7 +224,7 @@ TEST_F(BuilderDifferential, AddGenRateMatchesWhereUpstreamIsRight) {
            {cdsmodel::DayCount::Act365Fixed, cdsmodel::DayCount::Act360}) {
         Ref ref(cdsmodel::to_tdate(vd), 8, curve_basis, JPMCDS_ACT_365F);
         ASSERT_TRUE(ref);
-        std::optional<cdsmodel::ZeroCurveBuilder> got =
+        cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> got =
             cdsmodel::ZeroCurveBuilder::create(vd, 8, curve_basis, cdsmodel::DayCount::Act365Fixed);
         ASSERT_TRUE(got.has_value());
 
@@ -256,7 +256,7 @@ TEST_F(BuilderDifferential, FindDateMatches) {
   const cdsmodel::Date vd = d(2024, 1, 1);
   Ref ref(cdsmodel::to_tdate(vd), 8, 1, JPMCDS_ACT_365F);
   ASSERT_TRUE(ref);
-  std::optional<cdsmodel::ZeroCurveBuilder> got =
+  cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> got =
       cdsmodel::ZeroCurveBuilder::create(vd, 8, 1, cdsmodel::DayCount::Act365Fixed);
   ASSERT_TRUE(got.has_value());
 
@@ -276,7 +276,7 @@ TEST_F(BuilderDifferential, FindDateMatches) {
   for (int offset = -800; offset <= 4400; offset += 37) {
     const cdsmodel::Date at = vd + std::chrono::days{offset};
     const int ref_closest = JpmcdsZCFindDateClosest(ref.zc, cdsmodel::to_tdate(at));
-    const std::optional<std::size_t> closest = got->find_closest(at);
+    const cdsmodel::Expected<std::size_t> closest = got->find_closest(at);
     ASSERT_TRUE(closest.has_value()) << offset;
     EXPECT_EQ(static_cast<int>(*closest), ref_closest) << "closest at offset " << offset;
 
@@ -307,9 +307,9 @@ TEST_F(BuilderDifferential, PrefixAndSuffixMatch) {
     Ref source(cdsmodel::to_tdate(vd), 16, 2, JPMCDS_ACT_360);
     ASSERT_TRUE(target);
     ASSERT_TRUE(source);
-    std::optional<cdsmodel::ZeroCurveBuilder> t =
+    cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> t =
         cdsmodel::ZeroCurveBuilder::create(vd, 16, 1, cdsmodel::DayCount::Act365Fixed);
-    std::optional<cdsmodel::ZeroCurveBuilder> s =
+    cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> s =
         cdsmodel::ZeroCurveBuilder::create(vd, 16, 2, cdsmodel::DayCount::Act360);
     ASSERT_TRUE(t.has_value());
     ASSERT_TRUE(s.has_value());
@@ -350,10 +350,10 @@ TEST_F(BuilderDifferential, TheCurveRoundTripMatches) {
   ZCurve *zc = JpmcdsZCFromTCurve(tc);
   ASSERT_NE(zc, nullptr);
 
-  const std::optional<cdsmodel::ZeroCurve> curve =
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> curve =
       cdsmodel::ZeroCurve::create(vd, pts, 1.0, cdsmodel::DayCount::Act365Fixed);
   ASSERT_TRUE(curve.has_value());
-  const std::optional<cdsmodel::ZeroCurveBuilder> builder =
+  const cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> builder =
       cdsmodel::ZeroCurveBuilder::from_zero_curve(*curve);
   ASSERT_TRUE(builder.has_value());
 
@@ -368,7 +368,7 @@ TEST_F(BuilderDifferential, TheCurveRoundTripMatches) {
   // And back out again.
   TCurve *back = JpmcdsZCToTCurve(zc);
   ASSERT_NE(back, nullptr);
-  const std::optional<cdsmodel::ZeroCurve> ported = builder->to_zero_curve();
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> ported = builder->to_zero_curve();
   ASSERT_TRUE(ported.has_value());
   ASSERT_EQ(ported->points().size(), static_cast<std::size_t>(back->fNumItems));
   EXPECT_EQ(ported->basis(), back->fBasis);
@@ -392,7 +392,7 @@ TEST_F(BuilderDifferential, TheCurveRoundTripMatches) {
 /// start from the same points rather than from the same inputs.
 struct Pair {
   Ref ref;
-  std::optional<cdsmodel::ZeroCurveBuilder> port;
+  cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> port;
 
   Pair(cdsmodel::Date vd, long basis, cdsmodel::DayCount dcc)
       : ref(cdsmodel::to_tdate(vd), 16, basis, cdsmodel::to_upstream_code(dcc)),
@@ -430,7 +430,7 @@ TEST_F(BuilderDifferential, InterpolationMatchesAcrossBothTypesAndTheWholeDomain
           double want = 0.0;
           const int rc = JpmcdsZCInterpolate(pair.ref.zc, cdsmodel::to_tdate(at),
                                              upstream_interp(interp), nullptr, &want);
-          const std::optional<double> got = pair.port->interpolate(at, interp);
+          const cdsmodel::Expected<double> got = pair.port->interpolate(at, interp);
           ASSERT_EQ(got.has_value(), rc == SUCCESS)
               << "basis " << basis << " at " << cdsmodel::to_tdate(at);
           if (got) {
@@ -485,8 +485,8 @@ TEST_F(BuilderDifferential, DiscountFactorAndPresentValueMatch) {
                                                  upstream_interp(interp), nullptr, &want_df);
         const int rc_pv = JpmcdsZCPresentValue(pair.ref.zc, 1'000'000.0, cdsmodel::to_tdate(at),
                                                upstream_interp(interp), nullptr, &want_pv);
-        const std::optional<double> df = pair.port->discount_factor(at, interp);
-        const std::optional<double> pv = pair.port->present_value(1'000'000.0, at, interp);
+        const cdsmodel::Expected<double> df = pair.port->discount_factor(at, interp);
+        const cdsmodel::Expected<double> pv = pair.port->present_value(1'000'000.0, at, interp);
         ASSERT_EQ(df.has_value(), rc_df == SUCCESS) << "basis " << basis;
         ASSERT_EQ(pv.has_value(), rc_pv == SUCCESS) << "basis " << basis;
         if (df) {
@@ -527,9 +527,9 @@ TEST_F(BuilderDifferential, ForwardRatesAndMoneyMarketRatesMatch) {
           const int rc_fwd = JpmcdsZCForwardRate(
               pair.ref.zc, cdsmodel::to_tdate(start), cdsmodel::to_tdate(end), quote_basis,
               JPMCDS_ACT_365F, upstream_interp(interp), nullptr, &want_fwd);
-          const std::optional<double> fwd_df =
+          const cdsmodel::Expected<double> fwd_df =
               pair.port->forward_discount_factor(start, end, interp);
-          const std::optional<double> fwd = pair.port->forward_rate(
+          const cdsmodel::Expected<double> fwd = pair.port->forward_rate(
               start, end, quote_basis, cdsmodel::DayCount::Act365Fixed, interp);
           ASSERT_EQ(fwd_df.has_value(), rc_df == SUCCESS) << "basis " << quote_basis;
           ASSERT_EQ(fwd.has_value(), rc_fwd == SUCCESS) << "basis " << quote_basis;
@@ -552,7 +552,7 @@ TEST_F(BuilderDifferential, ForwardRatesAndMoneyMarketRatesMatch) {
         double want = 0.0;
         const int rc = JpmcdsZCMoneyMarketRate(pair.ref.zc, cdsmodel::to_tdate(at), JPMCDS_ACT_360,
                                                upstream_interp(interp), nullptr, &want);
-        const std::optional<double> got =
+        const cdsmodel::Expected<double> got =
             pair.port->money_market_rate(at, cdsmodel::DayCount::Act360, interp);
         ASSERT_EQ(got.has_value(), rc == SUCCESS);
         if (got) {
@@ -574,7 +574,7 @@ TEST_F(BuilderDifferential, AddMoneyMarketMatchesPointForPoint) {
          {cdsmodel::DayCount::Act360, cdsmodel::DayCount::Act365Fixed}) {
       Ref ref(cdsmodel::to_tdate(vd), 8, basis, JPMCDS_ACT_365F);
       ASSERT_TRUE(ref);
-      std::optional<cdsmodel::ZeroCurveBuilder> port =
+      cdsmodel::Expected<cdsmodel::ZeroCurveBuilder> port =
           cdsmodel::ZeroCurveBuilder::create(vd, 8, basis, cdsmodel::DayCount::Act365Fixed);
       ASSERT_TRUE(port.has_value());
 
@@ -648,7 +648,7 @@ TEST_F(BuilderDifferential, Upstream18_ABadStartingDiscountIsLoggedAndReportedAs
                                   cdsmodel::InterpType::Linear)
                    .has_value());
   // The underflow itself is NOT the divergence -- both sides agree there.
-  const std::optional<double> ported_df =
+  const cdsmodel::Expected<double> ported_df =
       pair.port->discount_factor(start, cdsmodel::InterpType::Linear);
   ASSERT_TRUE(ported_df.has_value());
   EXPECT_EQ(*ported_df, 0.0) << "the port underflows to the same zero";
@@ -706,7 +706,7 @@ TEST_F(BuilderDifferential, Upstream19_ANanDiscountFactorPassesTheGuardMeantToSt
 
   // The port refuses the whole chain, while still agreeing on the infinities
   // that produced it.
-  const std::optional<double> ported_start =
+  const cdsmodel::Expected<double> ported_start =
       pair.port->discount_factor(start, cdsmodel::InterpType::Linear);
   ASSERT_TRUE(ported_start.has_value());
   EXPECT_TRUE(std::isinf(*ported_start)) << "the port overflows to the same infinity";

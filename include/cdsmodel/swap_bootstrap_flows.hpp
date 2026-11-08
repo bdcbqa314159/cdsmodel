@@ -48,6 +48,7 @@
 #include <cdsmodel/date_interval.hpp>
 #include <cdsmodel/date_schedule.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/swap_dates.hpp>
 
 #include <optional>
@@ -66,6 +67,8 @@ struct SwapBadDayRule {
   /// When present, dates are substituted through this table and the convention
   /// below is not consulted. Empty and absent are different inputs -- see
   /// UPSTREAM-26.
+  /// D7: genuinely absent -- a rule with no substitution table is normal,
+  /// not a failed attempt to build one.
   std::optional<std::span<const BadDayPair>> substitutions{};
 
   BadDayConv conv = BadDayConv::None;
@@ -85,20 +88,19 @@ struct SwapBadDayRule {
 /// Note the ORDER, which is load-bearing: adjust first, substitute second. The
 /// substitution table maps bad days to good ones, so running it before the
 /// adjustment would hand the adjustment dates the table had already settled.
-[[nodiscard]] inline std::optional<std::vector<Date>>
+[[nodiscard]] inline Expected<std::vector<Date>>
 swap_coupon_dates(Date value_date, Date maturity, DateInterval interval, bool stub_at_end,
                   const SwapBadDayRule &bad_day_rule, std::span<const Calendar> calendars) {
-  const std::optional<std::vector<Date>> dates =
-      pay_dates(value_date, maturity, interval, stub_at_end);
+  const Expected<std::vector<Date>> dates = pay_dates(value_date, maturity, interval, stub_at_end);
   if (!dates) {
-    return std::nullopt;
+    return unexpected(dates.error());
   }
   std::vector<Date> adjusted = *dates;
   if (bad_day_rule.conv != BadDayConv::None) {
-    const std::optional<std::vector<Date>> moved =
+    const Expected<std::vector<Date>> moved =
         adjust_date_list(adjusted, bad_day_rule.conv, calendars);
     if (!moved) {
-      return std::nullopt;
+      return unexpected(moved.error());
     }
     adjusted = *moved;
   }
@@ -143,37 +145,37 @@ swap_coupon_dates(Date value_date, Date maturity, DateInterval interval, bool st
 /// rather than on `maturity == value_date`, for the reason UPSTREAM-29 taught:
 /// substitution and bad-day adjustment are also capable of emptying a list,
 /// and the input test is the wrong test.
-[[nodiscard]] inline std::optional<std::vector<CashFlow>>
+[[nodiscard]] inline Expected<std::vector<CashFlow>>
 swap_cash_flows(Date value_date, Date maturity, bool stub_at_end, double rate,
                 DateInterval interval, DayCount day_count, const SwapBadDayRule &bad_day_rule,
                 std::span<const Calendar> calendars) {
   // Upstream's "bizarre rate==0.0 case": one redemption of 1.0, no coupons.
   if (rate == 0.0) {
-    const std::optional<Date> at =
+    const Expected<Date> at =
         zc_adjust_date(maturity, bad_day_rule.substitutions, bad_day_rule.conv, calendars);
     if (!at) {
-      return std::nullopt;
+      return unexpected(at.error());
     }
     return std::vector<CashFlow>{CashFlow{*at, 1.0}};
   }
 
-  const std::optional<std::vector<Date>> dates =
+  const Expected<std::vector<Date>> dates =
       swap_coupon_dates(value_date, maturity, interval, stub_at_end, bad_day_rule, calendars);
   if (!dates) {
-    return std::nullopt;
+    return unexpected(dates.error());
   }
   // UPSTREAM-32: upstream carries on and writes to fArray[-1].
   if (dates->empty()) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the swap has no coupon dates");
   }
 
   std::vector<CashFlow> flows;
   flows.reserve(dates->size());
   Date previous = value_date;
   for (const Date coupon : *dates) {
-    const std::optional<double> year_frac = year_fraction(previous, coupon, day_count);
+    const Expected<double> year_frac = year_fraction(previous, coupon, day_count);
     if (!year_frac) {
-      return std::nullopt;
+      return unexpected(year_frac.error());
     }
     flows.push_back(CashFlow{coupon, rate * *year_frac});
     previous = coupon;

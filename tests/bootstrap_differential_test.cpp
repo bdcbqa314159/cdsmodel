@@ -147,7 +147,7 @@ TEST_F(BootstrapDifferential, BootstrappedCurveRepricesItsOwnBenchmarksToZero) {
       for (cdsmodel::DayCount dcc : {cdsmodel::DayCount::Act360, cdsmodel::DayCount::Act365Fixed}) {
         const std::vector<cdsmodel::Benchmark> marks = ladder(m.today, quotes);
         const cdsmodel::Cds conv = conventions(dcc);
-        const std::optional<cdsmodel::ZeroCurve> curve = cdsmodel::clean_spread_curve(
+        const cdsmodel::Expected<cdsmodel::ZeroCurve> curve = cdsmodel::clean_spread_curve(
             m.today, m.discount, conv.start, m.today, m.today, marks, recovery, conv, cals);
         if (!curve) {
           // Not every quote ladder is bootstrappable, and that is not a
@@ -162,9 +162,9 @@ TEST_F(BootstrapDifferential, BootstrappedCurveRepricesItsOwnBenchmarksToZero) {
           cdsmodel::Cds priced = conv;
           priced.end = b.end;
           priced.coupon_rate = b.coupon_rate;
-          const std::optional<double> pv = cdsmodel::cds_price(priced, m.today, m.today, m.today,
-                                                               cals, m.discount, *curve, recovery,
-                                                               /*clean=*/true);
+          const cdsmodel::Expected<double> pv = cdsmodel::cds_price(
+              priced, m.today, m.today, m.today, cals, m.discount, *curve, recovery,
+              /*clean=*/true);
           ASSERT_TRUE(pv.has_value()) << cdsmodel::to_tdate(b.end);
           // The solver converged to |pv| <= 1e-10 at its own base date; the
           // repricing here goes through cds_price, which clamps protection to
@@ -220,7 +220,7 @@ TEST_F(BootstrapDifferential, TheFeasibleRegionHasABoundaryBothImplementationsAg
       const std::vector<cdsmodel::Benchmark> marks = ladder(m.today, quotes);
       TCurve *expected =
           reference_bootstrap(m, marks, recovery, conv, conv.start, m.today, m.today);
-      const std::optional<cdsmodel::ZeroCurve> got = cdsmodel::clean_spread_curve(
+      const cdsmodel::Expected<cdsmodel::ZeroCurve> got = cdsmodel::clean_spread_curve(
           m.today, m.discount, conv.start, m.today, m.today, marks, recovery, conv, no_holidays());
       ASSERT_EQ(got.has_value(), expected != nullptr)
           << "recovery " << recovery << " with " << n << " benchmarks";
@@ -245,7 +245,7 @@ TEST_F(BootstrapDifferential, BootstrappedCurveIsAnnuallyCompoundedAndIncreasing
   const std::vector<cdsmodel::Benchmark> marks =
       ladder(m.today, {0.01, 0.012, 0.014, 0.017, 0.019, 0.021});
   const cdsmodel::Cds conv = conventions();
-  const std::optional<cdsmodel::ZeroCurve> curve = cdsmodel::clean_spread_curve(
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> curve = cdsmodel::clean_spread_curve(
       m.today, m.discount, conv.start, m.today, m.today, marks, 0.4, conv, no_holidays());
   ASSERT_TRUE(curve.has_value());
 
@@ -297,7 +297,7 @@ TEST_F(BootstrapDifferential, CurveMatchesBitExactlyAcrossTheQuoteSpace) {
 
           TCurve *expected =
               reference_bootstrap(m, marks, recovery, conv, conv.start, m.today, m.today);
-          const std::optional<cdsmodel::ZeroCurve> got = cdsmodel::clean_spread_curve(
+          const cdsmodel::Expected<cdsmodel::ZeroCurve> got = cdsmodel::clean_spread_curve(
               m.today, m.discount, conv.start, m.today, m.today, marks, recovery, conv, cals);
 
           ASSERT_EQ(got.has_value(), expected != nullptr) << label;
@@ -345,7 +345,7 @@ TEST_F(BootstrapDifferential, IncludeFlagsMatch) {
       marks[i].include = ((mask >> i) & 1u) != 0u;
     }
     TCurve *expected = reference_bootstrap(m, marks, 0.4, conv, conv.start, m.today, m.today);
-    const std::optional<cdsmodel::ZeroCurve> got = cdsmodel::clean_spread_curve(
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> got = cdsmodel::clean_spread_curve(
         m.today, m.discount, conv.start, m.today, m.today, marks, 0.4, conv, cals);
     ASSERT_EQ(got.has_value(), expected != nullptr) << "mask=" << mask;
     if (expected == nullptr) {
@@ -382,7 +382,7 @@ TEST_F(BootstrapDifferential, DegenerateRecoveryRatesAreRejectedByBoth) {
     const std::vector<cdsmodel::Benchmark> marks = ladder(m.today, {c.coupon, c.coupon, c.coupon});
     TCurve *expected =
         reference_bootstrap(m, marks, c.recovery, conv, conv.start, m.today, m.today);
-    const std::optional<cdsmodel::ZeroCurve> got = cdsmodel::clean_spread_curve(
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> got = cdsmodel::clean_spread_curve(
         m.today, m.discount, conv.start, m.today, m.today, marks, c.recovery, conv, no_holidays());
     EXPECT_EQ(got.has_value(), expected != nullptr) << c.what;
     JpmcdsFreeTCurve(expected);
@@ -402,7 +402,7 @@ TEST_F(BootstrapDifferential, NonIncreasingBenchmarkDatesAreRejectedByBoth) {
       marks.push_back(cdsmodel::Benchmark{end, 0.01, true});
     }
     TCurve *expected = reference_bootstrap(m, marks, 0.4, conv, conv.start, m.today, m.today);
-    const std::optional<cdsmodel::ZeroCurve> got = cdsmodel::clean_spread_curve(
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> got = cdsmodel::clean_spread_curve(
         m.today, m.discount, conv.start, m.today, m.today, marks, 0.4, conv, no_holidays());
     EXPECT_EQ(got.has_value(), expected != nullptr)
         << cdsmodel::to_tdate(dates[0]) << " then " << cdsmodel::to_tdate(dates[1]);
@@ -421,7 +421,7 @@ TEST_F(BootstrapDifferential, ANegativeForwardHazardIsRejectedByBoth) {
        std::vector<std::vector<double>>{{0.20, 0.02, 0.02}, {0.50, 0.01, 0.01}}) {
     const std::vector<cdsmodel::Benchmark> marks = ladder(m.today, quotes);
     TCurve *expected = reference_bootstrap(m, marks, 0.4, conv, conv.start, m.today, m.today);
-    const std::optional<cdsmodel::ZeroCurve> got = cdsmodel::clean_spread_curve(
+    const cdsmodel::Expected<cdsmodel::ZeroCurve> got = cdsmodel::clean_spread_curve(
         m.today, m.discount, conv.start, m.today, m.today, marks, 0.4, conv, no_holidays());
     ASSERT_EQ(got.has_value(), expected != nullptr) << quotes.front();
     if (!got) {

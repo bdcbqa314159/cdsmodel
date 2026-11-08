@@ -101,7 +101,7 @@ int main() {
       const cdsmodel::Date event = cds.start + std::chrono::days{event_offset};
       for (int lag : {-10, 0, 1, 20, 50, 100, 400}) {
         const cdsmodel::Date trade = event + std::chrono::days{lag};
-        const std::optional<cdsmodel::DefaultAccrual> intent =
+        const cdsmodel::Expected<cdsmodel::DefaultAccrual> intent =
             cdsmodel::default_accrual(cds, trade, event, 1.0e7, cals);
 
         TDateInterval iv{conv.months, 'M', 0};

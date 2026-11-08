@@ -13,6 +13,7 @@
 // accepted is not a port, it is a breaking change.
 
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/expected.hpp>
 
 #include <array>
 #include <cstddef>
@@ -64,7 +65,7 @@ inline constexpr long kDayCountNoneCode = 0;     ///< parsed from "NONE"
   if (code == kDayCountDefaultCode) {
     return "Default";
   }
-  if (const std::optional<DayCount> dcc = from_upstream_code(code)) {
+  if (const Expected<DayCount> dcc = from_upstream_code(code)) {
     return to_string(*dcc);
   }
   return "unrecognized";
@@ -119,7 +120,7 @@ struct Preprocessed {
 /// trying the later branches. That is how "DEFAULT" -- which contains an 'A'
 /// -- skips the 30/360 and "EFF" branches and still reaches the keyword
 /// comparison below.
-[[nodiscard]] constexpr std::optional<long> parse_day_count_code(std::string_view s) noexcept {
+[[nodiscard]] constexpr Expected<long> parse_day_count_code(std::string_view s) noexcept {
   const detail::Preprocessed p = detail::preprocess(s);
 
   if (p.contains("A")) {
@@ -151,7 +152,7 @@ struct Preprocessed {
   if (p.view() == "NONE") {
     return kDayCountNoneCode;
   }
-  return std::nullopt;
+  return fail(ErrorKind::unsupported, "day count \"NONE\" has no year fraction");
 }
 
 /// Parse a convention usable for calculation.
@@ -161,10 +162,10 @@ struct Preprocessed {
 /// two outcomes is deliberate: a caller that wants a convention to compute
 /// with cannot use either, so the distinction only matters for interop, which
 /// `parse_day_count_code` serves.
-[[nodiscard]] constexpr std::optional<DayCount> parse_day_count(std::string_view s) noexcept {
-  const std::optional<long> code = parse_day_count_code(s);
+[[nodiscard]] constexpr Expected<DayCount> parse_day_count(std::string_view s) noexcept {
+  const Expected<long> code = parse_day_count_code(s);
   if (!code) {
-    return std::nullopt;
+    return unexpected(code.error());
   }
   return from_upstream_code(*code);
 }

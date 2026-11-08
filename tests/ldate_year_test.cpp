@@ -75,7 +75,7 @@ TEST(LdateYearGolden, YearStartIsTheFirstOfJanuaryAndYearOfIsIdempotent) {
   int checked = 0;
   for (int y = 1900; y <= 2200; y += 7) {
     for (const auto [m, d] : {std::pair{1, 1}, {2, 28}, {6, 15}, {12, 31}}) {
-      const std::optional<cdsmodel::Date> date = cdsmodel::make_date(y, m, d);
+      const cdsmodel::Expected<cdsmodel::Date> date = cdsmodel::make_date(y, m, d);
       ASSERT_TRUE(date.has_value()) << y << "-" << m << "-" << d;
 
       EXPECT_EQ(cdsmodel::year_of(*date), y);
@@ -115,7 +115,7 @@ TEST(LdateYearGolden, UnderActTheAnswerIsTheCalendarDifference) {
       const long calendar = (cdsmodel::next_year_start(date) - date).count();
       for (const cdsmodel::DayCount dcc :
            {cdsmodel::DayCount::Act365Fixed, cdsmodel::DayCount::Act360}) {
-        const std::optional<long> got = cdsmodel::days_left_this_year(date, dcc);
+        const cdsmodel::Expected<long> got = cdsmodel::days_left_this_year(date, dcc);
         ASSERT_TRUE(got.has_value());
         EXPECT_EQ(*got, calendar) << "year " << y << " day " << doy;
         ++checked;
@@ -133,10 +133,10 @@ TEST(LdateYearGolden, FromTheFirstOfJanuaryTheConventionsDisagreeByDesign) {
     const cdsmodel::Date jan1 = *cdsmodel::make_date(y, 1, 1);
     const long expected_act = cdsmodel::is_leap_year(jan1) ? 366 : 365;
     EXPECT_EQ(cdsmodel::days_left_this_year(jan1, cdsmodel::DayCount::Act365Fixed),
-              std::optional<long>{expected_act})
+              cdsmodel::Expected<long>{expected_act})
         << "year " << y;
     EXPECT_EQ(cdsmodel::days_left_this_year(jan1, cdsmodel::DayCount::Thirty360),
-              std::optional<long>{360})
+              cdsmodel::Expected<long>{360})
         << "year " << y;
   }
 }

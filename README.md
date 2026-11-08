@@ -72,8 +72,8 @@ differentially equal to its ancestor across a swept input domain, and the
 sweep is then recorded into tier 1 so CI inherits the guarantee.
 
 ```
-with upstream present: 747 tests  (tier 1 + tier 2 + end-to-end example)
-without upstream:      438 tests  (tier 1 only, replaying 44 recorded vector sets)
+with upstream present: 760 tests  (tier 1 + tier 2 + end-to-end example)
+without upstream:      445 tests  (tier 1 only, replaying 44 recorded vector sets)
 ```
 
 Both configurations also run clean under AddressSanitizer and

@@ -78,7 +78,7 @@ TEST(ZeroCurveBuilder, EveryStoredPointsRateAndDiscountAgree) {
         }
       }
       for (const ZeroCurveBuilder::Point &p : b.points()) {
-        const std::optional<double> recomputed = b.compute_discount(p.date, p.rate);
+        const cdsmodel::Expected<double> recomputed = b.compute_discount(p.date, p.rate);
         ASSERT_TRUE(recomputed.has_value())
             << "basis " << basis << " at " << cdsmodel::to_tdate(p.date);
         EXPECT_EQ(*recomputed, p.discount)
@@ -102,7 +102,7 @@ TEST(ZeroCurveBuilder, TheInvariantHoldsWhenPointsArriveAsDiscountFactors) {
   }
   ASSERT_EQ(b.points().size(), 3u);
   for (const ZeroCurveBuilder::Point &p : b.points()) {
-    const std::optional<double> recomputed = b.compute_discount(p.date, p.rate);
+    const cdsmodel::Expected<double> recomputed = b.compute_discount(p.date, p.rate);
     ASSERT_TRUE(recomputed.has_value());
     // A round trip through the rate, so relative rather than exact.
     EXPECT_NEAR(*recomputed, p.discount, 1.0e-12 * std::max(1.0, std::fabs(p.discount)));
@@ -165,8 +165,8 @@ TEST(ZeroCurveBuilder, TheTwoDiscountPathsAgreeEverywhereIncludingTheBoundary) {
   const cdsmodel::Date at = d(2029, 1, 1);
 
   for (double rate : {0.05, 0.0, -0.5, -0.9, -0.999, -0.9999999}) {
-    const std::optional<double> via_fast = fast.compute_discount(at, rate);
-    const std::optional<double> via_general =
+    const cdsmodel::Expected<double> via_fast = fast.compute_discount(at, rate);
+    const cdsmodel::Expected<double> via_general =
         cdsmodel::rate_to_discount(rate, d(2024, 1, 1), at, DayCount::Act365Fixed, 1);
     ASSERT_TRUE(via_fast.has_value()) << rate;
     ASSERT_TRUE(via_general.has_value()) << rate;
@@ -228,12 +228,12 @@ TEST(ZeroCurveBuilder, RoundTripsThroughAFinishedCurve) {
   for (int years : {1, 2, 5, 10}) {
     ASSERT_TRUE(b.add_rate(d(2024 + years, 1, 1), 0.03 + 0.002 * years));
   }
-  const std::optional<cdsmodel::ZeroCurve> curve = b.to_zero_curve();
+  const cdsmodel::Expected<cdsmodel::ZeroCurve> curve = b.to_zero_curve();
   ASSERT_TRUE(curve.has_value());
   EXPECT_EQ(curve->points().size(), b.points().size());
   EXPECT_EQ(curve->basis(), 1.0);
 
-  const std::optional<ZeroCurveBuilder> back = ZeroCurveBuilder::from_zero_curve(*curve);
+  const cdsmodel::Expected<ZeroCurveBuilder> back = ZeroCurveBuilder::from_zero_curve(*curve);
   ASSERT_TRUE(back.has_value());
   ASSERT_EQ(back->points().size(), b.points().size());
   for (std::size_t i = 0; i < b.points().size(); ++i) {
@@ -261,7 +261,7 @@ TEST(ZeroCurveBuilder, AnEmptyBuilderYieldsNoCurve) {
 TEST(ZeroCurveBuilder, MatchesRecordedConstructionVerdicts) {
   int checked = 0;
   for (const auto &c : cdsmodel::golden::kBuilderCreateCases) {
-    const std::optional<DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
+    const cdsmodel::Expected<DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
     if (!dcc) {
       continue; // a day count the port's enum cannot hold
     }
@@ -277,9 +277,9 @@ TEST(ZeroCurveBuilder, MatchesRecordedConstructionVerdicts) {
 TEST(ZeroCurveBuilder, MatchesRecordedBuilderStates) {
   int checked = 0;
   for (const auto &c : cdsmodel::golden::kBuilderCases) {
-    const std::optional<DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
+    const cdsmodel::Expected<DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
     ASSERT_TRUE(dcc.has_value()) << c.day_count;
-    std::optional<ZeroCurveBuilder> b =
+    cdsmodel::Expected<ZeroCurveBuilder> b =
         ZeroCurveBuilder::create(cdsmodel::from_tdate(c.value_date), 16, c.basis, *dcc);
     ASSERT_TRUE(b.has_value()) << "basis " << c.basis;
 
@@ -290,7 +290,7 @@ TEST(ZeroCurveBuilder, MatchesRecordedBuilderStates) {
       } else if (c.mode == 1) {
         (void)b->add_discount_factor(at, c.inputs[i]);
       } else {
-        const std::optional<DayCount> entry = cdsmodel::from_upstream_code(c.entry_day_count);
+        const cdsmodel::Expected<DayCount> entry = cdsmodel::from_upstream_code(c.entry_day_count);
         ASSERT_TRUE(entry.has_value());
         (void)b->add_general_rate(at, c.inputs[i], c.entry_basis, *entry);
       }
@@ -346,7 +346,7 @@ TEST(ZeroCurveBuilderEval, TheBracketAgreesWithThePortedBinarySearch) {
     if (std::ranges::find(dates, at) != dates.end()) {
       continue;
     }
-    const std::optional<cdsmodel::Bracket> want =
+    const cdsmodel::Expected<cdsmodel::Bracket> want =
         cdsmodel::bracket(std::span<const cdsmodel::TDate>{dates}, static_cast<double>(at));
     ASSERT_TRUE(want.has_value()) << at;
     const ZeroCurveBuilder::Point &lo = b.points()[want->lo];
@@ -355,7 +355,7 @@ TEST(ZeroCurveBuilderEval, TheBracketAgreesWithThePortedBinarySearch) {
         lo.rate + ((hi.rate - lo.rate) / static_cast<double>(dates[want->hi] - dates[want->lo])) *
                       static_cast<double>(at - dates[want->lo]);
 
-    const std::optional<double> got =
+    const cdsmodel::Expected<double> got =
         b.interpolate(cdsmodel::from_tdate(at), cdsmodel::InterpType::Linear);
     ASSERT_TRUE(got.has_value()) << at;
     // Bit-exact: if the bracket differed anywhere, the rate would too.
@@ -373,7 +373,7 @@ TEST(ZeroCurveBuilderEval, AStoredDateReturnsItsStoredRateExactly) {
        {cdsmodel::InterpType::Linear, cdsmodel::InterpType::FlatForwards}) {
     const ZeroCurveBuilder b = seeded();
     for (const ZeroCurveBuilder::Point &p : b.points()) {
-      const std::optional<double> got = b.interpolate(p.date, interp);
+      const cdsmodel::Expected<double> got = b.interpolate(p.date, interp);
       ASSERT_TRUE(got.has_value());
       EXPECT_EQ(*got, p.rate) << "at " << cdsmodel::to_tdate(p.date);
     }
@@ -384,14 +384,15 @@ TEST(ZeroCurveBuilderEval, ExtrapolationIsFlatBackwardsAndSlopedForwards) {
   const ZeroCurveBuilder b = seeded();
   const double first = b.points().front().rate;
   for (int years : {-20, -5, -1, 0}) {
-    const std::optional<double> got =
+    const cdsmodel::Expected<double> got =
         b.interpolate(d(2025 + years, 1, 1), cdsmodel::InterpType::Linear);
     ASSERT_TRUE(got.has_value()) << years;
     EXPECT_EQ(*got, first) << "backwards extrapolation must be flat, at " << years;
   }
   // Forward is NOT flat -- the last pair's slope continues.
   const double last = b.points().back().rate;
-  const std::optional<double> beyond = b.interpolate(d(2070, 1, 1), cdsmodel::InterpType::Linear);
+  const cdsmodel::Expected<double> beyond =
+      b.interpolate(d(2070, 1, 1), cdsmodel::InterpType::Linear);
   ASSERT_TRUE(beyond.has_value());
   EXPECT_GT(*beyond, last) << "forward extrapolation follows the final slope";
 }
@@ -399,7 +400,7 @@ TEST(ZeroCurveBuilderEval, ExtrapolationIsFlatBackwardsAndSlopedForwards) {
 TEST(ZeroCurveBuilderEval, TheValueDateDiscountsByNothingEvenWithNoPoints) {
   const ZeroCurveBuilder empty =
       *ZeroCurveBuilder::create(d(2024, 1, 1), 4, 1, DayCount::Act365Fixed);
-  const std::optional<double> at_value_date =
+  const cdsmodel::Expected<double> at_value_date =
       empty.discount_factor(d(2024, 1, 1), cdsmodel::InterpType::Linear);
   ASSERT_TRUE(at_value_date.has_value()) << "it short-circuits before interpolating";
   EXPECT_EQ(*at_value_date, 1.0);
@@ -416,14 +417,14 @@ TEST(ZeroCurveBuilderEval, AForwardFromTheValueDateIsJustTheDiscountFactor) {
   for (cdsmodel::InterpType interp :
        {cdsmodel::InterpType::Linear, cdsmodel::InterpType::FlatForwards}) {
     for (const cdsmodel::Date at : {d(2026, 4, 1), d(2031, 1, 1), d(2045, 9, 30)}) {
-      const std::optional<double> df = b.discount_factor(at, interp);
-      const std::optional<double> fwd = b.forward_discount_factor(d(2024, 1, 1), at, interp);
+      const cdsmodel::Expected<double> df = b.discount_factor(at, interp);
+      const cdsmodel::Expected<double> fwd = b.forward_discount_factor(d(2024, 1, 1), at, interp);
       ASSERT_TRUE(df.has_value());
       ASSERT_TRUE(fwd.has_value());
       EXPECT_EQ(*fwd, *df) << "at " << cdsmodel::to_tdate(at);
     }
     // And a zero-width forward discounts by nothing.
-    const std::optional<double> none =
+    const cdsmodel::Expected<double> none =
         b.forward_discount_factor(d(2031, 1, 1), d(2031, 1, 1), interp);
     ASSERT_TRUE(none.has_value());
     EXPECT_EQ(*none, 1.0);
@@ -436,8 +437,8 @@ TEST(ZeroCurveBuilderEval, TheMoneyMarketRateIsTheSimpleForwardFromTheValueDate)
        {cdsmodel::InterpType::Linear, cdsmodel::InterpType::FlatForwards}) {
     for (DayCount dcc : {DayCount::Act360, DayCount::Act365Fixed}) {
       for (const cdsmodel::Date at : {d(2025, 1, 1), d(2029, 7, 1), d(2040, 1, 1)}) {
-        const std::optional<double> mm = b.money_market_rate(at, dcc, interp);
-        const std::optional<double> fwd = b.forward_rate(d(2024, 1, 1), at, 0, dcc, interp);
+        const cdsmodel::Expected<double> mm = b.money_market_rate(at, dcc, interp);
+        const cdsmodel::Expected<double> fwd = b.forward_rate(d(2024, 1, 1), at, 0, dcc, interp);
         ASSERT_EQ(mm.has_value(), fwd.has_value());
         if (mm) {
           EXPECT_EQ(*mm, *fwd) << "at " << cdsmodel::to_tdate(at);
@@ -457,7 +458,8 @@ TEST(ZeroCurveBuilderEval, NothingEvaluatesToNaN) {
   for (long basis : {1L, 2L, 12L, 365L, 5000L}) {
     for (DayCount dcc : {DayCount::Act365Fixed, DayCount::Act360}) {
       for (double rate : {-24.0, -1.0, -0.5, 0.0, 0.05, 1.0, 25.0, 1e30}) {
-        std::optional<ZeroCurveBuilder> b = ZeroCurveBuilder::create(d(2024, 1, 1), 8, basis, dcc);
+        cdsmodel::Expected<ZeroCurveBuilder> b =
+            ZeroCurveBuilder::create(d(2024, 1, 1), 8, basis, dcc);
         ASSERT_TRUE(b.has_value());
         if (!b->add_rate(d(2054, 1, 1), rate) || !b->add_rate(d(2055, 1, 1), rate)) {
           continue; // refused on the way in, which is also an answer
@@ -469,9 +471,9 @@ TEST(ZeroCurveBuilderEval, NothingEvaluatesToNaN) {
                                     std::to_string(static_cast<int>(interp));
           for (const cdsmodel::Date at :
                {d(2030, 1, 1), d(2054, 1, 1), d(2054, 7, 1), d(2055, 1, 1), d(2070, 1, 1)}) {
-            const std::optional<double> r = b->interpolate(at, interp);
-            const std::optional<double> df = b->discount_factor(at, interp);
-            const std::optional<double> pv = b->present_value(1e6, at, interp);
+            const cdsmodel::Expected<double> r = b->interpolate(at, interp);
+            const cdsmodel::Expected<double> df = b->discount_factor(at, interp);
+            const cdsmodel::Expected<double> pv = b->present_value(1e6, at, interp);
             if (r) {
               EXPECT_FALSE(std::isnan(*r)) << where;
             }
@@ -484,9 +486,9 @@ TEST(ZeroCurveBuilderEval, NothingEvaluatesToNaN) {
             }
             ++checked;
           }
-          const std::optional<double> fwd_df =
+          const cdsmodel::Expected<double> fwd_df =
               b->forward_discount_factor(d(2054, 1, 1), d(2055, 1, 1), interp);
-          const std::optional<double> fwd =
+          const cdsmodel::Expected<double> fwd =
               b->forward_rate(d(2054, 1, 1), d(2055, 1, 1), 0, dcc, interp);
           if (fwd_df) {
             EXPECT_TRUE(std::isfinite(*fwd_df)) << where << ": a forward factor must be finite";
@@ -517,11 +519,11 @@ TEST(ZeroCurveBuilderEval, NothingEvaluatesToNaN) {
 TEST(ZeroCurveBuilderEval, MatchesRecordedEvaluations) {
   int checked = 0;
   for (const auto &c : cdsmodel::golden::kEvalCases) {
-    const std::optional<DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
+    const cdsmodel::Expected<DayCount> dcc = cdsmodel::from_upstream_code(c.day_count);
     ASSERT_TRUE(dcc.has_value()) << c.day_count;
     const cdsmodel::InterpType interp =
         c.interp == 0 ? cdsmodel::InterpType::Linear : cdsmodel::InterpType::FlatForwards;
-    std::optional<ZeroCurveBuilder> b =
+    cdsmodel::Expected<ZeroCurveBuilder> b =
         ZeroCurveBuilder::create(cdsmodel::from_tdate(c.value_date), 16, c.basis, *dcc);
     ASSERT_TRUE(b.has_value()) << "basis " << c.basis;
     for (int years : {1, 2, 3, 5, 7, 10, 15, 20, 30}) {
@@ -534,17 +536,17 @@ TEST(ZeroCurveBuilderEval, MatchesRecordedEvaluations) {
                               std::to_string(c.day_count) + " interp " + std::to_string(c.interp) +
                               " at " + std::to_string(c.at);
 
-    const std::optional<double> rate = b->interpolate(at, interp);
+    const cdsmodel::Expected<double> rate = b->interpolate(at, interp);
     ASSERT_EQ(rate.has_value(), c.rate_ok) << where;
     if (rate) {
       expect_recorded(*rate, c.rate, where + " rate");
     }
-    const std::optional<double> df = b->discount_factor(at, interp);
+    const cdsmodel::Expected<double> df = b->discount_factor(at, interp);
     ASSERT_EQ(df.has_value(), c.discount_ok) << where;
     if (df) {
       expect_recorded(*df, c.discount, where + " discount");
     }
-    const std::optional<double> fwd =
+    const cdsmodel::Expected<double> fwd =
         b->forward_rate(cdsmodel::from_tdate(c.value_date), at, 0, DayCount::Act365Fixed, interp);
     ASSERT_EQ(fwd.has_value(), c.forward_ok) << where;
     if (fwd) {

@@ -90,7 +90,7 @@ TEST_F(LdateYearDifferential, DaysLeftThisYearAgreesAcrossEveryConvention) {
       const bool accepted =
           JpmcdsDaysLeftThisYear(raw, static_cast<int>(cdsmodel::to_upstream_code(dcc)), &ref) ==
           SUCCESS;
-      const std::optional<long> got = cdsmodel::days_left_this_year(d, dcc);
+      const cdsmodel::Expected<long> got = cdsmodel::days_left_this_year(d, dcc);
       ASSERT_EQ(accepted, got.has_value()) << raw;
       if (!accepted) {
         continue;
@@ -138,25 +138,25 @@ TEST_F(LdateYearDifferential, TheConventionChangesTheAnswerAwayFromTheBoundary) 
   EXPECT_EQ(ref_thirty, 360) << "30/360 sees twelve thirty-day months";
 
   EXPECT_EQ(cdsmodel::days_left_this_year(jan1, cdsmodel::DayCount::Act365Fixed),
-            std::optional<long>{365});
+            cdsmodel::Expected<long>{365});
   EXPECT_EQ(cdsmodel::days_left_this_year(jan1, cdsmodel::DayCount::Thirty360),
-            std::optional<long>{360});
+            cdsmodel::Expected<long>{360});
 
   // And the boundary where they coincide, recorded because it is where I
   // expected them to differ.
   const cdsmodel::Date nye = *cdsmodel::make_date(2024, 12, 31);
   EXPECT_EQ(cdsmodel::days_left_this_year(nye, cdsmodel::DayCount::Act365Fixed),
-            std::optional<long>{1});
+            cdsmodel::Expected<long>{1});
   EXPECT_EQ(cdsmodel::days_left_this_year(nye, cdsmodel::DayCount::Thirty360),
-            std::optional<long>{1})
+            cdsmodel::Expected<long>{1})
       << "30/360 adjusts D1 from 31 to 30, which makes this agree with ACT";
 
   // A leap year has one more ACT day and the same 30/360 count.
   const cdsmodel::Date leap_jan1 = *cdsmodel::make_date(2024, 1, 1);
   EXPECT_EQ(cdsmodel::days_left_this_year(leap_jan1, cdsmodel::DayCount::Act365Fixed),
-            std::optional<long>{366});
+            cdsmodel::Expected<long>{366});
   EXPECT_EQ(cdsmodel::days_left_this_year(leap_jan1, cdsmodel::DayCount::Thirty360),
-            std::optional<long>{360});
+            cdsmodel::Expected<long>{360});
 }
 
 // JpmcdsIsLeap takes a DATE and the JPMCDS_IS_LEAP macro takes a YEAR; the

@@ -83,7 +83,7 @@ TEST_F(CxDifferential, ContingentLegMatchesAcrossSpansAndProtectStart) {
       for (const double notional : {1.0, 1.0e7, -5.0e6}) {
         RefCl ref(JpmcdsContingentLegMake(cdsmodel::to_tdate(start), cdsmodel::to_tdate(end),
                                           notional, PROT_PAY_DEF, protect_start ? TRUE : FALSE));
-        const std::optional<cdsmodel::ContingentLeg> got = cdsmodel::make_contingent_leg(
+        const cdsmodel::Expected<cdsmodel::ContingentLeg> got = cdsmodel::make_contingent_leg(
             start, end, notional, cdsmodel::ProtectionPayment::AtDefault, protect_start);
 
         ASSERT_EQ(static_cast<bool>(ref), got.has_value())
@@ -122,7 +122,7 @@ TEST_F(CxDifferential, ProtectStartDecidesWhetherAZeroLengthLegIsLegal) {
                                      PROT_PAY_DEF, TRUE));
   ASSERT_TRUE(static_cast<bool>(with)) << "upstream refused a zero-length leg WITH protect_start";
   EXPECT_EQ(with.p->startDate, cdsmodel::to_tdate(same) - 1);
-  const std::optional<cdsmodel::ContingentLeg> got =
+  const cdsmodel::Expected<cdsmodel::ContingentLeg> got =
       cdsmodel::make_contingent_leg(same, same, 1.0, cdsmodel::ProtectionPayment::AtDefault, true);
   ASSERT_TRUE(got.has_value());
   EXPECT_EQ(got->start, same - std::chrono::days{1});
@@ -138,7 +138,7 @@ TEST_F(CxDifferential, TheShiftCanPushUpstreamsStartDateBelowItsEpoch) {
 
   // `Date` is a sys_days, so a day before the epoch is just an earlier date --
   // there is no sentinel to collide with and nothing to refuse.
-  const std::optional<cdsmodel::ContingentLeg> got = cdsmodel::make_contingent_leg(
+  const cdsmodel::Expected<cdsmodel::ContingentLeg> got = cdsmodel::make_contingent_leg(
       cdsmodel::kDateEpoch, d(2024, 1, 15), 1.0, cdsmodel::ProtectionPayment::AtDefault, true);
   ASSERT_TRUE(got.has_value());
   EXPECT_EQ(got->start, cdsmodel::kDateEpoch - std::chrono::days{1});

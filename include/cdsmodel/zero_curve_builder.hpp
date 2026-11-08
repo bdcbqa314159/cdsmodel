@@ -42,6 +42,7 @@
 #include <cdsmodel/bsearch.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/rate_conversion.hpp>
 #include <cdsmodel/zero_curve.hpp>
 
@@ -118,10 +119,11 @@ public:
   /// Returns nullopt for a non-positive hint, a basis outside
   /// `builder_basis_valid`, or a day count upstream's `JpmcdsDayCountValid`
   /// refuses.
-  [[nodiscard]] static std::optional<ZeroCurveBuilder> create(Date value_date, int expected_points,
-                                                              long basis, DayCount day_count) {
+  [[nodiscard]] static Expected<ZeroCurveBuilder> create(Date value_date, int expected_points,
+                                                         long basis, DayCount day_count) {
     if (expected_points <= 0 || !builder_basis_valid(basis)) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument,
+                  "a builder needs a positive point count and a valid basis");
     }
     // JpmcdsDayCountValid accepts every convention the port's DayCount can
     // hold except the two non-calculable codes, which `DayCount` cannot
@@ -139,12 +141,16 @@ public:
 
   /// The index of an exact date match, or nullopt. Replaces
   /// `JpmcdsZCFindDateExact`.
+  ///
+  /// D7: `optional`, not `Expected`. "No point sits on this date" is a lookup
+  /// MISS, the same answer `map::find` gives, and callers branch on it as a
+  /// question rather than handling it as a failure.
   [[nodiscard]] std::optional<std::size_t> find_exact(Date date) const noexcept {
-    const std::optional<std::size_t> closest = find_closest(date);
+    const Expected<std::size_t> closest = find_closest(date);
     if (!closest || points_[*closest].date != date) {
       return std::nullopt;
     }
-    return closest;
+    return *closest;
   }
 
   /// The index of the nearest date, or nullopt for an empty builder.
@@ -156,19 +162,19 @@ public:
   /// difference to `int`; the port keeps the difference wide, which cannot
   /// change the comparison for any representable pair of dates but does not
   /// rely on that either.
-  [[nodiscard]] std::optional<std::size_t> find_closest(Date date) const noexcept {
+  [[nodiscard]] Expected<std::size_t> find_closest(Date date) const noexcept {
     if (points_.empty()) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument, "the builder has no points");
     }
     std::vector<long> dates;
     dates.reserve(points_.size());
     for (const Point &p : points_) {
       dates.push_back(to_tdate(p.date));
     }
-    const std::optional<Bracket> at =
+    const Expected<Bracket> at =
         bracket(std::span<const long>{dates}, static_cast<double>(to_tdate(date)));
     if (!at) {
-      return std::nullopt;
+      return unexpected(at.error());
     }
     const auto lo = static_cast<std::size_t>(at->lo);
     const auto hi = static_cast<std::size_t>(at->hi);
@@ -219,7 +225,7 @@ public:
   /// they are not bit-identical elsewhere either: `(valueDate - date)/365.0`
   /// and `-1.0 * ((date - valueDate)/365.0)` happen to be the same double for
   /// all representable dates, but only because negation is exact.
-  [[nodiscard]] std::optional<double> compute_discount(Date date, double rate) const {
+  [[nodiscard]] Expected<double> compute_discount(Date date, double rate) const {
     if (basis_ == 1 && rate > -1.0 && date >= value_date_ &&
         (day_count_ == DayCount::Act365Fixed || day_count_ == DayCount::Act360)) {
       const double denominator = day_count_ == DayCount::Act360 ? 360.0 : 365.0;
@@ -262,7 +268,7 @@ public:
   /// `JpmcdsZCAddRate`. The rate must already be in the builder's own basis
   /// and day count.
   [[nodiscard]] bool add_rate(Date date, double rate) {
-    const std::optional<double> discount = compute_discount(date, rate);
+    const Expected<double> discount = compute_discount(date, rate);
     if (!discount) {
       return false;
     }
@@ -272,8 +278,7 @@ public:
   /// Insert a discount factor, recovering its rate. Replaces
   /// `JpmcdsZCAddDiscountFactor`.
   [[nodiscard]] bool add_discount_factor(Date date, double discount) {
-    const std::optional<double> rate =
-        discount_to_rate(discount, value_date_, date, day_count_, basis_);
+    const Expected<double> rate = discount_to_rate(discount, value_date_, date, day_count_, basis_);
     if (!rate) {
       return false;
     }
@@ -327,8 +332,7 @@ public:
     if (basis == basis_ && day_count == day_count_) {
       return add_rate(date, rate); // UPSTREAM-16: upstream falls through here
     }
-    const std::optional<double> discount =
-        rate_to_discount(rate, value_date_, date, day_count, basis);
+    const Expected<double> discount = rate_to_discount(rate, value_date_, date, day_count, basis);
     if (!discount) {
       return false;
     }
@@ -349,6 +353,7 @@ public:
     if (other.points_.empty()) {
       return true;
     }
+    // D7: genuinely absent, not failed -- an empty builder has no cutoff.
     const std::optional<Date> cutoff =
         points_.empty() ? std::nullopt : std::optional{points_.front().date};
     for (const Point &p : other.points_) {
@@ -376,6 +381,7 @@ public:
     if (other.points_.empty()) {
       return true;
     }
+    // D7: genuinely absent, not failed.
     const std::optional<Date> cutoff =
         points_.empty() ? std::nullopt : std::optional{points_.back().date};
     for (auto it = other.points_.rbegin(); it != other.points_.rend(); ++it) {
@@ -395,7 +401,7 @@ public:
   /// accumulated -- an empty builder, or a basis or day count the rate
   /// conversion cannot support. The builder's basis is widened to `double`
   /// here, which is lossless in this direction.
-  [[nodiscard]] std::optional<ZeroCurve> to_zero_curve() const {
+  [[nodiscard]] Expected<ZeroCurve> to_zero_curve() const {
     std::vector<RatePoint> rate_points;
     rate_points.reserve(points_.size());
     for (const Point &p : points_) {
@@ -418,17 +424,17 @@ public:
   /// trip back out does not restore it. No convention uses a fractional
   /// compounding basis, and `ZeroCurve::create` admits them only because its
   /// range test does not exclude them.
-  [[nodiscard]] static std::optional<ZeroCurveBuilder> from_zero_curve(const ZeroCurve &curve) {
+  [[nodiscard]] static Expected<ZeroCurveBuilder> from_zero_curve(const ZeroCurve &curve) {
     const std::span<const RatePoint> points = curve.points();
-    std::optional<ZeroCurveBuilder> builder =
+    Expected<ZeroCurveBuilder> builder =
         create(curve.base_date(), static_cast<int>(points.size()) + 32,
                static_cast<long>(curve.basis()), curve.day_count());
     if (!builder) {
-      return std::nullopt;
+      return unexpected(builder.error());
     }
     for (const RatePoint &p : points) {
       if (!builder->add_rate(p.date, p.rate)) {
-        return std::nullopt;
+        return fail(ErrorKind::bad_argument, "a point could not be added to the builder");
       }
     }
     return builder;
@@ -487,7 +493,7 @@ public:
     if (index >= points_.size()) {
       return false;
     }
-    const std::optional<double> discount = compute_discount(points_[index].date, rate);
+    const Expected<double> discount = compute_discount(points_[index].date, rate);
     if (!discount) {
       return false;
     }
@@ -545,9 +551,9 @@ public:
   /// like an oversight to the next reader too.
   ///
   /// Returns nullopt for an empty curve or an unknown interpolation type.
-  [[nodiscard]] std::optional<double> interpolate(Date date, InterpType interp) const {
+  [[nodiscard]] Expected<double> interpolate(Date date, InterpType interp) const {
     if (points_.empty()) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument, "the builder has no points");
     }
     if (date <= points_.front().date) {
       return points_.front().rate;
@@ -558,9 +564,9 @@ public:
       date = from_tdate(to_tdate(date) + 1);
     }
 
-    const std::optional<Bracket> at = bracket_dates(date);
+    const Expected<Bracket> at = bracket_dates(date);
     if (!at) {
-      return std::nullopt;
+      return unexpected(at.error());
     }
     const Point &lo = points_[at->lo];
     const Point &hi = points_[at->hi];
@@ -590,10 +596,11 @@ public:
       }
       // Recomputed from the rates, NOT read from the cached discounts --
       // upstream does the same, which is why the cache is write-mostly.
-      const std::optional<double> disc_lo = compute_discount(lo.date, lo.rate);
-      const std::optional<double> disc_hi = compute_discount(hi.date, hi.rate);
+      const Expected<double> disc_lo = compute_discount(lo.date, lo.rate);
+      const Expected<double> disc_hi = compute_discount(hi.date, hi.rate);
       if (!disc_lo || !disc_hi || *disc_lo == 0.0) {
-        return std::nullopt;
+        return fail(ErrorKind::bad_argument,
+                    "a bracket endpoint has no discount factor, or the lower one is zero");
       }
       const double disc_date =
           *disc_lo *
@@ -601,7 +608,7 @@ public:
       return discount_to_rate(disc_date, value_date_, date, day_count_, basis_);
     }
     }
-    return std::nullopt;
+    return fail(ErrorKind::unsupported, "unrecognised enumerator reached a switch default");
   }
 
   /// The discount factor to a date. Replaces `JpmcdsZCDiscountFactor`.
@@ -610,23 +617,22 @@ public:
   /// interpolation, so it needs no points at all -- an empty curve still has
   /// a discount factor of 1.0 at its own value date, which is upstream's
   /// behaviour and is defensible.
-  [[nodiscard]] std::optional<double> discount_factor(Date date, InterpType interp) const {
+  [[nodiscard]] Expected<double> discount_factor(Date date, InterpType interp) const {
     if (date == value_date_) {
       return 1.0;
     }
-    const std::optional<double> rate = interpolate(date, interp);
+    const Expected<double> rate = interpolate(date, interp);
     if (!rate) {
-      return std::nullopt;
+      return unexpected(rate.error());
     }
     return compute_discount(date, *rate);
   }
 
   /// A payment discounted to the value date. Replaces `JpmcdsZCPresentValue`.
-  [[nodiscard]] std::optional<double> present_value(double price, Date date,
-                                                    InterpType interp) const {
-    const std::optional<double> discount = discount_factor(date, interp);
+  [[nodiscard]] Expected<double> present_value(double price, Date date, InterpType interp) const {
+    const Expected<double> discount = discount_factor(date, interp);
     if (!discount) {
-      return std::nullopt;
+      return unexpected(discount.error());
     }
     return price * *discount;
   }
@@ -681,19 +687,19 @@ public:
   ///
   /// The port returns nullopt where upstream fabricates, and also where the
   /// result is not finite -- see UPSTREAM-19 on `forward_rate`.
-  [[nodiscard]] std::optional<double> forward_discount_factor(Date start, Date end,
-                                                              InterpType interp) const {
-    const std::optional<double> at_start = discount_factor(start, interp);
-    const std::optional<double> at_end = discount_factor(end, interp);
+  [[nodiscard]] Expected<double> forward_discount_factor(Date start, Date end,
+                                                         InterpType interp) const {
+    const Expected<double> at_start = discount_factor(start, interp);
+    const Expected<double> at_end = discount_factor(end, interp);
     if (!at_start || !at_end) {
-      return std::nullopt;
+      return unexpected(!at_start ? at_start.error() : (at_end.error()));
     }
     if (*at_start <= 0.0) {
-      return std::nullopt; // UPSTREAM-18: upstream returns SUCCESS with 1.0
+      return fail(ErrorKind::bad_argument, "the discount factor at the start is not positive");
     }
     const double forward = *at_end / *at_start;
     if (!std::isfinite(forward)) {
-      return std::nullopt; // UPSTREAM-19
+      return fail(ErrorKind::bad_argument, "the forward discount factor is not finite");
     }
     return forward;
   }
@@ -743,11 +749,12 @@ public:
   /// `isfinite` instead of `> 0.0`. `discount_to_rate` was tightened the same
   /// way for the same reason -- a NaN discount factor is not a rate, from any
   /// caller.
-  [[nodiscard]] std::optional<double> forward_rate(Date start, Date end, long basis,
-                                                   DayCount day_count, InterpType interp) const {
-    const std::optional<double> discount = forward_discount_factor(start, end, interp);
+  [[nodiscard]] Expected<double> forward_rate(Date start, Date end, long basis, DayCount day_count,
+                                              InterpType interp) const {
+    const Expected<double> discount = forward_discount_factor(start, end, interp);
     if (!discount || *discount <= 0.0) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument,
+                  "the forward discount factor is missing or not positive");
     }
     return discount_to_rate(*discount, start, end, day_count, basis);
   }
@@ -755,8 +762,8 @@ public:
   /// The money-market rate to a date: a simple-interest forward from the value
   /// date. Replaces `JpmcdsZCMoneyMarketRate`, which is one call through to
   /// `forward_rate` with the simple basis.
-  [[nodiscard]] std::optional<double> money_market_rate(Date date, DayCount day_count,
-                                                        InterpType interp) const {
+  [[nodiscard]] Expected<double> money_market_rate(Date date, DayCount day_count,
+                                                   InterpType interp) const {
     return forward_rate(value_date_, date, static_cast<long>(kSimpleBasis), day_count, interp);
   }
 
@@ -772,10 +779,10 @@ private:
   /// That makes two implementations of one thing, which is the mistake
   /// UPSTREAM-17 is about, so it is not left to inspection: a test sweeps both
   /// against each other and requires identical brackets.
-  [[nodiscard]] std::optional<Bracket> bracket_dates(Date date) const noexcept {
+  [[nodiscard]] Expected<Bracket> bracket_dates(Date date) const noexcept {
     const std::size_t n = points_.size();
     if (n < 1) {
-      return std::nullopt;
+      return fail(ErrorKind::bad_argument, "the builder has no points to bracket");
     }
     if (n == 1) {
       return Bracket{0, 0};

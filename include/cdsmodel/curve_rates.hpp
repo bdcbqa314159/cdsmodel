@@ -23,6 +23,7 @@
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_interval.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/interp_curve.hpp>
 #include <cdsmodel/rate_conversion.hpp>
 #include <cdsmodel/stub.hpp>
@@ -84,14 +85,13 @@ namespace cdsmodel {
 /// it is formed into a rate. No guard is added here on purpose: the invariant
 /// lives at the conversion, and a second check would suggest the conversion
 /// could not be trusted.
-[[nodiscard]] inline std::optional<double> forward_from_curve(const ZeroCurve &curve,
-                                                              InterpType interp, Date start,
-                                                              Date end, DayCount day_count,
-                                                              long basis) {
-  const std::optional<double> at_start = discount_date(curve, start, interp);
-  const std::optional<double> at_end = discount_date(curve, end, interp);
+[[nodiscard]] inline Expected<double> forward_from_curve(const ZeroCurve &curve, InterpType interp,
+                                                         Date start, Date end, DayCount day_count,
+                                                         long basis) {
+  const Expected<double> at_start = discount_date(curve, start, interp);
+  const Expected<double> at_end = discount_date(curve, end, interp);
   if (!at_start || !at_end) {
-    return std::nullopt;
+    return unexpected(!at_start ? at_start.error() : (at_end.error()));
   }
   // UPSTREAM-19, second site: upstream divides unguarded and lets a NaN
   // through. discount_to_rate rejects it.
@@ -132,17 +132,17 @@ namespace cdsmodel {
 /// ADJUSTED date for the present value. Both are reproduced, because the two
 /// dates genuinely play different roles: the schedule is built from the
 /// unadjusted date and discounted from the adjusted one.
-[[nodiscard]] inline std::optional<double>
+[[nodiscard]] inline Expected<double>
 par_coupon_rate(const ZeroCurve &curve, InterpType interp, Date start, DateInterval interval,
                 Date maturity, DayCount coupon_day_count, StubPosition stub_position,
                 BadDayConv accrual_bad_day, BadDayConv pay_bad_day,
                 std::span<const Calendar> calendars) {
-  const std::optional<Date> adjusted_start = adjust(start, accrual_bad_day, calendars);
+  const Expected<Date> adjusted_start = adjust(start, accrual_bad_day, calendars);
   if (!adjusted_start) {
-    return std::nullopt;
+    return unexpected(adjusted_start.error());
   }
   if (*adjusted_start < curve.first_date()) {
-    return std::nullopt; // upstream also reports whether a bad day moved it
+    return fail(ErrorKind::bad_argument, "the adjusted start date is before the curve begins");
   }
 
   // The schedule is built from the UNADJUSTED start; MakeCFL adjusts it.
@@ -151,26 +151,26 @@ par_coupon_rate(const ZeroCurve &curve, InterpType interp, Date start, DateInter
                                         .stub_length = StubLength::Short,
                                         .accrual_bad_day = accrual_bad_day,
                                         .pay_bad_day = pay_bad_day};
-  const std::optional<std::vector<CashFlow>> flows = cash_flows_from_schedule(
+  const Expected<std::vector<CashFlow>> flows = cash_flows_from_schedule(
       start, maturity, interval, conventions, stub_position, {}, calendars);
   if (!flows || flows->empty()) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the swap produced no cash flows");
   }
 
-  const std::optional<double> start_pv = discount_date(curve, *adjusted_start, interp);
+  const Expected<double> start_pv = discount_date(curve, *adjusted_start, interp);
   if (!start_pv) {
-    return std::nullopt;
+    return unexpected(start_pv.error());
   }
-  const std::optional<double> annuity = cash_flow_pv(curve, *flows, interp);
+  const Expected<double> annuity = cash_flow_pv(curve, *flows, interp);
   if (!annuity) {
-    return std::nullopt;
+    return unexpected(annuity.error());
   }
   if (*annuity == 0.0) {
-    return std::nullopt; // "coupons have zero present value"
+    return fail(ErrorKind::no_root, "the annuity is zero, so no par rate exists");
   }
-  const std::optional<double> final_pv = discount_date(curve, flows->back().date, interp);
+  const Expected<double> final_pv = discount_date(curve, flows->back().date, interp);
   if (!final_pv) {
-    return std::nullopt;
+    return unexpected(final_pv.error());
   }
   return (*start_pv - *final_pv) / *annuity;
 }

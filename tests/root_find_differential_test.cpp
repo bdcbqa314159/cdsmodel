@@ -50,7 +50,7 @@ protected:
 /// The same objective, reached through upstream's function-pointer signature.
 extern "C" int trampoline(double x, void *data, double *out) {
   Objective *obj = static_cast<Objective *>(data);
-  const std::optional<double> value = (*obj)(x);
+  const cdsmodel::Expected<double> value = (*obj)(x);
   if (!value) {
     return FAILURE;
   }
@@ -58,6 +58,9 @@ extern "C" int trampoline(double x, void *data, double *out) {
   return SUCCESS;
 }
 
+/// `optional`, not `Expected`: this holds BOTH sides' results, and upstream's
+/// FAILURE carries no message to put in an error. The harness compares
+/// acceptance and value, which is what A2 requires.
 struct Outcome {
   std::optional<double> root;
   int calls = 0;
@@ -77,8 +80,8 @@ Outcome reference_run(Which which, const cdsmodel::RootFindOptions &opt) {
 
 Outcome port_run(Which which, const cdsmodel::RootFindOptions &opt) {
   Objective obj{which};
-  const std::optional<double> root = cdsmodel::root_find_brent(obj, opt);
-  return {root, obj.calls};
+  const cdsmodel::Expected<double> root = cdsmodel::root_find_brent(obj, opt);
+  return {root.has_value() ? std::optional<double>{*root} : std::nullopt, obj.calls};
 }
 
 std::string label(Which w, const cdsmodel::RootFindOptions &o) {

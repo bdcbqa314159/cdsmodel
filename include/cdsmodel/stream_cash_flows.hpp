@@ -91,6 +91,7 @@
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_interval.hpp>
 #include <cdsmodel/day_count.hpp>
+#include <cdsmodel/expected.hpp>
 #include <cdsmodel/float_rate.hpp>
 #include <cdsmodel/rate_conversion.hpp>
 #include <cdsmodel/stub.hpp>
@@ -168,9 +169,9 @@ struct FloatStream {
 }
 
 /// Replaces `JpmcdsNewStreamFixed`, which validates and returns NULL.
-[[nodiscard]] inline std::optional<FixedStream> make_fixed_stream(FixedStream stream) {
+[[nodiscard]] inline Expected<FixedStream> make_fixed_stream(FixedStream stream) {
   if (!is_well_formed(stream)) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the fixed stream is not well formed");
   }
   return stream;
 }
@@ -178,9 +179,9 @@ struct FloatStream {
 /// Replaces `JpmcdsNewStreamFloat`. It checks the day count convention and the
 /// swap type, both of which are types here, so the only check left is the one
 /// upstream does NOT do on this side -- see the header note on validation.
-[[nodiscard]] inline std::optional<FloatStream> make_float_stream(FloatStream stream) {
+[[nodiscard]] inline Expected<FloatStream> make_float_stream(FloatStream stream) {
   if (!is_well_formed(stream.schedule)) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the float stream schedule is not well formed");
   }
   return stream;
 }
@@ -189,10 +190,9 @@ struct FloatStream {
 ///
 /// One rate per period: the stub rates where the schedule says there is a
 /// stub, `fixed_rate` everywhere else.
-[[nodiscard]] inline std::optional<std::vector<double>>
-fixed_coupon_rates(const FixedStream &stream) {
+[[nodiscard]] inline Expected<std::vector<double>> fixed_coupon_rates(const FixedStream &stream) {
   if (!is_well_formed(stream)) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the fixed stream is not well formed");
   }
   const std::size_t n = stream.schedule.periods.size();
   std::vector<double> rates(n, stream.fixed_rate);
@@ -232,11 +232,11 @@ struct CashFlowLayout {
 /// `JpmcdsGetFixedCouponRates`, which passes it to `CheckFixedStreamDetails`,
 /// which never reads it -- so it is dead through the whole path. A differential
 /// test varies it over a century and requires the cash flows not to move.
-[[nodiscard]] inline std::optional<std::vector<CashFlow>>
+[[nodiscard]] inline Expected<std::vector<CashFlow>>
 fixed_stream_cash_flows(const FixedStream &stream) {
-  const std::optional<std::vector<double>> rates = fixed_coupon_rates(stream);
+  const Expected<std::vector<double>> rates = fixed_coupon_rates(stream);
   if (!rates) {
-    return std::nullopt;
+    return unexpected(rates.error());
   }
   const std::size_t n = stream.schedule.periods.size();
   const detail::CashFlowLayout shape = detail::layout(n, stream.principal_flows);
@@ -249,10 +249,10 @@ fixed_stream_cash_flows(const FixedStream &stream) {
 
   for (std::size_t i = 0; i < n; ++i) {
     const CouponDates &period = stream.schedule.periods[i];
-    const std::optional<double> year_frac =
+    const Expected<double> year_frac =
         year_fraction(period.accrual_start, period.accrual_end, stream.pay_day_count);
     if (!year_frac) {
-      return std::nullopt;
+      return unexpected(year_frac.error());
     }
     double amount = stream.principal * (*rates)[i] * *year_frac;
     if (i == n - 1 && stream.principal_flows.add_final) {
@@ -276,30 +276,30 @@ fixed_stream_cash_flows(const FixedStream &stream) {
 /// Upstream additionally fills a local `TFloatRate floatRateDef` "used for
 /// convexity adjustment" and never reads it. Not reproduced; there is nothing
 /// to reproduce.
-[[nodiscard]] inline std::optional<double>
+[[nodiscard]] inline Expected<double>
 floating_cash_flow(const ZeroCurve &curve, InterpType interp, Date index_start, Date index_maturity,
                    DateInterval pay_interval, const CouponDates &coupon, DayCount rate_day_count,
                    DayCount pay_day_count, double notional, double spread) {
   // CheckFloatingCFArgs. Its day-count checks are types here, and it takes a
   // `spread` it never reads, so these two comparisons are all of it.
   if (index_start < curve.base_date()) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the index start date is before the curve begins");
   }
   if (index_start > index_maturity) {
-    return std::nullopt;
+    return fail(ErrorKind::bad_argument, "the index start date is after its maturity");
   }
 
   const Calendar no_adjustment = Calendar::no_weekends();
-  const std::optional<double> coupon_rate = par_coupon_rate(
+  const Expected<double> coupon_rate = par_coupon_rate(
       curve, interp, index_start, pay_interval, index_maturity, rate_day_count, StubPosition::Front,
       BadDayConv::None, BadDayConv::None, std::span<const Calendar>{&no_adjustment, 1});
   if (!coupon_rate) {
-    return std::nullopt;
+    return unexpected(coupon_rate.error());
   }
-  const std::optional<double> year_frac =
+  const Expected<double> year_frac =
       year_fraction(coupon.accrual_start, coupon.accrual_end, pay_day_count);
   if (!year_frac) {
-    return std::nullopt;
+    return unexpected(year_frac.error());
   }
   return notional * *year_frac * (*coupon_rate + spread);
 }
@@ -338,20 +338,20 @@ namespace detail {
 ///
 /// Here the value is returned, so there is no output to write on a failure
 /// path and the shape cannot recur.
-[[nodiscard]] inline std::optional<double> stub_payment(const ZeroCurve &curve, InterpType interp,
-                                                        const FloatStream &stream,
-                                                        const CouponDates &period) {
-  const std::optional<double> forward =
+[[nodiscard]] inline Expected<double> stub_payment(const ZeroCurve &curve, InterpType interp,
+                                                   const FloatStream &stream,
+                                                   const CouponDates &period) {
+  const Expected<double> forward =
       forward_from_curve(curve, interp, period.accrual_start, period.accrual_end,
                          stream.rate.day_count, static_cast<long>(kSimpleBasis));
   if (!forward) {
-    return std::nullopt;
+    return unexpected(forward.error());
   }
   const double stub_rate = *forward + stream.rate.spread;
-  const std::optional<double> year_frac =
+  const Expected<double> year_frac =
       year_fraction(period.accrual_start, period.accrual_end, stream.pay_day_count);
   if (!year_frac) {
-    return std::nullopt;
+    return unexpected(year_frac.error());
   }
   return stub_rate * stream.principal * *year_frac;
 }
@@ -369,11 +369,11 @@ namespace detail {
 /// asymmetry, reproduced. With upstream's own spot offsets that is visible: a
 /// calendar offset from a Friday reset puts the index period's start on a
 /// weekend (see float_rate.hpp).
-[[nodiscard]] inline std::optional<std::vector<CashFlow>>
+[[nodiscard]] inline Expected<std::vector<CashFlow>>
 float_stream_cash_flows(const ZeroCurve &curve, InterpType interp, const FloatStream &stream,
                         BadDayConv rate_bad_day, const Calendar &calendar) {
   if (!is_well_formed(stream.schedule)) {
-    return std::nullopt; // upstream validates nothing here -- see the header
+    return fail(ErrorKind::bad_argument, "the float stream schedule is not well formed");
   }
   const std::size_t n = stream.schedule.periods.size();
   std::vector<double> amounts(n, 0.0);
@@ -386,19 +386,19 @@ float_stream_cash_flows(const ZeroCurve &curve, InterpType interp, const FloatSt
   // Both schedule the BACK rate wins -- the opposite of the fixed path. Kept
   // in upstream's order for that reason.
   if (stub == StubLocation::Front || stub == StubLocation::Both) {
-    const std::optional<double> front =
+    const Expected<double> front =
         detail::stub_payment(curve, interp, stream, stream.schedule.periods.front());
     if (!front) {
-      return std::nullopt;
+      return unexpected(front.error());
     }
     amounts.front() = *front;
     first_coupon = 1;
   }
   if (stub == StubLocation::Back || stub == StubLocation::Both) {
-    const std::optional<double> back =
+    const Expected<double> back =
         detail::stub_payment(curve, interp, stream, stream.schedule.periods.back());
     if (!back) {
-      return std::nullopt;
+      return unexpected(back.error());
     }
     amounts.back() = *back;
     last_coupon = n - 1;
@@ -407,19 +407,18 @@ float_stream_cash_flows(const ZeroCurve &curve, InterpType interp, const FloatSt
   for (std::size_t i = first_coupon; i < last_coupon; ++i) {
     const CouponDates &period = stream.schedule.periods[i];
 
-    const std::optional<Date> index_start =
+    const Expected<Date> index_start =
         advance_adjusted(period.reset, stream.rate.spot_offset, calendar);
     if (!index_start) {
-      return std::nullopt;
+      return unexpected(index_start.error());
     }
-    const std::optional<Date> unadjusted_maturity =
-        advance(*index_start, stream.rate.maturity_interval);
+    const Expected<Date> unadjusted_maturity = advance(*index_start, stream.rate.maturity_interval);
     if (!unadjusted_maturity) {
-      return std::nullopt;
+      return unexpected(unadjusted_maturity.error());
     }
-    const std::optional<Date> index_maturity = adjust(*unadjusted_maturity, rate_bad_day, calendar);
+    const Expected<Date> index_maturity = adjust(*unadjusted_maturity, rate_bad_day, calendar);
     if (!index_maturity) {
-      return std::nullopt;
+      return unexpected(index_maturity.error());
     }
 
     // When the pay interval equals the maturity interval the rate is a zero
@@ -433,11 +432,11 @@ float_stream_cash_flows(const ZeroCurve &curve, InterpType interp, const FloatSt
                                   PeriodUnit::Days};
     }
 
-    const std::optional<double> amount = floating_cash_flow(
+    const Expected<double> amount = floating_cash_flow(
         curve, interp, *index_start, *index_maturity, pay_interval, period, stream.rate.day_count,
         stream.pay_day_count, stream.principal, stream.rate.spread);
     if (!amount) {
-      return std::nullopt;
+      return unexpected(amount.error());
     }
     amounts[i] = *amount;
   }
