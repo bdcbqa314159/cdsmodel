@@ -523,6 +523,31 @@ def gate_install_tree(preset: str) -> None:
         print(f"ok: install tree is {len(staged)} files, none upstream-derived")
 
 
+def gate_sdk_absent() -> None:
+    """Artifact #3: the Excel XLL SDK is never committed.
+
+    Same reasoning as rule 2 for the ISDA oracle, different owner. `xlcall.h`
+    and `xlcall32.lib` are Microsoft's, obtained from them under their terms;
+    committing them here redistributes them. The repo is public, so this is
+    not hypothetical.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True
+    ).stdout.split("\n")
+
+    banned_names = {"xlcall.h", "xlcall32.lib", "xlcall.cpp", "xlcall64.lib"}
+    offenders = [
+        t for t in tracked
+        if t and (t.startswith("xlsdk/") or Path(t).name.lower() in banned_names)
+    ]
+    if offenders:
+        fail(
+            "the Excel XLL SDK must never be committed (it is Microsoft's):\n  "
+            + "\n  ".join(offenders)
+        )
+    print("ok: no Excel XLL SDK files are tracked")
+
+
 def gate_tests(preset: str) -> None:
     """Run ctest and enforce a floor on how many tests actually ran."""
     proc = subprocess.run(
@@ -562,6 +587,7 @@ GATES = {
     "claims": gate_claims,
     "error-channel": gate_error_channel,
     "umbrella": gate_umbrella,
+    "sdk-absent": gate_sdk_absent,
     "install-tree": lambda: gate_install_tree(_PRESET[0]),
     "golden": gate_golden_generated,
     "reports": gate_reports,

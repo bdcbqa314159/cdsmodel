@@ -285,6 +285,51 @@ if(CDSMODEL_BUILD_TESTS)
 endif()
 
 # =========================================================================
+# The Excel XLL SDK -- OPTIONAL and never redistributed (artifact #3).
+#
+# Microsoft's, not ours: xlcall.h and xlcall32.lib come from the Excel XLL
+# SDK, so they are gitignored exactly like the ISDA oracle and for the same
+# reason. Put the SDK in ./xlsdk (or point CDSMODEL_XLSDK_DIR elsewhere) and
+# the XLL target appears; without it the rest of the build is unaffected.
+#
+# The SDK's internal layout has varied across releases, so this SEARCHES for
+# the two files it needs rather than assuming a path, and says what it found.
+# =========================================================================
+set(CDSMODEL_XLSDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/xlsdk"
+    CACHE PATH "Microsoft Excel XLL SDK (xlcall.h + x64 xlcall32.lib)")
+
+set(CDSMODEL_XLL_AVAILABLE OFF)
+if(WIN32 AND EXISTS "${CDSMODEL_XLSDK_DIR}")
+  file(GLOB_RECURSE CDSMODEL_XLCALL_H "${CDSMODEL_XLSDK_DIR}/*xlcall.h"
+                                      "${CDSMODEL_XLSDK_DIR}/*XLCALL.H")
+  # x64 only: a 32-bit XLL cannot load in the Excel anyone runs (artifact #3 D2).
+  file(GLOB_RECURSE CDSMODEL_XLCALL_LIB "${CDSMODEL_XLSDK_DIR}/*x64/*xlcall32.lib"
+                                        "${CDSMODEL_XLSDK_DIR}/*x64/*XLCALL32.LIB"
+                                        "${CDSMODEL_XLSDK_DIR}/*X64/*XLCALL32.LIB")
+  list(GET CDSMODEL_XLCALL_H 0 CDSMODEL_XLCALL_H_FIRST)
+  if(CDSMODEL_XLCALL_H AND CDSMODEL_XLCALL_LIB)
+    list(GET CDSMODEL_XLCALL_LIB 0 CDSMODEL_XLCALL_LIB_FIRST)
+    get_filename_component(CDSMODEL_XLSDK_INCLUDE "${CDSMODEL_XLCALL_H_FIRST}" DIRECTORY)
+    set(CDSMODEL_XLL_AVAILABLE ON)
+    message(STATUS "cdsmodel: Excel XLL SDK found")
+    message(STATUS "  header : ${CDSMODEL_XLCALL_H_FIRST}")
+    message(STATUS "  library: ${CDSMODEL_XLCALL_LIB_FIRST}")
+  else()
+    message(STATUS "cdsmodel: ${CDSMODEL_XLSDK_DIR} exists but is not a usable SDK")
+    if(NOT CDSMODEL_XLCALL_H)
+      message(STATUS "  MISSING xlcall.h anywhere under it")
+    endif()
+    if(NOT CDSMODEL_XLCALL_LIB)
+      message(STATUS "  MISSING an x64 xlcall32.lib (a 32-bit one is not enough)")
+    endif()
+  endif()
+elseif(NOT WIN32)
+  message(STATUS "cdsmodel: not Windows, so no XLL (the marshalling tests still run)")
+else()
+  message(STATUS "cdsmodel: no Excel XLL SDK at ${CDSMODEL_XLSDK_DIR}; XLL skipped")
+endif()
+
+# =========================================================================
 # Install / export -- artifact #2 (specs/02_consumability.md)
 #
 # The target was always written to be exported: it has had
