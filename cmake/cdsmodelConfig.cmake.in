@@ -1,0 +1,12 @@
+@PACKAGE_INIT@
+
+# cdsmodel -- a C++20 port of the ISDA CDS Standard Model 1.8.3.
+#
+# This package exports exactly one target, cdsmodel::cdsmodel. The upstream C
+# oracle the port is verified against is NOT part of it and is not
+# redistributed: it is available from cdsmodel.com under the ISDA CDS Standard
+# Model Public License.
+
+include("${CMAKE_CURRENT_LIST_DIR}/cdsmodelTargets.cmake")
+
+check_required_components(cdsmodel)

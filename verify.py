@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import pathlib
 import re
+from pathlib import Path
 import subprocess
 import sys
 
@@ -27,6 +28,9 @@ ROOT = pathlib.Path(__file__).parent.resolve()
 # is the binding one. A local run with the oracle executes strictly more.
 # Bump it when a module lands; never lower it to make a red run green.
 TEST_FLOOR_WITHOUT_ORACLE = 445
+
+
+_PRESET = ["release"]
 
 
 def fail(msg: str) -> None:
@@ -77,6 +81,7 @@ def gate_provenance() -> None:
     exempt = {
         "version.hpp",
         "expected.hpp",  # the error channel -- specs/01_error_channel.md
+        "cdsmodel.hpp",  # the umbrella -- specs/02_consumability.md
     }
     headers = sorted((ROOT / "include" / "cdsmodel").glob("*.hpp"))
 
@@ -390,6 +395,134 @@ def gate_error_channel() -> None:
     )
 
 
+def gate_umbrella() -> None:
+    """B6 from specs/02_consumability.md.
+
+    The umbrella header must include every public header. An umbrella that
+    drifts is worse than none: a consumer who includes it reasonably believes
+    they have the library, and a silently omitted header turns into a confusing
+    compile error in THEIR code, not ours.
+
+    D1 chose a hand-written umbrella over a generated one so the file is
+    greppable and visible in the tree. This gate is what makes that choice
+    safe.
+    """
+    header_dir = ROOT / "include" / "cdsmodel"
+    umbrella = header_dir / "cdsmodel.hpp"
+    if not umbrella.exists():
+        fail("include/cdsmodel/cdsmodel.hpp does not exist")
+
+    public = {h.name for h in header_dir.glob("*.hpp")} - {"cdsmodel.hpp"}
+    included = set(re.findall(r"#include <cdsmodel/([\w.]+)>", umbrella.read_text(encoding="utf-8")))
+
+    missing = sorted(public - included)
+    if missing:
+        fail(
+            "B6: the umbrella header omits these public headers:\n  "
+            + "\n  ".join(missing)
+        )
+    stale = sorted(included - public)
+    if stale:
+        fail("B6: the umbrella includes headers that no longer exist:\n  " + "\n  ".join(stale))
+
+    # The includes must be sorted, so a hand-edited umbrella stays reviewable
+    # and two people adding a header do not conflict in the same place.
+    order = re.findall(r"#include <cdsmodel/([\w.]+)>", umbrella.read_text(encoding="utf-8"))
+    if order != sorted(order):
+        fail("B6: the umbrella's includes are not in sorted order")
+
+    print(f"ok: the umbrella header includes all {len(public)} public headers, sorted")
+
+
+def gate_install_tree(preset: str) -> None:
+    """B7 from specs/02_consumability.md -- rule 2 of CLAUDE.md, mechanically.
+
+    Now that install rules exist, "the oracle is never redistributed" stops
+    being a property of nobody having written a bad install(DIRECTORY) line.
+    Staging the install into a temporary prefix and inspecting it is the only
+    way to check what a consumer would actually receive.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    build = ROOT / "build" / preset
+    if not (build / "CMakeCache.txt").exists():
+        # CI configures release only; a local run usually has debug. Take
+        # whichever exists rather than demanding one, so this gate does not
+        # depend on which preset the caller happened to build.
+        alternatives = [d for d in (ROOT / "build").glob("*") if (d / "CMakeCache.txt").exists()]
+        if not alternatives:
+            fail(f"B7: no configured build found (looked for build/{preset})")
+        build = alternatives[0]
+
+    with tempfile.TemporaryDirectory() as prefix:
+        run = subprocess.run(
+            ["cmake", "--install", str(build), "--prefix", prefix],
+            capture_output=True,
+            text=True,
+        )
+        if run.returncode != 0:
+            fail("B7: cmake --install failed:\n" + (run.stderr or run.stdout)[-1500:])
+
+        staged = [p for p in Path(prefix).rglob("*") if p.is_file()]
+        if not staged:
+            fail("B7: the install produced no files at all")
+
+        # A gate that only checks for FORBIDDEN content passes on a tree with
+        # nothing in it. This one reported "52 files, none upstream-derived"
+        # over an install that contained GoogleTest and not one cdsmodel
+        # header, because the build directory predated the install rules. So
+        # the expected content is asserted first.
+        want_headers = len(sorted((ROOT / "include" / "cdsmodel").glob("*.hpp")))
+        got_headers = sorted((Path(prefix) / "include" / "cdsmodel").glob("*.hpp"))
+        if len(got_headers) != want_headers:
+            fail(
+                f"B1/B7: the install tree has {len(got_headers)} cdsmodel headers, "
+                f"expected {want_headers}. If this is 0, the build directory was "
+                f"configured before the install rules existed -- reconfigure it."
+            )
+        if not list((Path(prefix) / "lib").glob("*cdsmodel*")):
+            fail("B1/B7: the install tree has no cdsmodel library")
+
+        # GoogleTest brings its own install rules; INSTALL_GTEST OFF suppresses
+        # them, but only for a build configured after that line was added.
+        gtest = [str(p.relative_to(prefix)) for p in staged if "gtest" in p.name.lower()
+                 or "gmock" in p.name.lower()]
+        if gtest:
+            fail(
+                "B7: the install tree carries GoogleTest, so a consumer would "
+                f"receive our test framework ({len(gtest)} files, e.g. {gtest[:3]}). "
+                "Reconfigure the build so INSTALL_GTEST=OFF takes effect."
+            )
+
+        # Nothing derived from the licence-gated oracle may appear.
+        banned = ("isda_cds_model", "cds_reference", "jpmcds")
+        offenders = [
+            str(p.relative_to(prefix))
+            for p in staged
+            if any(b in p.name.lower() for b in banned)
+        ]
+        if offenders:
+            fail(
+                "B7: the install tree carries upstream-derived files, which "
+                "routes around the licence gate (CLAUDE.md rule 2):\n  "
+                + "\n  ".join(offenders)
+            )
+
+        # And no upstream SOURCE text, however it got there.
+        for p in staged:
+            if p.suffix.lower() in {".h", ".hpp", ".c", ".cpp", ".inc"}:
+                text = p.read_text(encoding="utf-8", errors="ignore")
+                if "ISDA CDS Standard Model Public License" in text:
+                    fail(
+                        f"B7: {p.relative_to(prefix)} carries the upstream licence "
+                        "header, so it is upstream source"
+                    )
+
+        print(f"ok: install tree is {len(staged)} files, none upstream-derived")
+
+
 def gate_tests(preset: str) -> None:
     """Run ctest and enforce a floor on how many tests actually ran."""
     proc = subprocess.run(
@@ -428,6 +561,8 @@ GATES = {
     "provenance": gate_provenance,
     "claims": gate_claims,
     "error-channel": gate_error_channel,
+    "umbrella": gate_umbrella,
+    "install-tree": lambda: gate_install_tree(_PRESET[0]),
     "golden": gate_golden_generated,
     "reports": gate_reports,
     "upstream-unmodified": gate_upstream_unmodified,
@@ -440,6 +575,7 @@ def main() -> None:
     ap.add_argument("gate", choices=[*GATES, "tests", "all"])
     ap.add_argument("--preset", default="release")
     args = ap.parse_args()
+    _PRESET[0] = args.preset
 
     if args.gate == "tests":
         gate_tests(args.preset)

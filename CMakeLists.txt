@@ -122,6 +122,11 @@ if(CDSMODEL_BUILD_TESTS)
     GIT_REPOSITORY https://github.com/google/googletest.git
     GIT_TAG v1.15.2 GIT_SHALLOW TRUE)
   set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  # GoogleTest ships install rules of its own. Measured before this line
+  # existed: `cmake --install` produced 52 files, every one of them gtest or
+  # gmock, and not a single cdsmodel header -- a consumer would have installed
+  # our test framework instead of our library.
+  set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(googletest)
 
   # Tier 1 -- always runs, anywhere, including CI with no oracle present.
@@ -278,3 +283,51 @@ if(CDSMODEL_BUILD_TESTS)
                      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/compare_golden.cmake)
   endif()
 endif()
+
+# =========================================================================
+# Install / export -- artifact #2 (specs/02_consumability.md)
+#
+# The target was always written to be exported: it has had
+# $<INSTALL_INTERFACE:include> and a cdsmodel::cdsmodel alias since the
+# scaffold. These are the rules that finish that sentence.
+#
+# The export set contains `cdsmodel` ONLY. `cds_reference` -- the upstream
+# oracle -- is never installed and never linked into the exported target:
+# redistributing it routes around the licence gate (CLAUDE.md rule 2), and
+# `python verify.py install-tree` checks the staged tree rather than trusting
+# this comment.
+# =========================================================================
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
+install(TARGETS cdsmodel
+        EXPORT cdsmodelTargets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+install(DIRECTORY include/cdsmodel
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        FILES_MATCHING PATTERN "*.hpp")
+
+install(EXPORT cdsmodelTargets
+        FILE cdsmodelTargets.cmake
+        NAMESPACE cdsmodel::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cdsmodel)
+
+# SameMajorVersion while the major is 0 means "exact minor", which is what we
+# want pre-1.0: nothing about this API is stable enough to promise otherwise.
+write_basic_package_version_file(
+  "${CMAKE_CURRENT_BINARY_DIR}/cdsmodelConfigVersion.cmake"
+  VERSION ${PROJECT_VERSION}
+  COMPATIBILITY SameMajorVersion)
+
+configure_package_config_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cdsmodelConfig.cmake.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/cdsmodelConfig.cmake"
+  INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cdsmodel)
+
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/cdsmodelConfig.cmake"
+              "${CMAKE_CURRENT_BINARY_DIR}/cdsmodelConfigVersion.cmake"
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cdsmodel)
