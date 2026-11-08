@@ -36,12 +36,54 @@ def check(label: str, ok: bool, detail: str = "") -> bool:
     return ok
 
 
-def install_to(prefix: Path) -> bool:
-    build = ROOT / "build" / "debug"
-    if not (build / "CMakeCache.txt").exists():
-        sys.exit("configure the debug preset first: cmake --preset debug")
+def configured_build(preferred: str | None = None) -> Path:
+    """Whichever build directory is actually configured.
+
+    CI configures `release` only; a local run usually has `debug`. An earlier
+    revision hardcoded `build/debug` and failed on all three CI runners -- the
+    same mistake `verify.py install-tree` had made one file over, and which
+    was fixed there and not carried across.
+    """
+    names = ([preferred] if preferred else []) + ["release", "debug", "asan"]
+    for name in names:
+        build = ROOT / "build" / name
+        if (build / "CMakeCache.txt").exists():
+            # A build configured before the install rules existed installs
+            # nothing of ours, which produces a baffling "cdsmodel not found"
+            # from the consumer instead of a clear failure here. Check the
+            # cache for the export set rather than discovering it downstream.
+            if (build / "cmake_install.cmake").exists():
+                text = (build / "cmake_install.cmake").read_text(
+                    encoding="utf-8", errors="ignore"
+                )
+                if "cdsmodelTargets" not in text:
+                    print(f"  skip  build/{name} predates the install rules; reconfigure it")
+                    continue
+            return build
+    sys.exit(
+        "no build with install rules found; run `cmake --preset release` "
+        "(or debug) after the install rules landed"
+    )
+
+
+def install_to(prefix: Path, build: Path) -> bool:
     r = run(["cmake", "--install", str(build), "--prefix", str(prefix)])
-    return check("B1  cmake --install succeeds", r.returncode == 0, r.stderr or r.stdout)
+    if not check(
+        f"B1  cmake --install succeeds (from {build.name})",
+        r.returncode == 0,
+        r.stderr or r.stdout,
+    ):
+        return False
+    # Fail here, not three checks later in the consumer's configure step: an
+    # install that stages none of our library is the failure, and saying so at
+    # the point of discovery is the difference between a clear message and a
+    # confusing one.
+    staged = list((prefix / "include" / "cdsmodel").glob("*.hpp"))
+    return check(
+        f"B1  the install staged our headers ({len(staged)})",
+        len(staged) > 0,
+        "the build directory predates the install rules",
+    )
 
 
 def b1_tree_shape(prefix: Path) -> None:
@@ -171,9 +213,11 @@ def b4_version(prefix: Path) -> None:
 
 def main() -> int:
     print("Artifact #2 -- acting as the consumer\n")
+    preferred = sys.argv[1] if len(sys.argv) > 1 else None
+    build = configured_build(preferred)
     with tempfile.TemporaryDirectory() as prefix_dir:
         prefix = Path(prefix_dir) / "prefix"
-        if not install_to(prefix):
+        if not install_to(prefix, build):
             print("\nFAILED: nothing else can be checked without an install")
             return 1
         b1_tree_shape(prefix)

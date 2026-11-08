@@ -30,11 +30,10 @@ int main() {
   // curve, each pinned at two dates so interpolation has something to do.
   const std::vector<RatePoint> discount_points{{from_tdate(39100), 0.04},
                                                {from_tdate(43000), 0.04}};
-  const std::vector<RatePoint> spread_points{{from_tdate(39100), 0.01},
-                                             {from_tdate(43000), 0.01}};
+  const std::vector<RatePoint> spread_points{{from_tdate(39100), 0.01}, {from_tdate(43000), 0.01}};
 
-  const Expected<ZeroCurve> discount = ZeroCurve::create(
-      today, discount_points, kContinuousBasis, DayCount::Act365Fixed);
+  const Expected<ZeroCurve> discount =
+      ZeroCurve::create(today, discount_points, kContinuousBasis, DayCount::Act365Fixed);
   const Expected<ZeroCurve> spread =
       ZeroCurve::create(today, spread_points, kContinuousBasis, DayCount::Act365Fixed);
   if (!discount || !spread) {
@@ -51,9 +50,8 @@ int main() {
 
   const double recovery = 0.4;
 
-  const Expected<double> par =
-      cds_par_spread(cds, today, today, std::span<const Calendar>{calendars}, *discount,
-                     *spread, recovery);
+  const Expected<double> par = cds_par_spread(
+      cds, today, today, std::span<const Calendar>{calendars}, *discount, *spread, recovery);
   if (!par) {
     std::printf("FAIL: par spread: %s\n", par.error().message.c_str());
     return 1;
