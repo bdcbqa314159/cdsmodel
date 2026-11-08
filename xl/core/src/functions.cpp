@@ -1,5 +1,8 @@
 #include <cdsmodel/xl/functions.hpp>
 
+#include <cdsmodel/bootstrap.hpp>
+#include <cdsmodel/day_count_string.hpp>
+#include <cdsmodel/ir_zero_curve.hpp>
 #include <cdsmodel/xl/arguments.hpp>
 #include <cdsmodel/xl/calendars.hpp>
 
@@ -10,6 +13,136 @@ namespace cdsmodel::xl {
 namespace {
 
 constexpr std::string_view kCategory = "CDS Model";
+
+// ------------------------------------------------------- single-cell readers
+//
+// Small, and each names its own argument in any error. These functions take up
+// to twelve cells, so "expected a number" without a field name leaves a user
+// comparing twelve cells against a help string.
+
+[[nodiscard]] Expected<Date> read_single_date(const XlValue &cell, std::string_view what) {
+  const Expected<double> serial = cell.as_double();
+  if (!serial) {
+    return fail(ErrorKind::bad_argument,
+                std::string(what) + ": expected a date, got " + cell.describe());
+  }
+  if (*serial != static_cast<double>(static_cast<long>(*serial))) {
+    return fail(ErrorKind::bad_argument, std::string(what) +
+                                             ": a date must be a whole number of days, got " +
+                                             detail::num(*serial));
+  }
+  // -25569 converts an Excel serial to days since the Unix epoch, which is
+  // what `Date` counts. Pinned by a non-circular test.
+  return Date{} + std::chrono::days{static_cast<long>(*serial) - 25569};
+}
+
+[[nodiscard]] Expected<DayCount> read_day_count(const XlValue &cell, std::string_view what) {
+  const Expected<std::string> text = cell.as_string();
+  if (!text) {
+    return fail(ErrorKind::bad_argument, std::string(what) + ": " + text.error().message);
+  }
+  const Expected<DayCount> parsed = parse_day_count(*text);
+  if (!parsed) {
+    return fail(parsed.error().kind,
+                std::string(what) + " \"" + *text + "\": " + parsed.error().message);
+  }
+  return parsed;
+}
+
+[[nodiscard]] Expected<BadDayConv> read_bad_day(const XlValue &cell, std::string_view what) {
+  const Expected<std::string> text = cell.as_string();
+  if (!text) {
+    return fail(ErrorKind::bad_argument, std::string(what) + ": " + text.error().message);
+  }
+  if (text->size() != 1) {
+    return fail(ErrorKind::bad_argument,
+                std::string(what) + " \"" + *text + "\": expected one of N, F, P, M");
+  }
+  const Expected<BadDayConv> parsed = bad_day_conv_from_upstream(text->front());
+  if (!parsed) {
+    return fail(parsed.error().kind,
+                std::string(what) + " \"" + *text + "\": " + parsed.error().message);
+  }
+  return parsed;
+}
+
+/// A payment frequency, which upstream states as an interval like `6M` and the
+/// library holds as a count per year. Both spellings are accepted because a
+/// sheet written against upstream will have the interval form.
+[[nodiscard]] Expected<long> read_frequency(const XlValue &cell, std::string_view what) {
+  if (const Expected<double> number = cell.as_double(); number) {
+    if (*number < 1 || *number > 12) {
+      return fail(ErrorKind::bad_argument, std::string(what) +
+                                               ": a frequency must be 1 to 12, "
+                                               "got " +
+                                               detail::num(*number));
+    }
+    return static_cast<long>(*number);
+  }
+  const Expected<std::string> text = cell.as_string();
+  if (!text) {
+    return fail(ErrorKind::bad_argument, std::string(what) +
+                                             ": expected a frequency or an interval, got " +
+                                             cell.describe());
+  }
+  const Expected<DateInterval> interval = parse_date_interval(*text);
+  if (!interval) {
+    return fail(interval.error().kind,
+                std::string(what) + " \"" + *text + "\": " + interval.error().message);
+  }
+  if (interval->unit != PeriodUnit::Months || interval->periods <= 0 ||
+      12 % interval->periods != 0) {
+    return fail(ErrorKind::unsupported,
+                std::string(what) + " \"" + *text +
+                    "\": a swap frequency must be a whole number of months dividing 12");
+  }
+  return 12 / interval->periods;
+}
+
+[[nodiscard]] Expected<std::string> read_name(const XlValue &cell) {
+  const Expected<std::string> text = cell.as_string();
+  if (!text) {
+    return fail(ErrorKind::bad_argument, "name: " + text.error().message);
+  }
+  if (text->empty()) {
+    return fail(ErrorKind::bad_argument, "name: a stored object needs a name to be "
+                                         "referenced by");
+  }
+  return text;
+}
+
+[[nodiscard]] Expected<ZeroCurve> read_curve_argument(const XlValue &cell, CallContext &ctx,
+                                                      std::string_view what) {
+  const Expected<std::string> handle = cell.as_string();
+  if (!handle) {
+    return fail(ErrorKind::bad_argument,
+                std::string(what) + ": expected a curve handle, got " + cell.describe());
+  }
+  const Expected<ZeroCurve> curve = ctx.curves.resolve(*handle);
+  if (!curve) {
+    return fail(curve.error().kind, std::string(what) + ": " + curve.error().message);
+  }
+  return curve;
+}
+
+/// A `Holidays` cell: a calendar handle, or NONE / blank for weekends only.
+[[nodiscard]] Expected<Calendar> read_calendar_argument(const XlValue &cell, CallContext &ctx) {
+  if (cell.is_missing()) {
+    return Calendar::none();
+  }
+  const Expected<std::string> text = cell.as_string();
+  if (!text) {
+    return fail(ErrorKind::bad_argument, "Holidays: " + text.error().message);
+  }
+  if (text->empty() || *text == "NONE" || *text == "None" || *text == "none") {
+    return Calendar::none();
+  }
+  const Expected<Calendar> named = ctx.calendars.resolve(*text);
+  if (!named) {
+    return fail(named.error().kind, "Holidays: " + named.error().message);
+  }
+  return named;
+}
 
 // ------------------------------------------------------- CdsPrice, two forms
 //
@@ -169,6 +302,314 @@ Expected<XlValue> dispatch_calendar_dates(std::span<const XlValue> args, CallCon
   return calendar_dates_grid(*calendar);
 }
 
+// ------------------------------------------------------------- curve building
+//
+// These are what produce the handles everything else consumes. Each builds a
+// ZeroCurve from cells and stores it, so a sheet's curves live in named cells
+// instead of in a process-wide cache keyed by string, which is what upstream
+// had and what UPSTREAM-37's neighbour made dangerous.
+
+/// `IRZeroCurveMake(base, dates, rates, basis, dcc, name)` -- a curve stated
+/// directly, point by point. Upstream's `JpmcdsMakeTCurve` behind it, minus
+/// the TDate-0 terminator that silently truncates a point list.
+Expected<XlValue> dispatch_ir_zero_curve_make(std::span<const XlValue> args, CallContext &ctx) {
+  if (args.size() != 6) {
+    return fail(ErrorKind::bad_argument,
+                "IRZeroCurveMake takes 6 arguments, got " + detail::num(args.size()));
+  }
+  const Expected<Date> base = read_single_date(args[0], "Base Date");
+  if (!base) {
+    return unexpected(base.error());
+  }
+  const Expected<std::vector<Date>> dates = read_dates(args[1], "Dates");
+  if (!dates) {
+    return unexpected(dates.error());
+  }
+  const Expected<std::vector<double>> rates = read_numbers(args[2], "Rates");
+  if (!rates) {
+    return unexpected(rates.error());
+  }
+  if (dates->size() != rates->size()) {
+    return fail(ErrorKind::bad_argument, "Dates has " + detail::num(dates->size()) +
+                                             " entries and Rates has " +
+                                             detail::num(rates->size()) + "; they must match");
+  }
+  const Expected<double> basis = args[3].as_double();
+  if (!basis) {
+    return fail(ErrorKind::bad_argument, "Basis: " + basis.error().message);
+  }
+  const Expected<DayCount> dcc = read_day_count(args[4], "DCC");
+  if (!dcc) {
+    return unexpected(dcc.error());
+  }
+  const Expected<std::string> name = read_name(args[5]);
+  if (!name) {
+    return unexpected(name.error());
+  }
+
+  std::vector<RatePoint> points;
+  points.reserve(dates->size());
+  for (std::size_t i = 0; i < dates->size(); ++i) {
+    points.push_back(RatePoint{(*dates)[i], (*rates)[i]});
+  }
+  const Expected<ZeroCurve> curve = ZeroCurve::create(*base, points, *basis, *dcc);
+  if (!curve) {
+    return unexpected(curve.error());
+  }
+  return XlValue{ctx.curves.store(*name, *curve)};
+}
+
+/// `IRZeroCurveBuild(value, types, ends, rates, mmdcc, fixedIvl, floatIvl,
+///                   fixedDcc, floatDcc, swapBdc, holidays, name)`
+/// -- bootstrapped from money-market and swap quotes.
+Expected<XlValue> dispatch_ir_zero_curve_build(std::span<const XlValue> args, CallContext &ctx) {
+  if (args.size() != 12) {
+    return fail(ErrorKind::bad_argument,
+                "IRZeroCurveBuild takes 12 arguments, got " + detail::num(args.size()));
+  }
+  const Expected<Date> value_date = read_single_date(args[0], "Value Date");
+  if (!value_date) {
+    return unexpected(value_date.error());
+  }
+  const Expected<std::vector<std::string>> types = read_strings(args[1], "Types");
+  if (!types) {
+    return unexpected(types.error());
+  }
+  const Expected<std::vector<Date>> ends = read_dates(args[2], "End Dates");
+  if (!ends) {
+    return unexpected(ends.error());
+  }
+  const Expected<std::vector<double>> rates = read_numbers(args[3], "Rates");
+  if (!rates) {
+    return unexpected(rates.error());
+  }
+  if (types->size() != ends->size() || types->size() != rates->size()) {
+    return fail(ErrorKind::bad_argument,
+                "Types, End Dates and Rates must be the same length -- got " +
+                    detail::num(types->size()) + ", " + detail::num(ends->size()) + " and " +
+                    detail::num(rates->size()));
+  }
+
+  std::vector<InstrumentQuote> instruments;
+  instruments.reserve(types->size());
+  for (std::size_t i = 0; i < types->size(); ++i) {
+    const std::string &code = (*types)[i];
+    if (code.size() != 1) {
+      return fail(ErrorKind::bad_argument, "Types row " + detail::num(i + 1) + ": \"" + code +
+                                               "\" -- expected M (money market) or S (swap)");
+    }
+    const Expected<InstrumentKind> kind = instrument_kind_from_code(code.front());
+    if (!kind) {
+      return fail(kind.error().kind, "Types row " + detail::num(i + 1) + ": \"" + code + "\" -- " +
+                                         kind.error().message);
+    }
+    instruments.push_back(InstrumentQuote{*kind, (*ends)[i], (*rates)[i]});
+  }
+
+  const Expected<DayCount> mm_dcc = read_day_count(args[4], "MMDCC");
+  if (!mm_dcc) {
+    return unexpected(mm_dcc.error());
+  }
+
+  SwapConventions conventions;
+  const Expected<long> fixed_freq = read_frequency(args[5], "Fixed IVL");
+  if (!fixed_freq) {
+    return unexpected(fixed_freq.error());
+  }
+  conventions.fixed_frequency = *fixed_freq;
+  const Expected<long> float_freq = read_frequency(args[6], "Float IVL");
+  if (!float_freq) {
+    return unexpected(float_freq.error());
+  }
+  conventions.float_frequency = *float_freq;
+  const Expected<DayCount> fixed_dcc = read_day_count(args[7], "Fixed DCC");
+  if (!fixed_dcc) {
+    return unexpected(fixed_dcc.error());
+  }
+  conventions.fixed_day_count = *fixed_dcc;
+  const Expected<DayCount> float_dcc = read_day_count(args[8], "Float DCC");
+  if (!float_dcc) {
+    return unexpected(float_dcc.error());
+  }
+  conventions.float_day_count = *float_dcc;
+  const Expected<BadDayConv> bdc = read_bad_day(args[9], "Swap BDC");
+  if (!bdc) {
+    return unexpected(bdc.error());
+  }
+  conventions.bad_day = *bdc;
+
+  const Expected<Calendar> calendar = read_calendar_argument(args[10], ctx);
+  if (!calendar) {
+    return unexpected(calendar.error());
+  }
+  const Expected<std::string> name = read_name(args[11]);
+  if (!name) {
+    return unexpected(name.error());
+  }
+
+  const Expected<ZeroCurve> curve =
+      build_ir_zero_curve(*value_date, instruments, *mm_dcc, conventions, *calendar);
+  if (!curve) {
+    return unexpected(curve.error());
+  }
+  return XlValue{ctx.curves.store(*name, *curve)};
+}
+
+/// `DiscountFactor(curve, date)` -- the only read-only curve function that
+/// returns a single number.
+Expected<XlValue> dispatch_discount_factor(std::span<const XlValue> args, CallContext &ctx) {
+  if (args.size() != 2) {
+    return fail(ErrorKind::bad_argument,
+                "DiscountFactor takes 2 arguments, got " + detail::num(args.size()));
+  }
+  const Expected<ZeroCurve> curve = read_curve_argument(args[0], ctx, "Curve");
+  if (!curve) {
+    return unexpected(curve.error());
+  }
+  const Expected<Date> date = read_single_date(args[1], "Date");
+  if (!date) {
+    return unexpected(date.error());
+  }
+  // `zero_price` returns a plain double because ZeroCurve::create refuses
+  // every curve that could produce a NaN -- see UPSTREAM-2.
+  return XlValue{curve->zero_price(*date)};
+}
+
+/// `DatesAndRates(curve)` -- the curve's points, as two columns.
+Expected<XlValue> dispatch_dates_and_rates(std::span<const XlValue> args, CallContext &ctx) {
+  if (args.size() != 1) {
+    return fail(ErrorKind::bad_argument,
+                "DatesAndRates takes 1 argument, got " + detail::num(args.size()));
+  }
+  const Expected<ZeroCurve> curve = read_curve_argument(args[0], ctx, "Curve");
+  if (!curve) {
+    return unexpected(curve.error());
+  }
+  return rate_points_grid(curve->points());
+}
+
+/// `CleanSpreadCurveBuild(today, start, stepin, cashSettle, ends, coupons,
+///                         includeFlags, payAcc, interval, stub, dcc, bdc,
+///                         holidays, discount, recovery, name)`
+///
+/// The credit curve, bootstrapped from benchmark CDS quotes. Sixteen arguments
+/// in upstream's order; the conventions among them are the same six that
+/// `CdsPrice` takes, which is the repetition artifact #4's grouped forms exist
+/// to remove -- a grouped `CDS.SpreadCurve` arrives with the other grouped
+/// forms rather than being invented here on its own.
+Expected<XlValue> dispatch_clean_spread_curve_build(std::span<const XlValue> args,
+                                                    CallContext &ctx) {
+  if (args.size() != 16) {
+    return fail(ErrorKind::bad_argument,
+                "CleanSpreadCurveBuild takes 16 arguments, got " + detail::num(args.size()));
+  }
+  const Expected<Date> today = read_single_date(args[0], "Today");
+  if (!today) {
+    return unexpected(today.error());
+  }
+  const Expected<Date> start = read_single_date(args[1], "Start Date");
+  if (!start) {
+    return unexpected(start.error());
+  }
+  const Expected<Date> stepin = read_single_date(args[2], "Stepin Date");
+  if (!stepin) {
+    return unexpected(stepin.error());
+  }
+  const Expected<Date> cash_settle = read_single_date(args[3], "CashSettle Date");
+  if (!cash_settle) {
+    return unexpected(cash_settle.error());
+  }
+
+  const Expected<std::vector<Date>> ends = read_dates(args[4], "End Dates");
+  if (!ends) {
+    return unexpected(ends.error());
+  }
+  const Expected<std::vector<double>> coupons = read_numbers(args[5], "Coupon Rates");
+  if (!coupons) {
+    return unexpected(coupons.error());
+  }
+  if (ends->size() != coupons->size()) {
+    return fail(ErrorKind::bad_argument, "End Dates has " + detail::num(ends->size()) +
+                                             " entries and Coupon Rates has " +
+                                             detail::num(coupons->size()) + "; they must match");
+  }
+
+  // Include Flags is optional: upstream documents NULL as "include all", and
+  // a blank cell is this interface's NULL.
+  std::vector<bool> include(ends->size(), true);
+  if (!args[6].is_missing()) {
+    const Expected<XlGrid> flags = args[6].as_grid();
+    if (!flags) {
+      return fail(ErrorKind::bad_argument,
+                  "Include Flags: expected a range, got " + args[6].describe());
+    }
+    std::vector<bool> read;
+    for (const XlValue &cell : flags->cells) {
+      if (cell.is_missing()) {
+        continue;
+      }
+      const Expected<bool> flag = cell.as_bool();
+      if (!flag) {
+        return fail(ErrorKind::bad_argument, "Include Flags row " + detail::num(read.size() + 1) +
+                                                 ": " + flag.error().message);
+      }
+      read.push_back(*flag);
+    }
+    if (!read.empty()) {
+      if (read.size() != ends->size()) {
+        return fail(ErrorKind::bad_argument,
+                    "Include Flags has " + detail::num(read.size()) +
+                        " entries and End Dates has " + detail::num(ends->size()) +
+                        "; leave Include Flags blank to include every benchmark");
+      }
+      include = read;
+    }
+  }
+
+  const std::array<XlValue, 6> convention_cells{args[7],  args[8],  args[9],
+                                                args[10], args[11], args[12]};
+  const Expected<Conventions> conventions =
+      Conventions::read_positional(convention_cells, ctx.calendars);
+  if (!conventions) {
+    return unexpected(conventions.error());
+  }
+  const Expected<ZeroCurve> discount = read_curve_argument(args[13], ctx, "Discount Curve");
+  if (!discount) {
+    return unexpected(discount.error());
+  }
+  const Expected<double> recovery = args[14].as_double();
+  if (!recovery) {
+    return fail(ErrorKind::bad_argument,
+                "Recovery Rate: expected a number, got " + args[14].describe());
+  }
+  if (!(*recovery >= 0.0 && *recovery <= 1.0)) {
+    return fail(ErrorKind::bad_argument,
+                "Recovery Rate " + detail::num(*recovery) + " is outside 0 to 1");
+  }
+  const Expected<std::string> name = read_name(args[15]);
+  if (!name) {
+    return unexpected(name.error());
+  }
+
+  std::vector<Benchmark> benchmarks;
+  benchmarks.reserve(ends->size());
+  for (std::size_t i = 0; i < ends->size(); ++i) {
+    benchmarks.push_back(Benchmark{(*ends)[i], (*coupons)[i], include[i]});
+  }
+
+  // The conventions travel as a `Cds` because that is what the library takes;
+  // its start and end are unused by the bootstrap, which reads each
+  // benchmark's own dates.
+  const Cds convention_carrier = make_cds(TradeTerms{*start, (*ends).back(), 0.0}, *conventions);
+  const Expected<ZeroCurve> curve =
+      clean_spread_curve(*today, *discount, *start, *stepin, *cash_settle, benchmarks, *recovery,
+                         convention_carrier, conventions->holidays);
+  if (!curve) {
+    return unexpected(curve.error());
+  }
+  return XlValue{ctx.curves.store(*name, *curve)};
+}
+
 // ------------------------------------------------------------ the table
 
 constexpr std::array<ParamSpec, 16> kCdsPriceLegacyParams{
@@ -209,7 +650,52 @@ constexpr std::array<ParamSpec, 3> kCalendarRangeParams{
 constexpr std::array<ParamSpec, 1> kCalendarDatesParams{
     {{"Calendar", "A handle from LoadHolidays, CDS.Calendar or CDS.CalendarFromFile"}}};
 
-constexpr std::array<FunctionSpec, 6> kFunctions{
+constexpr std::array<ParamSpec, 6> kIRZeroCurveMakeParams{
+    {{"Base Date", "The curve's base date; discount factors are 1.0 here"},
+     {"Dates", "A range of dates, one per point, strictly increasing"},
+     {"Rates", "A range of zero rates, one per date"},
+     {"Basis", "Compounding periods per year, or 5000 for continuous"},
+     {"DCC", "Day count for the rates, e.g. ACT/365F"},
+     {"Name", "Name to reference this curve by"}}};
+
+constexpr std::array<ParamSpec, 12> kIRZeroCurveBuildParams{
+    {{"Value Date", "Today; the curve is built forward from here"},
+     {"Types", "One per instrument: M for money market, S for swap"},
+     {"End Dates", "Maturity of each instrument"},
+     {"Rates", "Quoted rate of each instrument"},
+     {"MMDCC", "Day count for the money-market instruments"},
+     {"Fixed IVL", "Fixed-leg frequency, as a count per year or an interval like 6M"},
+     {"Float IVL", "Floating-leg frequency, same form"},
+     {"Fixed DCC", "Day count for the fixed leg"},
+     {"Float DCC", "Day count for the floating leg"},
+     {"Swap BDC", "Bad day convention for the swap dates: N, F, P or M"},
+     {"Holidays", "A calendar handle, or NONE for weekends only"},
+     {"Name", "Name to reference this curve by"}}};
+
+constexpr std::array<ParamSpec, 16> kCleanSpreadCurveBuildParams{
+    {{"Today", "Risk starts at the end of today"},
+     {"Start Date", "When protection begins on the benchmarks"},
+     {"Stepin Date", "When step-in begins"},
+     {"CashSettle Date", "Date the benchmark quotes settle"},
+     {"End Dates", "Maturity of each benchmark CDS"},
+     {"Coupon Rates", "Quoted spread of each benchmark"},
+     {"Include Flags", "TRUE/FALSE per benchmark; leave blank to include all"},
+     {"Pay Acc On Default", "Should accrued interest be paid on default?"},
+     {"Coupon Interval", "Interval between coupon payments, e.g. 3M"},
+     {"Stub Type", "Where off-cycle coupon dates go, e.g. f/s"},
+     {"Payment DCC", "Day count for coupon payment, e.g. ACT/360"},
+     {"Bad Day Convention", "N, F, P or M"},
+     {"Holidays", "A calendar handle, or NONE for weekends only"},
+     {"Discount Curve", "Handle from IRZeroCurveBuild or IRZeroCurveMake"},
+     {"Recovery Rate", "Assumed recovery, 0 to 1"},
+     {"Name", "Name to reference this curve by"}}};
+
+constexpr std::array<ParamSpec, 2> kDiscountFactorParams{
+    {{"Curve", "A curve handle"}, {"Date", "The date to discount to"}}};
+
+constexpr std::array<ParamSpec, 1> kDatesAndRatesParams{{{"Curve", "A curve handle"}}};
+
+constexpr std::array<FunctionSpec, 11> kFunctions{
     {{"CdsPrice", "QQQQQQQQQQQQQQQQQ", kCdsPriceLegacyParams,
       "Prices a CDS. The original 16-argument form, kept so existing "
       "workbooks keep working; CDS.Price is the same calculation with the "
@@ -233,7 +719,24 @@ constexpr std::array<FunctionSpec, 6> kFunctions{
      {"CDS.CalendarDates", "QQ", kCalendarDatesParams,
       "The dates in a calendar, as a column. Use it to pull a holiday file "
       "into a sheet once and drop the file dependency.",
-      kCategory, &dispatch_calendar_dates}}};
+      kCategory, &dispatch_calendar_dates},
+     {"IRZeroCurveMake", "QQQQQQQ", kIRZeroCurveMakeParams,
+      "Builds an interest-rate curve from dates and rates stated directly, "
+      "and returns a handle.",
+      kCategory, &dispatch_ir_zero_curve_make},
+     {"IRZeroCurveBuild", "QQQQQQQQQQQQQ", kIRZeroCurveBuildParams,
+      "Bootstraps an interest-rate curve from money-market and swap quotes, "
+      "and returns a handle.",
+      kCategory, &dispatch_ir_zero_curve_build},
+     {"DiscountFactor", "QQQ", kDiscountFactorParams, "The discount factor from a curve to a date.",
+      kCategory, &dispatch_discount_factor},
+     {"CleanSpreadCurveBuild", "QQQQQQQQQQQQQQQQQ", kCleanSpreadCurveBuildParams,
+      "Bootstraps a clean spread (credit) curve from benchmark CDS quotes, "
+      "and returns a handle.",
+      kCategory, &dispatch_clean_spread_curve_build},
+     {"DatesAndRates", "QQ", kDatesAndRatesParams,
+      "A curve's points, as two columns: dates then rates.", kCategory,
+      &dispatch_dates_and_rates}}};
 
 } // namespace
 
