@@ -112,6 +112,15 @@ else()
 endif()
 
 # =========================================================================
+# The Excel layers -- artifact #3.
+#
+# xl/core is platform-independent and always built, so the existing three-OS
+# matrix tests the marshalling and the labelled-range reader. Only xl/sdk and
+# xl/interface need Windows and the SDK.
+# =========================================================================
+add_subdirectory(xl/core)
+
+# =========================================================================
 # Tests
 # =========================================================================
 if(CDSMODEL_BUILD_TESTS)
@@ -180,8 +189,9 @@ if(CDSMODEL_BUILD_TESTS)
                  tests/fee_leg_flows_test.cpp
                  tests/date_from_string_test.cpp
                  tests/expected_test.cpp
+                 xl/core/tests/xl_core_test.cpp
                  tests/adversarial_test.cpp)
-  target_link_libraries(cdsmodel_tests PRIVATE cdsmodel GTest::gtest_main)
+  target_link_libraries(cdsmodel_tests PRIVATE cdsmodel cdsmodel_xl_core GTest::gtest_main)
   target_include_directories(cdsmodel_tests PRIVATE tests)
   include(GoogleTest)
   gtest_discover_tests(cdsmodel_tests)

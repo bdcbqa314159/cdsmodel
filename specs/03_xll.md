@@ -173,8 +173,8 @@ Excel is a real oracle; opening the real one and looking is not.
 
 | ID | Status | Oracle result | Note |
 |----|--------|---------------|------|
-| C0 | todo | | the point of D8 |
-| C1 | todo | | probe branches, all three |
+| C0 | **pass** | 16 tests green on macOS with no SDK and no Excel; 777 with the oracle, 462 without (floor 445 -> 462) | the point of D8, demonstrated |
+| C1 | partial | all three probe branches exercised on macOS: absent, partial (names each missing file), complete | the x64 MSVC build itself awaits the SDK on Windows |
 | C2 | todo | | the ABI risk D1 takes on |
 | C3 | todo | | artifact #01 reaching the cell |
 | C4 | todo | | |
@@ -182,3 +182,4 @@ Excel is a real oracle; opening the real one and looking is not.
 | C6 | todo | | |
 | C7 | todo | | |
 | C8 | todo | | UNCHECKABLE in CI, by nature |
+| C10 | **pass** | unknown label reported with the accepted list; duplicate reported; missing required named; any row order | 8 tests |
