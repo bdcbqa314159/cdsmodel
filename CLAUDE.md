@@ -134,6 +134,34 @@ Configure reports what it found, or names each missing file:
 
 → enforced by `python verify.py sdk-absent`.
 
+### READ THIS BEFORE THE FIRST BUILD ON WINDOWS
+
+**`xl/sdk` and `xl/interface` have never been compiled.** About 300 lines were
+written on macOS, where `#ifdef _WIN32` makes them vanish, so nothing has
+checked them against a compiler. Expect the first build to fail, and expect the
+failures to be ordinary: a wrong SDK type name, a missing include, an
+`XLOPER12` field spelled differently than assumed.
+
+That is not a reason to doubt the design -- `xl/core`, which holds every
+decision the add-in makes, has 860 tests behind it. It is a reason to budget
+the first build as debugging rather than as a build.
+
+**What is most likely wrong, in order:**
+
+1. `to_oper`'s `xltypeMulti` path -- the grid return, used by `ParSpreads`,
+   `DatesAndRates`, `FeeLegFlows`, `DefaultAccrual` and `CDS.CalendarDates`.
+   It allocates an array of `XLOPER12` and copies each converted cell in.
+   `RW` and `COL` are the SDK's row/column types and may not exist under those
+   names in every release.
+2. `temp_string`'s length-counted layout. An Excel string puts its character
+   count in `val.str[0]`, and everything after depends on getting that right.
+3. `xlAutoFree12` -- this add-in returns only temp memory, so it does nothing.
+   If Excel crashes on a returned array, that assumption is where to look.
+
+**Fix these in `xl/sdk`, not by changing `xl/core`.** If a fix seems to need a
+change above that line, say so rather than making it: the seam is what keeps
+the logic testable, and CI cannot see anything on the Windows side of it.
+
 ### Producing and recording the add-in's output
 
 An XLL only truly runs inside Excel, interactively, which is not an oracle. So
@@ -160,8 +188,19 @@ list, so existing workbooks keep working, and under a grouped form taking
 labelled two-column ranges. Both read into the same four structs and then run
 one code path, so they cannot disagree -- and a test compares them bitwise.
 
-    CdsPrice   16 positional arguments   (upstream's, unchanged)
-    CDS.Price   5 arguments              (Valuation, Trade, Conventions, Market, Clean)
+**Sixteen functions are registered**, covering all twelve upstream exposed:
+
+    pricing     CdsPrice (16 args)   CDS.Price (5 args, grouped)
+                ParSpreads   UpfrontFlat   ParSpreadFlat
+    cash flows  DefaultAccrual   FeeLegFlows
+    curves      IRZeroCurveMake   IRZeroCurveBuild   CleanSpreadCurveBuild
+                DiscountFactor   DatesAndRates
+    calendars   LoadHolidays   CDS.Calendar   CDS.CalendarFromFile
+                CDS.CalendarDates
+    other       CdsModelVersion
+
+Five of those return a **grid** rather than a number, which is the newest and
+least-tested part of the Windows side.
 
 **A failed call returns the library's own message as text in the cell.** Not
 `#VALUE!`, and not a log entry a user has to go and read -- upstream needed six

@@ -112,9 +112,43 @@ LPXLOPER12 to_oper(const XlValue &value) {
   if (const auto *e = std::get_if<XlError>(&value.storage())) {
     return temp_string(e->text);
   }
-  // A grid result is not produced by any function in artifact #3; the
-  // functions that return one arrive with artifact #4.
-  return temp_string("this add-in cannot return that type yet");
+  if (const auto *grid = std::get_if<XlGrid>(&value.storage())) {
+    // Five functions return a grid: ParSpreads, DatesAndRates, FeeLegFlows,
+    // DefaultAccrual and CDS.CalendarDates. Excel wants one XLOPER12 of type
+    // xltypeMulti whose `lparray` holds rows*columns opers in ROW-MAJOR order,
+    // which is the order XlGrid already stores them in.
+    auto *out = static_cast<LPXLOPER12>(GetTempMemory(sizeof(XLOPER12)));
+    if (out == nullptr) {
+      return nullptr;
+    }
+    const std::size_t count = grid->rows * grid->columns;
+    if (count == 0) {
+      // Excel cannot display an empty array. Every producer here already
+      // substitutes a message rather than returning one, so this is a
+      // belt-and-braces path, not a reachable one.
+      return temp_string("the result is empty");
+    }
+    auto *cells = static_cast<LPXLOPER12>(GetTempMemory(count * sizeof(XLOPER12)));
+    if (cells == nullptr) {
+      return nullptr;
+    }
+    for (std::size_t i = 0; i < count; ++i) {
+      // Each cell is converted on its own and then COPIED into the array:
+      // `to_oper` hands back a pointer into temp memory, and Excel needs the
+      // values laid out contiguously rather than as pointers to them.
+      const LPXLOPER12 one = to_oper(grid->cells[i]);
+      if (one == nullptr) {
+        return nullptr;
+      }
+      cells[i] = *one;
+    }
+    out->xltype = xltypeMulti;
+    out->val.array.rows = static_cast<RW>(grid->rows);
+    out->val.array.columns = static_cast<COL>(grid->columns);
+    out->val.array.lparray = cells;
+    return out;
+  }
+  return temp_string("this add-in cannot return that type");
 }
 
 } // namespace cdsmodel::xl
