@@ -83,6 +83,9 @@ why they are the load-bearing criteria rather than inspection of the CMake.
 | D3 | The consumer test lives in a script run by CI, not in `ctest` | a `ctest` fixture that installs and builds | Installing from inside the build that is being tested confuses the two trees. A separate script with its own prefix keeps "did it install" distinct from "does it work" | — |
 | D4 | **`Cds` is not split in this slice, and the split is not the right next change** | split into conventions + contract as originally planned | My own deferral note said "split `Cds` into conventions + contract". Measured first: all 9 fields vary heavily across the suite (`day_count` 47 times, `coupon_interval` 31, `bad_day` 27), so the "conventions are shared, the contract varies" premise is not observable here. It may well be true of a *spreadsheet* caller — but that caller does not exist, and I have been wrong this week about building for absent consumers. What the measurement DID surface is a real defect: `Cds` is a raw aggregate with **no invariant**, so `end < start` is representable, and the same precondition is re-checked in `cds.hpp:145`, `cds.hpp:153` and `defaulted.hpp:114`. That duplication is exactly what `verify.py claims` exists to catch. The right next change is a validating factory returning `Expected<Cds>`, as artifact #3 | artifact #3 is written; or nanobind's API shows the split is needed |
 
+| D5 | B7 asserts the EXPECTED content of the install tree, not only the forbidden content | check for upstream files only, as ratified | **Drift, 2026-11-08.** As first written the gate reported *"ok: 52 files, none upstream-derived"* over a tree that held GoogleTest and **zero cdsmodel headers** -- the build directory predated the install rules, so nothing of ours was staged, and a gate phrased only as a prohibition passed happily. Found by asking why debug installed 51 files and release 52. A gate that cannot fail on an empty tree is not a gate | — |
+| D6 | GoogleTest's install rules are suppressed with `INSTALL_GTEST OFF` | leave them; filter them out at install time | Measured before this existed: `cmake --install` produced 52 files, every one gtest or gmock, and not a single cdsmodel header. A consumer would have installed our test framework instead of our library | GoogleTest stops shipping install rules |
+
 ## Open questions before ratification
 
 1. Non-blocking — install prefix layout: `lib/cmake/cdsmodel/` is the
@@ -96,10 +99,28 @@ why they are the load-bearing criteria rather than inspection of the CMake.
 
 | ID | Status | Oracle result | Note |
 |----|--------|---------------|------|
-| B1 | todo | | |
-| B2 | todo | | the load-bearing one |
-| B3 | todo | | |
-| B4 | todo | | |
-| B5 | todo | | |
-| B6 | todo | | needs `verify.py umbrella` |
-| B7 | todo | | rule 2 of CLAUDE.md, mechanically |
+| B1 | **pass** | 46 headers, `libcdsmodel.a`, and all three package files staged; counts asserted exactly | before this slice `cmake --install` staged **52 gtest files and 0 of ours** |
+| B2 | **pass** | consumer outside the tree configures via `find_package`, builds under `-Werror`, and runs: par spread 0.0059480339, price at par **-6.939e-18** | the load-bearing criterion |
+| B3 | **pass** | FetchContent consumer configures, our test targets are **not** generated, GoogleTest is **not** downloaded, builds and runs with `CDSMODEL_UPSTREAM_DIR=/nonexistent` | rewritten after a false pass -- see the note below |
+| B4 | **pass** | `find_package(cdsmodel 0.1.0)` succeeds; `find_package(cdsmodel 99.0)` refused | |
+| B5 | **pass** | the consumer includes only `<cdsmodel/cdsmodel.hpp>` and compiles under `-Wall -Wextra -Wpedantic -Werror` | also proves the error channel survives the package boundary: a refused CDS arrives as `bad argument: end must be on or after start when protection starts at start` |
+| B6 | **pass** | `verify.py umbrella`: all 45 public headers included, sorted, no stale entries | |
+| B7 | **pass** | `verify.py install-tree`: 51 files on both presets, expected content asserted, no GoogleTest, no upstream-derived file | strengthened mid-slice -- D5 |
+
+### Two false passes, both mine, both caught by looking
+
+**B3 proved nothing as first written.** It re-ran B2's installed-package
+consumer with `-DCDSMODEL_UPSTREAM_DIR=/nonexistent` -- a cache variable the
+consumer project never reads. It passed, and it was the same test twice. B3 is
+now the genuinely different consumption path: cdsmodel built as a subproject
+inside someone else's build, where what matters is that
+`PROJECT_IS_TOP_LEVEL` suppresses our tests and GoogleTest is never fetched.
+
+**B7 passed over an install tree containing none of our library.** Both are
+the same mistake in different clothes: a check written as a prohibition rather
+than as an expectation. "Nothing forbidden is present" is satisfied by an
+empty tree, and "the consumer builds" is satisfied by building the wrong
+thing. Both now assert what must be there, not only what must not.
+
+Full suite unaffected: **761/761** debug and release with the oracle, 445
+without, eleven gates green.

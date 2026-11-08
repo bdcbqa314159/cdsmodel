@@ -51,6 +51,7 @@ jobs:
       # when ANY header claims it, so 100% was reported either way.
       - run: python verify.py claims
       - run: python verify.py error-channel
+      - run: python verify.py umbrella
 
       # A hand-edited golden file is how a port's bug becomes the port's
       # specification. Vectors must be generated, and have a generator.
@@ -70,6 +71,12 @@ jobs:
       # gtest_discover_tests, or a test file dropped from CMakeLists, reports
       # "all passed" over almost nothing.
       - run: python verify.py tests --preset release
+
+      # Artifact #2. The install tree and a real consumer -- "reading the
+      # CMake and nodding is not an oracle". install-tree also enforces
+      # CLAUDE.md rule 2 mechanically now that install rules exist.
+      - run: python verify.py install-tree
+      - run: python tools/check_consumer.py
 
   # Separate job, Linux only: the asan/ubsan presets are Clang/GCC-only, and a
   # sanitizer build is slow enough that it should not block the matrix.
