@@ -20,6 +20,7 @@
 
 namespace {
 
+using cdsmodel::xl::CalendarRegistry;
 using cdsmodel::xl::CallContext;
 using cdsmodel::xl::Conventions;
 using cdsmodel::xl::CurveRegistry;
@@ -60,9 +61,10 @@ cdsmodel::ZeroCurve flat(double rate) {
 /// cell, so the failure is attributable to that cell and nothing else.
 struct Call {
   CurveRegistry curves;
+  CalendarRegistry calendars;
   std::string discount = curves.store("USD.disc", flat(0.04));
   std::string spread = curves.store("ACME.spread", flat(0.01));
-  CallContext ctx{curves};
+  CallContext ctx{curves, calendars};
 
   std::vector<XlValue> args() const {
     return {XlValue{serial(2006, 10, 9)},
@@ -146,11 +148,23 @@ TEST(XlErrorPaths, RecoveryOutsideZeroToOneIsRefused) {
   EXPECT_NE(c.fails_with(14, XlValue{-0.1}).find("outside 0 to 1"), std::string::npos);
 }
 
-TEST(XlErrorPaths, ANamedHolidayCalendarIsRefusedRatherThanIgnored) {
+TEST(XlErrorPaths, AnUnknownCalendarIsRefusedRatherThanIgnored) {
+  // This asserted `only NONE is available` until artifact #4 built the reader.
+  // A bare name is now read as a HANDLE, so it is refused for the right
+  // reason -- no such calendar was loaded -- rather than because calendars
+  // were unsupported. Either way it is never silently ignored, which is the
+  // behaviour that matters: pricing against the wrong calendar without saying
+  // so is the failure this guards.
   const Call c;
   const std::string text = c.fails_with(11, XlValue{"LON"});
-  ASSERT_FALSE(text.empty()) << "a named calendar was silently ignored";
-  EXPECT_NE(text.find("only NONE"), std::string::npos) << text;
+  ASSERT_FALSE(text.empty()) << "an unknown calendar was silently ignored";
+  EXPECT_NE(text.find("Holidays"), std::string::npos) << text;
+  EXPECT_NE(text.find("LON"), std::string::npos) << text;
+
+  // A stale one is refused too, which only became possible now that a
+  // calendar can exist at all.
+  const std::string stale = c.fails_with(11, XlValue{"NYC#99"});
+  EXPECT_FALSE(stale.empty());
 }
 
 TEST(XlErrorPaths, CleanPriceMustBeABoolean) {
@@ -229,8 +243,9 @@ TEST(XlErrorPaths, WrongCellCountToAPositionalReaderIsReported) {
   const std::array<XlValue, 2> two{XlValue{1.0}, XlValue{2.0}};
   EXPECT_FALSE(Valuation::read_positional(two).has_value());
   EXPECT_FALSE(TradeTerms::read_positional(two).has_value());
-  EXPECT_FALSE(Conventions::read_positional(two).has_value());
   CurveRegistry curves;
+  CalendarRegistry cals;
+  EXPECT_FALSE(Conventions::read_positional(two, cals).has_value());
   EXPECT_FALSE(MarketData::read_positional(two, curves).has_value());
 }
 

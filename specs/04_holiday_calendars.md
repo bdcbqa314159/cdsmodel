@@ -165,5 +165,5 @@ the add-in.
 | H4 | **pass** | out-of-order and duplicate dates refused by both; ours names the line number, which upstream does not | |
 | H5 | **pass** | `abc`, `19960704x`, `1996010`, month 13, 30 February -- all refused; the first two upstream accepts | deliberate, D2 |
 | H6 | **pass** | two reads in one process, different weekend rules, neither affects the other | no state to interfere with |
-| H7 | todo | | |
-| H8 | todo | | |
+| H7 | **pass** | `LoadHolidays`, `CDS.Calendar`, `CDS.CalendarFromFile`, `CDS.CalendarDates` all dispatch; a stale calendar handle refused; **a CDS priced against a named calendar** | 16 tests; the registry is now templated, so the stale rule lives in one place |
+| H8 | **pass** | 10,000 lines in **5 ms** against a 50 ms budget, with a positive control on the date count | upstream reads the file twice; this reads once |

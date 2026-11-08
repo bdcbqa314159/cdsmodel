@@ -163,7 +163,7 @@ because a number that excludes something needs its exclusions readable.
 
 | function | file | why not |
 |---|---|---|
-| `JpmcdsHolidayLoadFromDisk` | `buscache.c` | reads a holiday file into a **process-wide cache**. The cache is the thing being removed, not the file reading: the port takes holidays as a value. A loader returning a `HolidayCalendar` is a two-line standard-library function the caller writes; it is not this function |
+| `JpmcdsHolidayLoadFromDisk` | `buscache.c` | **partially reversed by artifact #4.** The objection was the process-wide cache, not the reading, and that distinction has now been acted on: `parse_holiday_file` reads the format and returns a `Calendar` by value, with no cache and no global. What remains a non-port is the cache itself and the by-name lookup it served; the add-in keeps an owned registry instead, where a stale handle is detected rather than silently resolved |
 | `JpmcdsStringToDayCountConv` | `yearfrac.c` | parses into a `static char privDccString[33]`, a function-local static scratch buffer (see the mutable-state table above). The port's day-count parsing went in with the other parsers and takes a `string_view` |
 | `JpmcdsMakeTCurveNoRateCheck` | `tcurve.c` | **its entire purpose is to skip the check `ZeroCurve::create` exists to perform.** `JpmcdsMakeTCurve` delegates to it and adds the rate check; porting the unchecked variant would reintroduce the silent-NaN hazard behind a second door. Its TDate-0 terminator is documented as a deliberate difference below and as a second reachability path in UPSTREAM-36 |
 
