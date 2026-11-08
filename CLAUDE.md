@@ -113,6 +113,12 @@ precisely because that is where the testable logic must live.
 
 ### Getting the SDK
 
+The four files already exist on this machine, in
+`~/work/throwAwayAfterUse/cpp_fdm_world/libraries/excel_sdk_api/` -- that copy
+is the modern SDK (15 `XLOPER12`-era matches, no 16-bit `far`/`pascal`
+leftovers). Copying them into `xlsdk/` is the whole setup; there is nothing to
+download.
+
 The SDK is **Microsoft's**, so it is gitignored and never committed -- the same
 rule as the ISDA oracle, for the same reason, and this repo is public.
 
@@ -133,6 +139,39 @@ Configure reports what it found, or names each missing file:
     -- cdsmodel: building cdsmodel.xll
 
 → enforced by `python verify.py sdk-absent`.
+
+### READ THIS BEFORE THE FIRST BUILD ON WINDOWS
+
+`xl/sdk` and `xl/interface` are the only code CI cannot compile -- they sit
+behind a platform guard, so on macOS and Linux they vanish. **Typecheck them
+before trusting them:**
+
+    ./tools/typecheck_xl.sh
+
+That compiles both against the REAL `xlcall.h` using a ten-typedef shim in
+`tools/winshim` standing in for `<windows.h>`. It needs the SDK in `xlsdk/`
+and nothing else. Run it after touching either file.
+
+It found four bugs the first time it ran, each of which would have failed a
+Windows build: a missing `<windows.h>` include before `xlcall.h`;
+`static_cast` where `GetTempMemory`'s `LPSTR` return needs `reinterpret_cast`;
+a `CallContext` built with one registry when it needs two; and **thirteen of
+sixteen registered functions with no exported wrapper at all.**
+
+**What it still cannot catch**, and what the first real build is therefore for:
+
+1. The `XLOPER12` ABI's actual layout and the calling conventions. The shim
+   defines `pascal`, `_cdecl` and `CALLBACK` as nothing, so a convention
+   mismatch is invisible to it.
+2. Whether Excel accepts what `to_oper` builds -- especially the
+   `xltypeMulti` grid path used by `ParSpreads`, `DatesAndRates`,
+   `FeeLegFlows`, `DefaultAccrual` and `CDS.CalendarDates`.
+3. `xlAutoFree12` does nothing, because this add-in returns only temp memory.
+   If Excel crashes on a returned array, that assumption is where to look.
+
+**Fix in `xl/sdk`, not in `xl/core`.** If a fix seems to need a change above
+that line, say so rather than making it: the seam is what keeps the logic
+testable, and CI cannot see anything on the Windows side of it.
 
 ### Producing and recording the add-in's output
 
@@ -160,8 +199,19 @@ list, so existing workbooks keep working, and under a grouped form taking
 labelled two-column ranges. Both read into the same four structs and then run
 one code path, so they cannot disagree -- and a test compares them bitwise.
 
-    CdsPrice   16 positional arguments   (upstream's, unchanged)
-    CDS.Price   5 arguments              (Valuation, Trade, Conventions, Market, Clean)
+**Sixteen functions are registered**, covering all twelve upstream exposed:
+
+    pricing     CdsPrice (16 args)   CDS.Price (5 args, grouped)
+                ParSpreads   UpfrontFlat   ParSpreadFlat
+    cash flows  DefaultAccrual   FeeLegFlows
+    curves      IRZeroCurveMake   IRZeroCurveBuild   CleanSpreadCurveBuild
+                DiscountFactor   DatesAndRates
+    calendars   LoadHolidays   CDS.Calendar   CDS.CalendarFromFile
+                CDS.CalendarDates
+    other       CdsModelVersion
+
+Five of those return a **grid** rather than a number, which is the newest and
+least-tested part of the Windows side.
 
 **A failed call returns the library's own message as text in the cell.** Not
 `#VALUE!`, and not a log entry a user has to go and read -- upstream needed six

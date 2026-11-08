@@ -234,6 +234,21 @@ TEST(Curves, IRZeroCurveBuildRefusesABadInstrumentCode) {
   EXPECT_NE(text.find("X"), std::string::npos) << text;
 }
 
+TEST(Curves, ATypesCellThatIsNotOneLetterIsRefused) {
+  // `Types row N` fires for a multi-character code as well as an unknown
+  // letter; both reach it, and only the second was tested.
+  Sheet s;
+  const std::string text =
+      s.call("IRZeroCurveBuild",
+             {XlValue{serial(2006, 10, 9)}, col({XlValue{"Money"}}),
+              col({XlValue{serial(2006, 11, 9)}}), col({XlValue{0.053}}), XlValue{"ACT/360"},
+              XlValue{"6M"}, XlValue{"6M"}, XlValue{"30/360"}, XlValue{"ACT/360"}, XlValue{"N"},
+              XlValue{"NONE"}, XlValue{"IR"}})
+          .describe();
+  EXPECT_NE(text.find("Types row 1"), std::string::npos) << text;
+  EXPECT_NE(text.find("Money"), std::string::npos) << text;
+}
+
 TEST(Curves, IRZeroCurveBuildRefusesRaggedColumns) {
   Sheet s;
   const XlValue got = s.call("IRZeroCurveBuild",

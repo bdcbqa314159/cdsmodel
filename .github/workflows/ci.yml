@@ -79,6 +79,13 @@ jobs:
       # and the figure is platform-independent for this code, so measuring it
       # three times would cost minutes and tell us the same thing. Floors live
       # in verify.py -- raise them when coverage rises, never lower them.
+      # The Windows-only XL layers, typechecked against the real xlcall.h.
+      # Skipped unless the SDK is present, which it is not on a CI runner --
+      # so this is a no-op here and a real check on a developer machine. Left
+      # in so the command is discoverable from the workflow.
+      - if: runner.os == 'macOS'
+        run: test -f xlsdk/xlcall.h && ./tools/typecheck_xl.sh || echo "no SDK on this runner; skipped"
+
       - if: runner.os == 'macOS'
         run: python verify.py coverage
 

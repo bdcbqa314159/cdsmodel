@@ -10,9 +10,22 @@
 /// Guarded, like `cpp_fdm_world`'s `xlOper.h`, so a non-Windows build compiles
 /// this file to nothing rather than needing a stub.
 
-#ifdef _WIN32
+// `CDSMODEL_XL_TYPECHECK` compiles this on a non-Windows machine against the
+// real `xlcall.h` plus the minimal shim in `tools/winshim`. It exists because
+// this file is otherwise the only code in the project no compiler has ever
+// seen -- see tools/typecheck_xl.sh. Defining `_WIN32` instead would make the
+// standard library believe it is on Windows, which breaks libc++ immediately.
+#if defined(_WIN32) || defined(CDSMODEL_XL_TYPECHECK)
 
 #include <cdsmodel/xl/value.hpp>
+
+// `<windows.h>` FIRST: xlcall.h's own header comment says "Include
+// <windows.h> before you include this", and it means it -- every type in
+// XLOPER12 comes from there, and the whole file is behind `#ifdef WIN32`,
+// which MSVC defines for you. Found by typechecking this file off Windows
+// (tools/typecheck_xl.sh); it was missing, and would have failed there too
+// for any translation unit that did not happen to include windows.h first.
+#include <windows.h>
 
 #include "xlcall.h"
 
@@ -45,4 +58,4 @@ namespace cdsmodel::xl {
 
 } // namespace cdsmodel::xl
 
-#endif // _WIN32
+#endif // _WIN32 || CDSMODEL_XL_TYPECHECK
