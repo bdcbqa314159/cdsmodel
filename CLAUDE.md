@@ -113,6 +113,12 @@ precisely because that is where the testable logic must live.
 
 ### Getting the SDK
 
+The four files already exist on this machine, in
+`~/work/throwAwayAfterUse/cpp_fdm_world/libraries/excel_sdk_api/` -- that copy
+is the modern SDK (15 `XLOPER12`-era matches, no 16-bit `far`/`pascal`
+leftovers). Copying them into `xlsdk/` is the whole setup; there is nothing to
+download.
+
 The SDK is **Microsoft's**, so it is gitignored and never committed -- the same
 rule as the ISDA oracle, for the same reason, and this repo is public.
 
@@ -136,31 +142,36 @@ Configure reports what it found, or names each missing file:
 
 ### READ THIS BEFORE THE FIRST BUILD ON WINDOWS
 
-**`xl/sdk` and `xl/interface` have never been compiled.** About 300 lines were
-written on macOS, where `#ifdef _WIN32` makes them vanish, so nothing has
-checked them against a compiler. Expect the first build to fail, and expect the
-failures to be ordinary: a wrong SDK type name, a missing include, an
-`XLOPER12` field spelled differently than assumed.
+`xl/sdk` and `xl/interface` are the only code CI cannot compile -- they sit
+behind a platform guard, so on macOS and Linux they vanish. **Typecheck them
+before trusting them:**
 
-That is not a reason to doubt the design -- `xl/core`, which holds every
-decision the add-in makes, has 860 tests behind it. It is a reason to budget
-the first build as debugging rather than as a build.
+    ./tools/typecheck_xl.sh
 
-**What is most likely wrong, in order:**
+That compiles both against the REAL `xlcall.h` using a ten-typedef shim in
+`tools/winshim` standing in for `<windows.h>`. It needs the SDK in `xlsdk/`
+and nothing else. Run it after touching either file.
 
-1. `to_oper`'s `xltypeMulti` path -- the grid return, used by `ParSpreads`,
-   `DatesAndRates`, `FeeLegFlows`, `DefaultAccrual` and `CDS.CalendarDates`.
-   It allocates an array of `XLOPER12` and copies each converted cell in.
-   `RW` and `COL` are the SDK's row/column types and may not exist under those
-   names in every release.
-2. `temp_string`'s length-counted layout. An Excel string puts its character
-   count in `val.str[0]`, and everything after depends on getting that right.
-3. `xlAutoFree12` -- this add-in returns only temp memory, so it does nothing.
+It found four bugs the first time it ran, each of which would have failed a
+Windows build: a missing `<windows.h>` include before `xlcall.h`;
+`static_cast` where `GetTempMemory`'s `LPSTR` return needs `reinterpret_cast`;
+a `CallContext` built with one registry when it needs two; and **thirteen of
+sixteen registered functions with no exported wrapper at all.**
+
+**What it still cannot catch**, and what the first real build is therefore for:
+
+1. The `XLOPER12` ABI's actual layout and the calling conventions. The shim
+   defines `pascal`, `_cdecl` and `CALLBACK` as nothing, so a convention
+   mismatch is invisible to it.
+2. Whether Excel accepts what `to_oper` builds -- especially the
+   `xltypeMulti` grid path used by `ParSpreads`, `DatesAndRates`,
+   `FeeLegFlows`, `DefaultAccrual` and `CDS.CalendarDates`.
+3. `xlAutoFree12` does nothing, because this add-in returns only temp memory.
    If Excel crashes on a returned array, that assumption is where to look.
 
-**Fix these in `xl/sdk`, not by changing `xl/core`.** If a fix seems to need a
-change above that line, say so rather than making it: the seam is what keeps
-the logic testable, and CI cannot see anything on the Windows side of it.
+**Fix in `xl/sdk`, not in `xl/core`.** If a fix seems to need a change above
+that line, say so rather than making it: the seam is what keeps the logic
+testable, and CI cannot see anything on the Windows side of it.
 
 ### Producing and recording the add-in's output
 
