@@ -96,6 +96,15 @@ Expected<Calendar> read_calendar_file(std::string_view path) {
     // reports both as the same FAILURE.
     return fail(ErrorKind::bad_argument, "no holiday file at \"" + std::string(path) + "\"");
   }
+  // A directory opens successfully with `ifstream` on some platforms and
+  // reads as zero bytes -- and an empty holiday file is legitimate (upstream
+  // accepts one, producing weekends only). So a user who points at the wrong
+  // path would silently get a working calendar with no holidays in it, which
+  // is the same silent-wrong-calendar failure UPSTREAM-41 produces. Checking
+  // for a regular file is what separates "empty on purpose" from "not a file".
+  if (!std::filesystem::is_regular_file(file, ec)) {
+    return fail(ErrorKind::bad_argument, "\"" + std::string(path) + "\" is not a file");
+  }
   std::ifstream in(file, std::ios::binary);
   if (!in) {
     return fail(ErrorKind::bad_argument,
@@ -175,6 +184,123 @@ Expected<Calendar> calendar_from_range(const XlValue &dates, const XlValue &week
   return Calendar::create(holidays, *rule);
 }
 
+double to_excel_serial(Date date) {
+  return static_cast<double>(date.time_since_epoch().count() - kExcelSerialToUnixDays);
+}
+
+namespace {
+
+/// One pass over a range, handing each non-blank cell to `take`.
+///
+/// Row-major, which is how Excel lays out `xltypeMulti`, so a 2-column range
+/// interleaves. Every caller here passes a single column; a caller that needs
+/// a grid should use `as_grid` and index it.
+template <typename F>
+[[nodiscard]] Expected<void> for_each_filled(const XlValue &range, std::string_view what, F take) {
+  const Expected<XlGrid> grid = range.as_grid();
+  if (!grid) {
+    return fail(ErrorKind::bad_argument,
+                std::string(what) + ": expected a range, got " + range.describe());
+  }
+  for (std::size_t i = 0; i < grid->cells.size(); ++i) {
+    const XlValue &cell = grid->cells[i];
+    if (cell.is_missing()) {
+      continue; // a whole-column selection picks up the blanks below
+    }
+    const Expected<void> taken = take(cell, i + 1);
+    if (!taken) {
+      return taken;
+    }
+  }
+  return Expected<void>{};
+}
+
+} // namespace
+
+Expected<std::vector<double>> read_numbers(const XlValue &range, std::string_view what) {
+  std::vector<double> out;
+  const Expected<void> walked =
+      for_each_filled(range, what, [&](const XlValue &cell, std::size_t row) -> Expected<void> {
+        const Expected<double> value = cell.as_double();
+        if (!value) {
+          return fail(ErrorKind::bad_argument, std::string(what) + " row " + detail::num(row) +
+                                                   ": expected a number, got " + cell.describe());
+        }
+        out.push_back(*value);
+        return Expected<void>{};
+      });
+  if (!walked) {
+    return unexpected(walked.error());
+  }
+  if (out.empty()) {
+    return fail(ErrorKind::bad_argument, std::string(what) + " is empty");
+  }
+  return out;
+}
+
+Expected<std::vector<Date>> read_dates(const XlValue &range, std::string_view what) {
+  std::vector<Date> out;
+  const Expected<void> walked =
+      for_each_filled(range, what, [&](const XlValue &cell, std::size_t row) -> Expected<void> {
+        const Expected<double> serial = cell.as_double();
+        if (!serial) {
+          return fail(ErrorKind::bad_argument, std::string(what) + " row " + detail::num(row) +
+                                                   ": expected a date, got " + cell.describe());
+        }
+        const Expected<Date> date = date_from_serial(*serial, row);
+        if (!date) {
+          return fail(date.error().kind, std::string(what) + " " + date.error().message);
+        }
+        out.push_back(*date);
+        return Expected<void>{};
+      });
+  if (!walked) {
+    return unexpected(walked.error());
+  }
+  if (out.empty()) {
+    return fail(ErrorKind::bad_argument, std::string(what) + " is empty");
+  }
+  return out;
+}
+
+Expected<std::vector<std::string>> read_strings(const XlValue &range, std::string_view what) {
+  std::vector<std::string> out;
+  const Expected<void> walked =
+      for_each_filled(range, what, [&](const XlValue &cell, std::size_t row) -> Expected<void> {
+        const Expected<std::string> text = cell.as_string();
+        if (!text) {
+          return fail(ErrorKind::bad_argument, std::string(what) + " row " + detail::num(row) +
+                                                   ": expected text, got " + cell.describe());
+        }
+        out.push_back(*text);
+        return Expected<void>{};
+      });
+  if (!walked) {
+    return unexpected(walked.error());
+  }
+  if (out.empty()) {
+    return fail(ErrorKind::bad_argument, std::string(what) + " is empty");
+  }
+  return out;
+}
+
+XlValue rate_points_grid(std::span<const RatePoint> points) {
+  XlGrid grid;
+  grid.rows = points.empty() ? 1 : points.size();
+  grid.columns = 2;
+  grid.cells.reserve(grid.rows * 2);
+  if (points.empty()) {
+    grid.cells.emplace_back(std::string("the curve has no points"));
+    grid.cells.emplace_back(XlValue{});
+    return XlValue{grid};
+  }
+  for (const RatePoint &p : points) {
+    grid.cells.emplace_back(to_excel_serial(p.date));
+    grid.cells.emplace_back(p.rate);
+  }
+  return XlValue{grid};
+}
+
 XlValue calendar_dates_grid(const Calendar &calendar) {
   const std::span<const Date> dates = calendar.holidays();
   XlGrid grid;
@@ -188,8 +314,7 @@ XlValue calendar_dates_grid(const Calendar &calendar) {
     return XlValue{grid};
   }
   for (const Date d : dates) {
-    grid.cells.emplace_back(
-        static_cast<double>(d.time_since_epoch().count() - kExcelSerialToUnixDays));
+    grid.cells.emplace_back(to_excel_serial(d));
   }
   return XlValue{grid};
 }

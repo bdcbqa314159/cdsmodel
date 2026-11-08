@@ -17,9 +17,12 @@
 #include <cdsmodel/expected.hpp>
 #include <cdsmodel/xl/handles.hpp>
 #include <cdsmodel/xl/value.hpp>
+#include <cdsmodel/zero_curve.hpp>
 
+#include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace cdsmodel::xl {
 
@@ -46,5 +49,29 @@ namespace cdsmodel::xl {
 /// calendar becomes inspectable. Upstream's cached handle never was, so a user
 /// could not tell which calendar they had actually got.
 [[nodiscard]] XlValue calendar_dates_grid(const Calendar &calendar);
+
+/// Reads a range as a flat list of numbers, in row-major order.
+///
+/// Blank cells are skipped, because a user selecting a whole column picks up
+/// the empty rows below their data and refusing that would make every
+/// curve-building function unusable the obvious way. `what` names the argument
+/// in any error, since these functions take three or four ranges and "not a
+/// number" without a field name is a guessing game.
+[[nodiscard]] Expected<std::vector<double>> read_numbers(const XlValue &range,
+                                                         std::string_view what);
+
+/// The same, as dates. Excel hands dates over as serials.
+[[nodiscard]] Expected<std::vector<Date>> read_dates(const XlValue &range, std::string_view what);
+
+/// Reads a range as text, one entry per non-blank cell.
+[[nodiscard]] Expected<std::vector<std::string>> read_strings(const XlValue &range,
+                                                              std::string_view what);
+
+/// A column of rate points, for `DatesAndRates`: dates in column 1, rates in
+/// column 2, one row per point.
+[[nodiscard]] XlValue rate_points_grid(std::span<const RatePoint> points);
+
+/// A date as an Excel serial.
+[[nodiscard]] double to_excel_serial(Date date);
 
 } // namespace cdsmodel::xl
