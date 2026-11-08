@@ -1,7 +1,9 @@
 #include <cdsmodel/xl/functions.hpp>
 
 #include <cdsmodel/bootstrap.hpp>
+#include <cdsmodel/cdsone.hpp>
 #include <cdsmodel/day_count_string.hpp>
+#include <cdsmodel/defaulted.hpp>
 #include <cdsmodel/ir_zero_curve.hpp>
 #include <cdsmodel/xl/arguments.hpp>
 #include <cdsmodel/xl/calendars.hpp>
@@ -97,6 +99,19 @@ constexpr std::string_view kCategory = "CDS Model";
                     "\": a swap frequency must be a whole number of months dividing 12");
   }
   return 12 / interval->periods;
+}
+
+[[nodiscard]] Expected<double> read_recovery(const XlValue &cell) {
+  const Expected<double> value = cell.as_double();
+  if (!value) {
+    return fail(ErrorKind::bad_argument,
+                "Recovery Rate: expected a number, got " + cell.describe());
+  }
+  if (!(*value >= 0.0 && *value <= 1.0)) {
+    return fail(ErrorKind::bad_argument,
+                "Recovery Rate " + detail::num(*value) + " is outside 0 to 1");
+  }
+  return value;
 }
 
 [[nodiscard]] Expected<std::string> read_name(const XlValue &cell) {
@@ -610,6 +625,314 @@ Expected<XlValue> dispatch_clean_spread_curve_build(std::span<const XlValue> arg
   return XlValue{ctx.curves.store(*name, *curve)};
 }
 
+// --------------------------------------------------------------- pricing
+//
+// The last five. Each reads into the same four blocks `CdsPrice` uses, so
+// there is nothing new here beyond their argument orders -- which are
+// upstream's, and are the reason artifact #4's grouped forms exist.
+
+/// `ParSpreads(today, stepin, start, ends, payAcc, interval, stub, dcc, bdc,
+///             holidays, discount, spread, recovery)`
+///
+/// One par spread per maturity, as a column. Upstream takes a list of end
+/// dates and returns a list.
+Expected<XlValue> dispatch_par_spreads(std::span<const XlValue> args, CallContext &ctx) {
+  if (args.size() != 13) {
+    return fail(ErrorKind::bad_argument,
+                "ParSpreads takes 13 arguments, got " + detail::num(args.size()));
+  }
+  const Expected<Date> today = read_single_date(args[0], "Today");
+  if (!today) {
+    return unexpected(today.error());
+  }
+  const Expected<Date> stepin = read_single_date(args[1], "StepIn Date");
+  if (!stepin) {
+    return unexpected(stepin.error());
+  }
+  const Expected<Date> start = read_single_date(args[2], "Start Date");
+  if (!start) {
+    return unexpected(start.error());
+  }
+  const Expected<std::vector<Date>> ends = read_dates(args[3], "End Dates");
+  if (!ends) {
+    return unexpected(ends.error());
+  }
+  const std::array<XlValue, 6> convention_cells{args[4], args[5], args[6],
+                                                args[7], args[8], args[9]};
+  const Expected<Conventions> conventions =
+      Conventions::read_positional(convention_cells, ctx.calendars);
+  if (!conventions) {
+    return unexpected(conventions.error());
+  }
+  const Expected<ZeroCurve> discount = read_curve_argument(args[10], ctx, "Discount Curve");
+  if (!discount) {
+    return unexpected(discount.error());
+  }
+  const Expected<ZeroCurve> spread = read_curve_argument(args[11], ctx, "Spread Curve");
+  if (!spread) {
+    return unexpected(spread.error());
+  }
+  const Expected<double> recovery = read_recovery(args[12]);
+  if (!recovery) {
+    return unexpected(recovery.error());
+  }
+
+  XlGrid out;
+  out.rows = ends->size();
+  out.columns = 1;
+  out.cells.reserve(out.rows);
+  for (std::size_t i = 0; i < ends->size(); ++i) {
+    const Cds cds = make_cds(TradeTerms{*start, (*ends)[i], 0.0}, *conventions);
+    const Expected<double> par =
+        cds_par_spread(cds, *today, *stepin, conventions->holidays, *discount, *spread, *recovery);
+    // One bad maturity does not lose the whole column: the failing row shows
+    // its own message and the rest still price. A column where one cell is
+    // wrong and twelve are right is more useful than one error.
+    if (!par) {
+      out.cells.emplace_back(std::string(to_string(par.error().kind)) + ": " + par.error().message);
+    } else {
+      out.cells.emplace_back(*par);
+    }
+  }
+  return XlValue{out};
+}
+
+/// The seven cells `ParSpreadFlat` and `UpfrontFlat` share, read once.
+struct FlatInputs {
+  UpfrontDates dates;
+  Cds cds;
+  std::vector<Calendar> holidays;
+  ZeroCurve discount;
+  double recovery = 0.0;
+  bool clean = true;
+};
+
+[[nodiscard]] Expected<FlatInputs> read_flat_inputs(std::span<const XlValue> args,
+                                                    CallContext &ctx) {
+  const Expected<Date> today = read_single_date(args[0], "Today");
+  if (!today) {
+    return unexpected(today.error());
+  }
+  const Expected<Date> cash_settle = read_single_date(args[1], "CashSettle Date");
+  if (!cash_settle) {
+    return unexpected(cash_settle.error());
+  }
+  const Expected<Date> benchmark_start = read_single_date(args[2], "Benchmark St Date");
+  if (!benchmark_start) {
+    return unexpected(benchmark_start.error());
+  }
+  const Expected<Date> stepin = read_single_date(args[3], "StepIn Date");
+  if (!stepin) {
+    return unexpected(stepin.error());
+  }
+  const Expected<Date> start = read_single_date(args[4], "Start Date");
+  if (!start) {
+    return unexpected(start.error());
+  }
+  const Expected<Date> end = read_single_date(args[5], "End Date");
+  if (!end) {
+    return unexpected(end.error());
+  }
+  const Expected<double> coupon = args[6].as_double();
+  if (!coupon) {
+    return fail(ErrorKind::bad_argument,
+                "Coupon Rate: expected a number, got " + args[6].describe());
+  }
+  const std::array<XlValue, 6> convention_cells{args[7],  args[8],  args[9],
+                                                args[10], args[11], args[12]};
+  const Expected<Conventions> conventions =
+      Conventions::read_positional(convention_cells, ctx.calendars);
+  if (!conventions) {
+    return unexpected(conventions.error());
+  }
+  const Expected<ZeroCurve> discount = read_curve_argument(args[13], ctx, "Discount Curve");
+  if (!discount) {
+    return unexpected(discount.error());
+  }
+  const Expected<double> recovery = read_recovery(args[15]);
+  if (!recovery) {
+    return unexpected(recovery.error());
+  }
+  const Expected<bool> clean = args[16].as_bool();
+  if (!clean) {
+    return fail(ErrorKind::bad_argument, "Clean Price: " + clean.error().message);
+  }
+
+  FlatInputs out{UpfrontDates{*today, *cash_settle, *benchmark_start, *stepin},
+                 make_cds(TradeTerms{*start, *end, *coupon}, *conventions),
+                 conventions->holidays,
+                 *discount,
+                 *recovery,
+                 *clean};
+  return out;
+}
+
+/// `UpfrontFlat(..., marketParSpread, recovery, clean)` -- the upfront charge
+/// implied by a quoted par spread.
+Expected<XlValue> dispatch_upfront_flat(std::span<const XlValue> args, CallContext &ctx) {
+  if (args.size() != 17) {
+    return fail(ErrorKind::bad_argument,
+                "UpfrontFlat takes 17 arguments, got " + detail::num(args.size()));
+  }
+  const Expected<FlatInputs> in = read_flat_inputs(args, ctx);
+  if (!in) {
+    return unexpected(in.error());
+  }
+  const Expected<double> market_spread = args[14].as_double();
+  if (!market_spread) {
+    return fail(ErrorKind::bad_argument,
+                "Market Par Spread: expected a number, got " + args[14].describe());
+  }
+  const Expected<double> charge = cdsone_upfront_charge(
+      in->cds, in->dates, in->holidays, in->discount, *market_spread, in->recovery, in->clean);
+  if (!charge) {
+    return unexpected(charge.error());
+  }
+  return XlValue{*charge};
+}
+
+/// `ParSpreadFlat(..., upfrontCharge, recovery, clean)` -- the inverse: the
+/// flat par spread implied by an upfront charge.
+Expected<XlValue> dispatch_par_spread_flat(std::span<const XlValue> args, CallContext &ctx) {
+  if (args.size() != 17) {
+    return fail(ErrorKind::bad_argument,
+                "ParSpreadFlat takes 17 arguments, got " + detail::num(args.size()));
+  }
+  const Expected<FlatInputs> in = read_flat_inputs(args, ctx);
+  if (!in) {
+    return unexpected(in.error());
+  }
+  const Expected<double> upfront = args[14].as_double();
+  if (!upfront) {
+    return fail(ErrorKind::bad_argument,
+                "Upfront Charge: expected a number, got " + args[14].describe());
+  }
+  const Expected<double> spread = cdsone_spread(in->cds, in->dates, in->holidays, in->discount,
+                                                *upfront, in->recovery, in->clean);
+  if (!spread) {
+    return unexpected(spread.error());
+  }
+  return XlValue{*spread};
+}
+
+/// `DefaultAccrual(trade, edd, effective, maturity, coupon, notional,
+///                 interval, stub, dcc, bdc, holidays)`
+///
+/// Two columns out: the day count and the accrued amount. Upstream returns the
+/// day count through an out-parameter as a `double` even though it is always
+/// integral; it is a `long` in the library and an integer here.
+Expected<XlValue> dispatch_default_accrual(std::span<const XlValue> args, CallContext &ctx) {
+  if (args.size() != 11) {
+    return fail(ErrorKind::bad_argument,
+                "DefaultAccrual takes 11 arguments, got " + detail::num(args.size()));
+  }
+  const Expected<Date> trade = read_single_date(args[0], "Trade Date");
+  if (!trade) {
+    return unexpected(trade.error());
+  }
+  const Expected<Date> edd = read_single_date(args[1], "EDD Date");
+  if (!edd) {
+    return unexpected(edd.error());
+  }
+  const Expected<Date> effective = read_single_date(args[2], "Effective Date");
+  if (!effective) {
+    return unexpected(effective.error());
+  }
+  const Expected<Date> maturity = read_single_date(args[3], "Maturity Date");
+  if (!maturity) {
+    return unexpected(maturity.error());
+  }
+  const Expected<double> coupon = args[4].as_double();
+  if (!coupon) {
+    return fail(ErrorKind::bad_argument,
+                "Coupon Rate: expected a number, got " + args[4].describe());
+  }
+  const Expected<double> notional = args[5].as_double();
+  if (!notional) {
+    return fail(ErrorKind::bad_argument, "Notional: expected a number, got " + args[5].describe());
+  }
+  const std::array<XlValue, 6> convention_cells{XlValue{true}, args[6], args[7],
+                                                args[8],       args[9], args[10]};
+  // Pay-accrual-on-default is not an argument here, so it takes the library's
+  // default rather than being invented from a cell that does not exist.
+  const Expected<Conventions> conventions =
+      Conventions::read_positional(convention_cells, ctx.calendars);
+  if (!conventions) {
+    return unexpected(conventions.error());
+  }
+
+  const Cds cds = make_cds(TradeTerms{*effective, *maturity, *coupon}, *conventions);
+  const Expected<DefaultAccrual> accrual =
+      default_accrual(cds, *trade, *edd, *notional, conventions->holidays);
+  if (!accrual) {
+    return unexpected(accrual.error());
+  }
+
+  XlGrid out;
+  out.rows = 1;
+  out.columns = 2;
+  out.cells.emplace_back(static_cast<double>(accrual->days));
+  out.cells.emplace_back(accrual->amount);
+  return XlValue{out};
+}
+
+/// `FeeLegFlows(start, end, coupon, notional, interval, stub, dcc, bdc,
+///              holidays)`
+///
+/// Three columns: accrual start, accrual end, pay date -- and the amount.
+Expected<XlValue> dispatch_fee_leg_flows(std::span<const XlValue> args, CallContext &ctx) {
+  if (args.size() != 9) {
+    return fail(ErrorKind::bad_argument,
+                "FeeLegFlows takes 9 arguments, got " + detail::num(args.size()));
+  }
+  const Expected<Date> start = read_single_date(args[0], "Start Date");
+  if (!start) {
+    return unexpected(start.error());
+  }
+  const Expected<Date> end = read_single_date(args[1], "End Date");
+  if (!end) {
+    return unexpected(end.error());
+  }
+  const Expected<double> coupon = args[2].as_double();
+  if (!coupon) {
+    return fail(ErrorKind::bad_argument,
+                "Coupon Rate: expected a number, got " + args[2].describe());
+  }
+  const Expected<double> notional = args[3].as_double();
+  if (!notional) {
+    return fail(ErrorKind::bad_argument, "Notional: expected a number, got " + args[3].describe());
+  }
+  const std::array<XlValue, 6> convention_cells{XlValue{true}, args[4], args[5],
+                                                args[6],       args[7], args[8]};
+  const Expected<Conventions> conventions =
+      Conventions::read_positional(convention_cells, ctx.calendars);
+  if (!conventions) {
+    return unexpected(conventions.error());
+  }
+
+  const Cds cds = make_cds(TradeTerms{*start, *end, *coupon}, *conventions);
+  const Expected<std::vector<CashFlow>> flows =
+      cds_fee_leg_flows(cds, *notional, conventions->holidays);
+  if (!flows) {
+    return unexpected(flows.error());
+  }
+
+  XlGrid out;
+  out.rows = flows->empty() ? 1 : flows->size();
+  out.columns = 2;
+  out.cells.reserve(out.rows * 2);
+  if (flows->empty()) {
+    out.cells.emplace_back(std::string("the fee leg has no payments"));
+    out.cells.emplace_back(XlValue{});
+    return XlValue{out};
+  }
+  for (const CashFlow &f : *flows) {
+    out.cells.emplace_back(to_excel_serial(f.date));
+    out.cells.emplace_back(f.amount);
+  }
+  return XlValue{out};
+}
+
 // ------------------------------------------------------------ the table
 
 constexpr std::array<ParamSpec, 16> kCdsPriceLegacyParams{
@@ -690,12 +1013,91 @@ constexpr std::array<ParamSpec, 16> kCleanSpreadCurveBuildParams{
      {"Recovery Rate", "Assumed recovery, 0 to 1"},
      {"Name", "Name to reference this curve by"}}};
 
+constexpr std::array<ParamSpec, 13> kParSpreadsParams{
+    {{"Today", "Risk starts at the end of today"},
+     {"StepIn Date", "Date when step-in begins"},
+     {"Start Date", "Date when protection begins"},
+     {"End Dates", "A range of maturities; one par spread comes back per row"},
+     {"Pay Acc On Default", "Should accrued interest be paid on default?"},
+     {"Coupon Interval", "Interval between coupon payments, e.g. 3M"},
+     {"Stub Type", "Where off-cycle coupon dates go, e.g. f/s"},
+     {"Payment DCC", "Day count for coupon payment, e.g. ACT/360"},
+     {"Bad Day Convention", "N, F, P or M"},
+     {"Holidays", "A calendar handle, or NONE for weekends only"},
+     {"Discount Curve", "Handle from IRZeroCurveBuild or IRZeroCurveMake"},
+     {"Spread Curve", "Handle from CleanSpreadCurveBuild"},
+     {"Recovery Rate", "Assumed recovery, 0 to 1"}}};
+
+constexpr std::array<ParamSpec, 17> kUpfrontFlatParams{
+    {{"Today", "Risk starts at the end of today"},
+     {"CashSettle Date", "Date for which the PV is calculated"},
+     {"Benchmark St Date", "Start date of the synthetic benchmark CDS"},
+     {"StepIn Date", "Date when step-in begins"},
+     {"Start Date", "Date when protection begins"},
+     {"End Date", "Date when protection ends"},
+     {"Coupon Rate", "Fixed coupon rate for the fee leg"},
+     {"Pay Acc On Default", "Should accrued interest be paid on default?"},
+     {"Coupon Interval", "Interval between coupon payments, e.g. 3M"},
+     {"Stub Type", "Where off-cycle coupon dates go, e.g. f/s"},
+     {"Payment DCC", "Day count for coupon payment, e.g. ACT/360"},
+     {"Bad Day Convention", "N, F, P or M"},
+     {"Holidays", "A calendar handle, or NONE for weekends only"},
+     {"Discount Curve", "Handle from IRZeroCurveBuild or IRZeroCurveMake"},
+     {"Market Par Spread", "Quoted par spread to imply the flat curve from"},
+     {"Recovery Rate", "Assumed recovery, 0 to 1"},
+     {"Clean Price", "TRUE for clean, FALSE for dirty"}}};
+
+constexpr std::array<ParamSpec, 17> kParSpreadFlatParams{
+    {{"Today", "Risk starts at the end of today"},
+     {"CashSettle Date", "Date for which the PV is calculated"},
+     {"Benchmark St Date", "Start date of the synthetic benchmark CDS"},
+     {"StepIn Date", "Date when step-in begins"},
+     {"Start Date", "Date when protection begins"},
+     {"End Date", "Date when protection ends"},
+     {"Coupon Rate", "Fixed coupon rate for the fee leg"},
+     {"Pay Acc On Default", "Should accrued interest be paid on default?"},
+     {"Coupon Interval", "Interval between coupon payments, e.g. 3M"},
+     {"Stub Type", "Where off-cycle coupon dates go, e.g. f/s"},
+     {"Payment DCC", "Day count for coupon payment, e.g. ACT/360"},
+     {"Bad Day Convention", "N, F, P or M"},
+     {"Holidays", "A calendar handle, or NONE for weekends only"},
+     {"Discount Curve", "Handle from IRZeroCurveBuild or IRZeroCurveMake"},
+     {"Upfront Charge", "Present value of the CDS to imply the spread from"},
+     {"Recovery Rate", "Assumed recovery, 0 to 1"},
+     {"Clean Price", "TRUE for clean, FALSE for dirty"}}};
+
+constexpr std::array<ParamSpec, 11> kDefaultAccrualParams{{
+    {"Trade Date", "When the trade was struck"},
+    {"EDD Date", "Event determination date"},
+    {"Effective Date", "When protection began"},
+    {"Maturity Date", "When protection ends"},
+    {"Coupon Rate", "Fixed coupon rate for the fee leg"},
+    {"Notional", "Trade notional"},
+    {"Coupon Interval", "Interval between coupon payments, e.g. 3M"},
+    {"Stub Type", "Where off-cycle coupon dates go, e.g. f/s"},
+    {"Payment DCC", "Day count for coupon payment, e.g. ACT/360"},
+    {"Bad Day Convention", "N, F, P or M"},
+    {"Holidays", "A calendar handle, or NONE for weekends only"},
+}};
+
+constexpr std::array<ParamSpec, 9> kFeeLegFlowsParams{{
+    {"Start Date", "When protection begins"},
+    {"End Date", "When protection ends"},
+    {"Coupon Rate", "Fixed coupon rate for the fee leg"},
+    {"Notional", "Trade notional"},
+    {"Coupon Interval", "Interval between coupon payments, e.g. 3M"},
+    {"Stub Type", "Where off-cycle coupon dates go, e.g. f/s"},
+    {"Payment DCC", "Day count for coupon payment, e.g. ACT/360"},
+    {"Bad Day Convention", "N, F, P or M"},
+    {"Holidays", "A calendar handle, or NONE for weekends only"},
+}};
+
 constexpr std::array<ParamSpec, 2> kDiscountFactorParams{
     {{"Curve", "A curve handle"}, {"Date", "The date to discount to"}}};
 
 constexpr std::array<ParamSpec, 1> kDatesAndRatesParams{{{"Curve", "A curve handle"}}};
 
-constexpr std::array<FunctionSpec, 11> kFunctions{
+constexpr std::array<FunctionSpec, 16> kFunctions{
     {{"CdsPrice", "QQQQQQQQQQQQQQQQQ", kCdsPriceLegacyParams,
       "Prices a CDS. The original 16-argument form, kept so existing "
       "workbooks keep working; CDS.Price is the same calculation with the "
@@ -734,6 +1136,24 @@ constexpr std::array<FunctionSpec, 11> kFunctions{
       "Bootstraps a clean spread (credit) curve from benchmark CDS quotes, "
       "and returns a handle.",
       kCategory, &dispatch_clean_spread_curve_build},
+     {"ParSpreads", "QQQQQQQQQQQQQQ", kParSpreadsParams,
+      "The par spread of a CDS at each of several maturities, as a column.", kCategory,
+      &dispatch_par_spreads},
+     {"UpfrontFlat", "QQQQQQQQQQQQQQQQQQ", kUpfrontFlatParams,
+      "The upfront charge implied by a quoted par spread, through a flat "
+      "credit curve.",
+      kCategory, &dispatch_upfront_flat},
+     {"ParSpreadFlat", "QQQQQQQQQQQQQQQQQQ", kParSpreadFlatParams,
+      "The flat par spread implied by an upfront charge. The inverse of "
+      "UpfrontFlat.",
+      kCategory, &dispatch_par_spread_flat},
+     {"DefaultAccrual", "QQQQQQQQQQQQ", kDefaultAccrualParams,
+      "Accrued interest owed on a defaulted CDS: the day count and the "
+      "amount, as two columns.",
+      kCategory, &dispatch_default_accrual},
+     {"FeeLegFlows", "QQQQQQQQQQ", kFeeLegFlowsParams,
+      "The fee leg's cash flows: pay date and amount, one row each.", kCategory,
+      &dispatch_fee_leg_flows},
      {"DatesAndRates", "QQ", kDatesAndRatesParams,
       "A curve's points, as two columns: dates then rates.", kCategory,
       &dispatch_dates_and_rates}}};
