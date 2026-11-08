@@ -116,6 +116,24 @@ TEST(ExpectedType, AnErrorCannotBeBuiltWithoutAMessage) {
   static_assert(std::is_constructible_v<Error, ErrorKind, std::string>);
 }
 
+// The gap that let a portability bug reach CI: nothing here used an
+// `Expected` in a constant expression, so `std::get_if`'s address-taking --
+// which libc++ tolerates and libstdc++ rejects inside constexpr -- compiled
+// fine locally and broke on Ubuntu. These static_asserts run at compile time
+// on every platform the matrix covers.
+TEST(ExpectedType, IsUsableInAConstantExpression) {
+  static_assert(Expected<int, Error>{7}.has_value());
+  static_assert(*Expected<int, Error>{7} == 7);
+  static_assert(Expected<int, Error>{7}.value_or(0) == 7);
+  static_assert(static_cast<bool>(Expected<int, Error>{7}));
+  // The error side needs a literal-type error to be constexpr, so this checks
+  // the branch rather than the message: a default-constructed kind compares.
+  constexpr Expected<int, ErrorKind> bad{cdsmodel::unexpected(ErrorKind::no_root)};
+  static_assert(!bad.has_value());
+  static_assert(bad.error() == ErrorKind::no_root);
+  SUCCEED();
+}
+
 TEST(ExpectedType, EveryKindHasADistinctName) {
   const ErrorKind kinds[]{ErrorKind::bad_argument, ErrorKind::unsupported, ErrorKind::no_root,
                           ErrorKind::no_convergence};

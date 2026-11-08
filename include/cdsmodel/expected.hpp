@@ -16,6 +16,7 @@
 /// `std::optional` code this replaces already did.
 
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -101,6 +102,12 @@ template <typename E> unexpected(E) -> unexpected<E>;
 /// of this type is to carry error information reliably, and a bespoke
 /// lifetime implementation would be the one piece of the port with no oracle
 /// behind it.
+///
+/// Accessors go through `std::get<I>`, never `std::get_if<I>`. `get_if` takes
+/// the variant's ADDRESS, and libstdc++ rejects `&v != 0` inside a constant
+/// expression -- so a `static_assert` on an `Expected` compiles under libc++
+/// and fails under libstdc++. Found by CI on Ubuntu after the macOS build was
+/// green; `tests/stub_test.cpp` has the constexpr uses that caught it.
 template <typename T, typename E = Error> class Expected {
 public:
   using value_type = T;
@@ -112,15 +119,17 @@ public:
   [[nodiscard]] constexpr bool has_value() const noexcept { return slot_.index() == 0; }
   [[nodiscard]] constexpr explicit operator bool() const noexcept { return has_value(); }
 
-  [[nodiscard]] constexpr const T &operator*() const & noexcept { return *std::get_if<0>(&slot_); }
-  [[nodiscard]] constexpr T &operator*() & noexcept { return *std::get_if<0>(&slot_); }
-  [[nodiscard]] constexpr T &&operator*() && noexcept { return std::move(*std::get_if<0>(&slot_)); }
+  [[nodiscard]] constexpr const T &operator*() const & noexcept { return std::get<0>(slot_); }
+  [[nodiscard]] constexpr T &operator*() & noexcept { return std::get<0>(slot_); }
+  [[nodiscard]] constexpr T &&operator*() && noexcept { return std::move(std::get<0>(slot_)); }
 
-  [[nodiscard]] constexpr const T *operator->() const noexcept { return std::get_if<0>(&slot_); }
-  [[nodiscard]] constexpr T *operator->() noexcept { return std::get_if<0>(&slot_); }
+  [[nodiscard]] constexpr const T *operator->() const noexcept {
+    return std::addressof(std::get<0>(slot_));
+  }
+  [[nodiscard]] constexpr T *operator->() noexcept { return std::addressof(std::get<0>(slot_)); }
 
-  [[nodiscard]] constexpr const E &error() const & noexcept { return *std::get_if<1>(&slot_); }
-  [[nodiscard]] constexpr E &&error() && noexcept { return std::move(*std::get_if<1>(&slot_)); }
+  [[nodiscard]] constexpr const E &error() const & noexcept { return std::get<1>(slot_); }
+  [[nodiscard]] constexpr E &&error() && noexcept { return std::move(std::get<1>(slot_)); }
 
   template <typename U> [[nodiscard]] constexpr T value_or(U &&fallback) const & {
     return has_value() ? **this : static_cast<T>(std::forward<U>(fallback));
@@ -179,8 +188,8 @@ public:
   [[nodiscard]] constexpr bool has_value() const noexcept { return slot_.index() == 0; }
   [[nodiscard]] constexpr explicit operator bool() const noexcept { return has_value(); }
 
-  [[nodiscard]] constexpr const E &error() const & noexcept { return *std::get_if<1>(&slot_); }
-  [[nodiscard]] constexpr E &&error() && noexcept { return std::move(*std::get_if<1>(&slot_)); }
+  [[nodiscard]] constexpr const E &error() const & noexcept { return std::get<1>(slot_); }
+  [[nodiscard]] constexpr E &&error() && noexcept { return std::move(std::get<1>(slot_)); }
 
   template <typename F> [[nodiscard]] constexpr auto and_then(F &&f) const & {
     using Result = std::remove_cvref_t<std::invoke_result_t<F>>;
