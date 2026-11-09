@@ -73,6 +73,24 @@ XlValue from_oper(const LPXLOPER12 oper) {
     }
     return XlValue{std::move(grid)};
   }
+  case xltypeSRef:
+  case xltypeRef: {
+    // A cell or range argument arrives as a REFERENCE, not its values, because
+    // the functions register their opers as type "U" -- XLOPER12 passed by
+    // reference. Excel does not coerce it for us; the add-in must. Without this,
+    // a multi-cell argument like a dates column is "a type this add-in does not
+    // read" and only inline literals work -- which is the first thing the real
+    // Excel build surfaced that no CI leg could. xlCoerce turns a range into an
+    // xltypeMulti and a single cell into its scalar; we read that and free what
+    // Excel allocated for it.
+    XLOPER12 coerced;
+    if (Excel12(xlCoerce, &coerced, 1, oper) != xlretSuccess) {
+      return XlValue{XlError{"could not read that cell reference"}};
+    }
+    XlValue out = from_oper(&coerced);
+    Excel12(xlFree, nullptr, 1, &coerced);
+    return out;
+  }
   default:
     return XlValue{XlError{"an argument of a type this add-in does not read"}};
   }
