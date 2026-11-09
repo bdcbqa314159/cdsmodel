@@ -17,15 +17,23 @@ is checking arithmetic, it is in the wrong file.
 | | |
 |---|---|
 | nanobind | **3.1.0** |
-| stable-ABI floor, **linked mode** | **cp312** — nanobind errors below it |
-| stable-ABI floor, split mode | 3.10, at the cost of a second module |
+| stable-ABI floor, **linked mode** | **cp312** — a CPython limit, not nanobind's |
+| the same floor in pybind11 | **also 3.12** (`Py_LIMITED_API >= 0x030C0000`) |
+| stable-ABI floor, nanobind split mode | **3.10** — an escape hatch pybind11 lacks |
 | `sys_days` through nanobind's stock chrono caster | returns `datetime.datetime`, **not** `datetime.date` |
 | proof build | `proof-0.0.1-cp312-abi3-macosx_26_0_arm64.whl`, imports and runs |
 
-The stable-ABI floor is the decision that shapes everything else, and it was
-not what I assumed. nanobind's own CMake says it plainly:
+The stable-ABI floor shapes everything else, and it belongs to **CPython**,
+not to the binding library. nanobind's CMake gives the reason in a comment:
 
-> *Stable ABI wheels for Python 3.10/3.11 require split mode.*
+> *Linked-mode stable ABI builds require CPython >= 3.12 (the backend itself
+> then compiles under `Py_LIMITED_API`)*
+
+pybind11 has the identical floor — its `PYBIND11_STABLE_ABI_VERSION` defaults
+to 3.12 and it requires `Py_LIMITED_API >= 0x030C0000`, which *is* 3.12 — and
+it only gained stable-ABI support in 3.0, where nanobind has had it longer and
+additionally offers split mode down to 3.10. So the floor is not a reason to
+prefer one over the other, and switching would buy a worse one.
 
 ## MUST — in scope, full discipline
 
@@ -81,7 +89,8 @@ not what I assumed. nanobind's own CMake says it plainly:
 
 | # | Decision | Alternatives | Why this | Revisit when |
 |---|----------|--------------|----------|--------------|
-| D1 | **Python ≥ 3.12, `cp312-abi3`, linked mode** | 3.11 floor via split mode; per-version wheels | Measured, not assumed: nanobind refuses a linked stable-ABI build below cp312 and says 3.10/3.11 "require split mode". One wheel per platform covers 3.12, 3.13, 3.14 and later — three wheels total instead of nine or more. 3.11 reaches end of life in under a year | a user needs 3.11, or free-threading makes split mode worth it |
+| D1 | **Python ≥ 3.12, `cp312-abi3`, linked mode** | split mode for a 3.10 floor; per-version wheels for a 3.11 floor; pybind11 | Three wheels total instead of twelve, covering 3.12, 3.13, 3.14 and later. The floor is CPython's and pybind11 shares it exactly, so it is not a library-choice question. 3.10 went end-of-life last month and 3.11 follows in under a year, so the floor costs us no supported version | a user needs 3.11 — then D1a, which is a config change, not a rewrite |
+| D1a | **Fallback if 3.11 is ever needed: drop the stable ABI, build per-version wheels** | split mode | Split mode reaches 3.10 but splits the extension into two shared objects, so the packaging gets harder exactly where it is already hardest. Plain per-version wheels are what every binding library did before abi3 existed; `cibuildwheel` makes twelve wheels as automatically as three. The cost is CI minutes and release artifacts, not design | a real 3.11 user appears |
 | D2 | A custom `Date` caster | nanobind's `stl/chrono.h` | Measured: the stock caster returns `datetime.datetime`, so `price(start=date(...))` would hand back a datetime at midnight. A CDS has no time of day — the library refuses a fractional Excel serial for the same reason — and a type that is almost right is worse than one that is wrong loudly | the library grows intraday semantics |
 | D3 | One exception class per `ErrorKind`, each deriving from a builtin too | one `CdsModelError`; return a result object | Artifact #01's four kinds exist because upstream's 452 messages collapse to four *kinds*; this is the consumer that finally branches on them. Dual inheritance means `except ValueError` works for a caller who expects Pythonic behaviour and `except CdsModelError` for one who wants the library's | a fifth kind appears |
 | D4 | Expose the XLL's twelve functions, not all 163 | expose everything; expose a minimal four | The XLL surface is **evidence**: it is what a desk used for seventeen years. The other 150 are schedule generation, interpolation and date arithmetic — implementation of those twelve | a user asks for one, which is a better signal than my guess |
@@ -92,11 +101,9 @@ not what I assumed. nanobind's own CMake says it plainly:
 
 ## Open questions before ratification
 
-1. **BLOCKING — the package and module name.** `cdsmodel` is free on PyPI as
-   far as I can check from here, but I cannot verify that reliably offline and
-   it should be confirmed before the first publish, because the name is
-   effectively permanent. The C++ namespace is `cdsmodel`, so matching it is
-   the obvious choice; `isda-cds-model` is the alternative if taken.
+1. ~~BLOCKING — the package name.~~ **Closed.** Both PyPI endpoints return
+   404 for `cdsmodel` (`/pypi/cdsmodel/json` and `/simple/cdsmodel/`), so the
+   name is unclaimed. It matches the C++ namespace; no fallback needed.
 2. Non-blocking — where `python/` sits. **Assumption: a `python/`
    subdirectory** with its own `pyproject.toml`, so the C++ build is not
    forced to know about Python and `cibuildwheel` has one root.
