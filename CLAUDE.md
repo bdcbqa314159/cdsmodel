@@ -234,10 +234,17 @@ unverified -- say so plainly rather than implying otherwise.
 
 ### What the add-in exposes
 
-Every function is registered **twice**: under its original name and argument
-list, so existing workbooks keep working, and under a grouped form taking
-labelled two-column ranges. Both read into the same four structs and then run
-one code path, so they cannot disagree -- and a test compares them bitwise.
+`CdsPrice` is registered **twice**: in its original sixteen-argument form, so
+existing workbooks keep working, and as `CDS.Price`, taking five labelled
+two-column ranges. Both read into the same four structs and then run one code
+path, so they cannot disagree -- and a test compares them bitwise.
+
+**Seven wide functions still have only their flat form**, and this is
+outstanding work rather than a decision against it: `UpfrontFlat` and
+`ParSpreadFlat` at seventeen arguments, `CleanSpreadCurveBuild` at sixteen,
+`ParSpreads` at thirteen, `IRZeroCurveBuild` at twelve, `DefaultAccrual` at
+eleven, `FeeLegFlows` at nine. The four reader structs already expose
+`read_block`, so the machinery each one needs exists.
 
 **Sixteen functions are registered**, covering all twelve upstream exposed:
 
