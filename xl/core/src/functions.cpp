@@ -28,14 +28,10 @@ constexpr std::string_view kCategory = "CDS Model";
     return fail(ErrorKind::bad_argument,
                 std::string(what) + ": expected a date, got " + cell.describe());
   }
-  if (*serial != static_cast<double>(static_cast<long>(*serial))) {
-    return fail(ErrorKind::bad_argument, std::string(what) +
-                                             ": a date must be a whole number of days, got " +
-                                             detail::num(*serial));
-  }
-  // -25569 converts an Excel serial to days since the Unix epoch, which is
-  // what `Date` counts. Pinned by a non-circular test.
-  return Date{} + std::chrono::days{static_cast<long>(*serial) - 25569};
+  // The conversion and the epoch live in value.hpp. There is one Excel epoch
+  // in this project and it has one home -- confusing it with upstream's 1601
+  // TDate has already caused three test bugs.
+  return date_from_excel_serial(*serial, what);
 }
 
 [[nodiscard]] Expected<DayCount> read_day_count(const XlValue &cell, std::string_view what) {
@@ -126,14 +122,17 @@ constexpr std::string_view kCategory = "CDS Model";
   return text;
 }
 
-[[nodiscard]] Expected<ZeroCurve> read_curve_argument(const XlValue &cell, CallContext &ctx,
-                                                      std::string_view what) {
+/// A curve handle, resolved to a value SHARED with the registry rather than
+/// copied out of it. Callers pass `**curve` where a `const ZeroCurve &` is
+/// wanted, which copies nothing.
+[[nodiscard]] Expected<CurveRegistry::Shared>
+read_curve_argument(const XlValue &cell, CallContext &ctx, std::string_view what) {
   const Expected<std::string> handle = cell.as_string();
   if (!handle) {
     return fail(ErrorKind::bad_argument,
                 std::string(what) + ": expected a curve handle, got " + cell.describe());
   }
-  const Expected<ZeroCurve> curve = ctx.curves.resolve(*handle);
+  const Expected<CurveRegistry::Shared> curve = ctx.curves.resolve(*handle);
   if (!curve) {
     return fail(curve.error().kind, std::string(what) + ": " + curve.error().message);
   }
@@ -152,11 +151,11 @@ constexpr std::string_view kCategory = "CDS Model";
   if (text->empty() || *text == "NONE" || *text == "None" || *text == "none") {
     return Calendar::none();
   }
-  const Expected<Calendar> named = ctx.calendars.resolve(*text);
+  const Expected<CalendarRegistry::Shared> named = ctx.calendars.resolve(*text);
   if (!named) {
     return fail(named.error().kind, "Holidays: " + named.error().message);
   }
-  return named;
+  return **named;
 }
 
 // ------------------------------------------------------- CdsPrice, two forms
@@ -310,11 +309,11 @@ Expected<XlValue> dispatch_calendar_dates(std::span<const XlValue> args, CallCon
   if (!handle) {
     return fail(ErrorKind::bad_argument, "Calendar: expected a handle, got " + args[0].describe());
   }
-  const Expected<Calendar> calendar = ctx.calendars.resolve(*handle);
+  const Expected<CalendarRegistry::Shared> calendar = ctx.calendars.resolve(*handle);
   if (!calendar) {
     return unexpected(calendar.error());
   }
-  return calendar_dates_grid(*calendar);
+  return calendar_dates_grid(**calendar);
 }
 
 // ------------------------------------------------------------- curve building
@@ -477,7 +476,7 @@ Expected<XlValue> dispatch_discount_factor(std::span<const XlValue> args, CallCo
     return fail(ErrorKind::bad_argument,
                 "DiscountFactor takes 2 arguments, got " + detail::num(args.size()));
   }
-  const Expected<ZeroCurve> curve = read_curve_argument(args[0], ctx, "Curve");
+  const Expected<CurveRegistry::Shared> curve = read_curve_argument(args[0], ctx, "Curve");
   if (!curve) {
     return unexpected(curve.error());
   }
@@ -487,7 +486,7 @@ Expected<XlValue> dispatch_discount_factor(std::span<const XlValue> args, CallCo
   }
   // `zero_price` returns a plain double because ZeroCurve::create refuses
   // every curve that could produce a NaN -- see UPSTREAM-2.
-  return XlValue{curve->zero_price(*date)};
+  return XlValue{(*curve)->zero_price(*date)};
 }
 
 /// `DatesAndRates(curve)` -- the curve's points, as two columns.
@@ -496,11 +495,11 @@ Expected<XlValue> dispatch_dates_and_rates(std::span<const XlValue> args, CallCo
     return fail(ErrorKind::bad_argument,
                 "DatesAndRates takes 1 argument, got " + detail::num(args.size()));
   }
-  const Expected<ZeroCurve> curve = read_curve_argument(args[0], ctx, "Curve");
+  const Expected<CurveRegistry::Shared> curve = read_curve_argument(args[0], ctx, "Curve");
   if (!curve) {
     return unexpected(curve.error());
   }
-  return rate_points_grid(curve->points());
+  return rate_points_grid((*curve)->points());
 }
 
 /// `CleanSpreadCurveBuild(today, start, stepin, cashSettle, ends, coupons,
@@ -588,7 +587,8 @@ Expected<XlValue> dispatch_clean_spread_curve_build(std::span<const XlValue> arg
   if (!conventions) {
     return unexpected(conventions.error());
   }
-  const Expected<ZeroCurve> discount = read_curve_argument(args[13], ctx, "Discount Curve");
+  const Expected<CurveRegistry::Shared> discount =
+      read_curve_argument(args[13], ctx, "Discount Curve");
   if (!discount) {
     return unexpected(discount.error());
   }
@@ -617,7 +617,7 @@ Expected<XlValue> dispatch_clean_spread_curve_build(std::span<const XlValue> arg
   // benchmark's own dates.
   const Cds convention_carrier = make_cds(TradeTerms{*start, (*ends).back(), 0.0}, *conventions);
   const Expected<ZeroCurve> curve =
-      clean_spread_curve(*today, *discount, *start, *stepin, *cash_settle, benchmarks, *recovery,
+      clean_spread_curve(*today, **discount, *start, *stepin, *cash_settle, benchmarks, *recovery,
                          convention_carrier, conventions->holidays);
   if (!curve) {
     return unexpected(curve.error());
@@ -664,11 +664,12 @@ Expected<XlValue> dispatch_par_spreads(std::span<const XlValue> args, CallContex
   if (!conventions) {
     return unexpected(conventions.error());
   }
-  const Expected<ZeroCurve> discount = read_curve_argument(args[10], ctx, "Discount Curve");
+  const Expected<CurveRegistry::Shared> discount =
+      read_curve_argument(args[10], ctx, "Discount Curve");
   if (!discount) {
     return unexpected(discount.error());
   }
-  const Expected<ZeroCurve> spread = read_curve_argument(args[11], ctx, "Spread Curve");
+  const Expected<CurveRegistry::Shared> spread = read_curve_argument(args[11], ctx, "Spread Curve");
   if (!spread) {
     return unexpected(spread.error());
   }
@@ -683,8 +684,8 @@ Expected<XlValue> dispatch_par_spreads(std::span<const XlValue> args, CallContex
   out.cells.reserve(out.rows);
   for (std::size_t i = 0; i < ends->size(); ++i) {
     const Cds cds = make_cds(TradeTerms{*start, (*ends)[i], 0.0}, *conventions);
-    const Expected<double> par =
-        cds_par_spread(cds, *today, *stepin, conventions->holidays, *discount, *spread, *recovery);
+    const Expected<double> par = cds_par_spread(cds, *today, *stepin, conventions->holidays,
+                                                **discount, **spread, *recovery);
     // One bad maturity does not lose the whole column: the failing row shows
     // its own message and the rest still price. A column where one cell is
     // wrong and twelve are right is more useful than one error.
@@ -745,7 +746,8 @@ struct FlatInputs {
   if (!conventions) {
     return unexpected(conventions.error());
   }
-  const Expected<ZeroCurve> discount = read_curve_argument(args[13], ctx, "Discount Curve");
+  const Expected<CurveRegistry::Shared> discount =
+      read_curve_argument(args[13], ctx, "Discount Curve");
   if (!discount) {
     return unexpected(discount.error());
   }
@@ -761,7 +763,7 @@ struct FlatInputs {
   FlatInputs out{UpfrontDates{*today, *cash_settle, *benchmark_start, *stepin},
                  make_cds(TradeTerms{*start, *end, *coupon}, *conventions),
                  conventions->holidays,
-                 *discount,
+                 **discount,
                  *recovery,
                  *clean};
   return out;

@@ -12,17 +12,8 @@
 namespace cdsmodel::xl {
 namespace {
 
-/// Excel serial 1 is 1900-01-01; the Unix epoch is serial 25569. Pinned by a
-/// non-circular test against serials read off Excel itself.
-constexpr long kExcelSerialToUnixDays = -25569;
-
 [[nodiscard]] Expected<Date> date_from_serial(double serial, std::size_t row) {
-  if (serial != static_cast<double>(static_cast<long>(serial))) {
-    return fail(ErrorKind::bad_argument, "row " + detail::num(row) +
-                                             ": a date must be a whole number of days, got " +
-                                             detail::num(serial));
-  }
-  return Date{} + std::chrono::days{static_cast<long>(serial) + kExcelSerialToUnixDays};
+  return date_from_excel_serial(serial, "row " + detail::num(row));
 }
 
 [[nodiscard]] std::string upper(std::string_view s) {
@@ -184,9 +175,7 @@ Expected<Calendar> calendar_from_range(const XlValue &dates, const XlValue &week
   return Calendar::create(holidays, *rule);
 }
 
-double to_excel_serial(Date date) {
-  return static_cast<double>(date.time_since_epoch().count() - kExcelSerialToUnixDays);
-}
+double to_excel_serial(Date date) { return excel_serial_from_date(date); }
 
 namespace {
 

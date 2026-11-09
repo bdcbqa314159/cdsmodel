@@ -11,10 +11,12 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -64,6 +66,14 @@ private:
 };
 int TempFile::counter_ = 0;
 
+/// A flat continuously-compounded curve, for the share-lifetime test below.
+cdsmodel::ZeroCurve flat(double rate) {
+  const cdsmodel::RatePoint pts[]{{*cdsmodel::make_date(2007, 1, 1), rate},
+                                  {*cdsmodel::make_date(2030, 1, 1), rate}};
+  return *cdsmodel::ZeroCurve::create(*cdsmodel::make_date(2006, 10, 9), pts,
+                                      cdsmodel::kContinuousBasis, cdsmodel::DayCount::Act365Fixed);
+}
+
 struct Ctx {
   CurveRegistry curves;
   CalendarRegistry calendars;
@@ -91,9 +101,9 @@ TEST(Calendars, H7ARangeOfDatesBecomesACalendar) {
 
   const auto resolved = c.calendars.resolve(*text);
   ASSERT_TRUE(resolved.has_value()) << resolved.error().message;
-  EXPECT_FALSE(resolved->is_business_day(*cdsmodel::make_date(2024, 1, 1)));
-  EXPECT_FALSE(resolved->is_business_day(*cdsmodel::make_date(2024, 7, 4)));
-  EXPECT_TRUE(resolved->is_business_day(*cdsmodel::make_date(2024, 1, 2)));
+  EXPECT_FALSE((*resolved)->is_business_day(*cdsmodel::make_date(2024, 1, 1)));
+  EXPECT_FALSE((*resolved)->is_business_day(*cdsmodel::make_date(2024, 7, 4)));
+  EXPECT_TRUE((*resolved)->is_business_day(*cdsmodel::make_date(2024, 1, 2)));
 }
 
 TEST(Calendars, H7DatesMayBeInAnyOrderAndBlanksAreSkipped) {
@@ -171,8 +181,8 @@ TEST(Calendars, H7LoadHolidaysReadsAFileAndReturnsAHandle) {
 
   const auto resolved = c.calendars.resolve(*text);
   ASSERT_TRUE(resolved.has_value());
-  EXPECT_FALSE(resolved->is_business_day(*cdsmodel::make_date(2024, 1, 1)));
-  EXPECT_TRUE(resolved->is_business_day(*cdsmodel::make_date(2024, 3, 16)))
+  EXPECT_FALSE((*resolved)->is_business_day(*cdsmodel::make_date(2024, 1, 1)));
+  EXPECT_TRUE((*resolved)->is_business_day(*cdsmodel::make_date(2024, 3, 16)))
       << "the directive should have released Saturday";
 }
 
@@ -214,7 +224,7 @@ TEST(Calendars, H7CalendarDatesRoundTripsThroughCells) {
   ASSERT_TRUE(original.has_value());
   for (const int day : {1, 2, 3, 4, 5}) {
     const cdsmodel::Date d = *cdsmodel::make_date(2024, 7, day);
-    EXPECT_EQ(rebuilt->is_business_day(d), original->is_business_day(d)) << "2024-07-0" << day;
+    EXPECT_EQ(rebuilt->is_business_day(d), (*original)->is_business_day(d)) << "2024-07-0" << day;
   }
 }
 
@@ -228,6 +238,65 @@ TEST(Calendars, H7AWeekendOnlyCalendarSaysSoRatherThanSpillingNothing) {
 }
 
 // ------------------------------------------------------------- stale handles
+
+TEST(Calendars, AResolvedValueOutlivesARebuildOfItsName) {
+  // What `shared_ptr<const T>` buys beyond speed. A cell can hold a resolved
+  // curve while ANOTHER cell rebuilds that name -- Excel decides the order --
+  // and the first cell must keep reading the object it resolved rather than
+  // a freed one. Returning a reference into the map would have dangled here;
+  // returning a copy was correct but copied the whole curve per cell.
+  CurveRegistry curves;
+  const std::string first = curves.store("USD", flat(0.04));
+  const auto held = curves.resolve(first);
+  ASSERT_TRUE(held.has_value());
+  const double before = (*held)->zero_price(*cdsmodel::make_date(2010, 1, 1));
+
+  // Overwrite the name twice, and clear the registry entirely.
+  (void)curves.store("USD", flat(0.09));
+  (void)curves.store("USD", flat(0.15));
+  curves.clear();
+  EXPECT_EQ(curves.size(), 0u);
+
+  // The value resolved earlier is untouched by all of that.
+  EXPECT_EQ((*held)->zero_price(*cdsmodel::make_date(2010, 1, 1)), before);
+  EXPECT_NE(held->use_count(), 0);
+}
+
+TEST(Calendars, ConcurrentStoresAndResolvesDoNotRace) {
+  // The registry is locked now rather than documented as "safe because no
+  // function registers with $". Excel decides when and on which thread it
+  // recalculates, and `$` is a one-character change away.
+  //
+  // Run under the asan preset, this is also a TSan-shaped check: without the
+  // mutex, concurrent insert_or_assign on an unordered_map corrupts it.
+  CalendarRegistry calendars;
+  const auto weekends = cdsmodel::Calendar::none();
+  constexpr int kRounds = 200;
+
+  std::atomic<int> resolved{0};
+  std::thread writer([&] {
+    for (int i = 0; i < kRounds; ++i) {
+      (void)calendars.store("NYC", weekends);
+      (void)calendars.store("LON", weekends);
+    }
+  });
+  std::thread reader([&] {
+    for (int i = 0; i < kRounds; ++i) {
+      if (calendars.resolve("NYC#1").has_value()) {
+        ++resolved;
+      }
+      (void)calendars.size();
+    }
+  });
+  writer.join();
+  reader.join();
+
+  // The count is not asserted -- it depends on interleaving, which is the
+  // point. What is asserted is that the registry survived and still works.
+  EXPECT_EQ(calendars.size(), 2u);
+  EXPECT_TRUE(calendars.resolve("NYC#" + std::to_string(kRounds)).has_value());
+  EXPECT_GE(resolved.load(), 0);
+}
 
 TEST(Calendars, H7AStaleCalendarHandleIsRefused) {
   Ctx c;
@@ -348,7 +417,7 @@ TEST(Calendars, CalendarFromFileIsTheSameFunctionUnderAnotherName) {
   // Same file, so the same answer on every day of a month.
   for (int day = 1; day <= 31; ++day) {
     const cdsmodel::Date d = *cdsmodel::make_date(2024, 1, day);
-    EXPECT_EQ(a->is_business_day(d), b->is_business_day(d)) << "2024-01-" << day;
+    EXPECT_EQ((*a)->is_business_day(d), (*b)->is_business_day(d)) << "2024-01-" << day;
   }
 }
 

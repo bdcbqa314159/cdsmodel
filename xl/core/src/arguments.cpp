@@ -5,29 +5,15 @@
 namespace cdsmodel::xl {
 namespace {
 
-/// A date from a cell. Excel hands dates over as serial numbers; the port's
-/// `Date` counts days from the Unix epoch, Excel's serial counts from 1900
-/// (with its own leap-year quirk), so the offset is explicit and named rather
-/// than a literal appearing mid-expression.
-constexpr long kExcelSerialToUnixDays = -25569;
-
+/// A date from a cell. The conversion itself lives in `value.hpp` -- there is
+/// one Excel epoch in this project and it has one home.
 [[nodiscard]] Expected<Date> read_date(const XlValue &cell, std::string_view what) {
   const Expected<double> serial = cell.as_double();
   if (!serial) {
     return fail(ErrorKind::bad_argument,
                 std::string(what) + ": expected a date, got " + cell.describe());
   }
-  // Excel dates are whole days here. A fractional serial is a time-of-day,
-  // which this model has no concept of -- truncating silently would price a
-  // trade from a date the sheet does not show.
-  const double whole = *serial;
-  if (whole != static_cast<double>(static_cast<long>(whole))) {
-    return fail(ErrorKind::bad_argument, std::string(what) +
-                                             ": a date must be a whole number of days, got " +
-                                             detail::num(whole));
-  }
-  const long days = static_cast<long>(whole) + kExcelSerialToUnixDays;
-  return Date{} + std::chrono::days{days};
+  return date_from_excel_serial(*serial, what);
 }
 
 template <std::size_t N>
@@ -191,11 +177,15 @@ Expected<Conventions> Conventions::read_positional(std::span<const XlValue> cell
     const bool weekends_only =
         holidays->empty() || *holidays == "NONE" || *holidays == "None" || *holidays == "none";
     if (!weekends_only) {
-      const Expected<Calendar> named = calendars.resolve(*holidays);
+      const Expected<CalendarRegistry::Shared> named = calendars.resolve(*holidays);
       if (!named) {
         return fail(named.error().kind, "Holidays: " + named.error().message);
       }
-      out.holidays = {*named};
+      // One copy, and it is the library's API that asks for it: `Cds` carries
+      // `std::vector<Calendar>` and `cds_price` takes a `span`. The registry
+      // no longer copies; this does, once, because the value has to live
+      // somewhere the span can point at.
+      out.holidays = {**named};
     }
   }
   return out;
@@ -231,7 +221,7 @@ Expected<MarketData> MarketData::read_positional(std::span<const XlValue> cells,
     return fail(ErrorKind::bad_argument,
                 "Discount Curve: expected a curve handle, got " + cells[0].describe());
   }
-  const Expected<ZeroCurve> discount = curves.resolve(*discount_handle);
+  const Expected<CurveRegistry::Shared> discount = curves.resolve(*discount_handle);
   if (!discount) {
     return fail(discount.error().kind, "Discount Curve: " + discount.error().message);
   }
@@ -241,7 +231,7 @@ Expected<MarketData> MarketData::read_positional(std::span<const XlValue> cells,
     return fail(ErrorKind::bad_argument,
                 "Spread Curve: expected a curve handle, got " + cells[1].describe());
   }
-  const Expected<ZeroCurve> spread = curves.resolve(*spread_handle);
+  const Expected<CurveRegistry::Shared> spread = curves.resolve(*spread_handle);
   if (!spread) {
     return fail(spread.error().kind, "Spread Curve: " + spread.error().message);
   }
@@ -255,7 +245,7 @@ Expected<MarketData> MarketData::read_positional(std::span<const XlValue> cells,
     return fail(ErrorKind::bad_argument,
                 "Recovery Rate " + detail::num(*recovery) + " is outside 0 to 1");
   }
-  return MarketData{*discount, *spread, *recovery};
+  return MarketData{**discount, **spread, *recovery};
 }
 
 Expected<MarketData> MarketData::read_block(const XlValue &block, const CurveRegistry &curves) {

@@ -95,7 +95,7 @@ TEST(Curves, IRZeroCurveMakeReturnsAUsableHandle) {
   // A 4% continuously-compounded curve: the discount factor one year out is
   // exp(-0.04 * 365/365). Checked against the closed form, not a recorded
   // number -- this is the highest rung available for a flat curve.
-  const double df = curve->zero_price(*cdsmodel::make_date(2007, 10, 9));
+  const double df = (*curve)->zero_price(*cdsmodel::make_date(2007, 10, 9));
   EXPECT_NEAR(df, std::exp(-0.04 * 365.0 / 365.0), 1e-9);
 }
 
@@ -179,10 +179,10 @@ TEST(Curves, IRZeroCurveBuildBootstrapsFromQuotes) {
   // tests/ir_zero_curve_differential_test.cpp (`ref->fNumItems ==
   // points.size()`), so duplicating it here would add nothing; what this
   // layer owns is that the cells reached the library at all.
-  EXPECT_GE(curve->points().size(), 4u) << "fewer points than instruments";
+  EXPECT_GE((*curve)->points().size(), 4u) << "fewer points than instruments";
   double previous = 1.0;
   for (const int year : {2007, 2008, 2009, 2011}) {
-    const double df = curve->zero_price(*cdsmodel::make_date(year, 10, 9));
+    const double df = (*curve)->zero_price(*cdsmodel::make_date(year, 10, 9));
     EXPECT_LT(df, previous) << "the discount factor rose at " << year;
     EXPECT_GT(df, 0.0);
     previous = df;
@@ -213,7 +213,7 @@ TEST(Curves, IRZeroCurveBuildAcceptsAFrequencyEitherWay) {
   // 6M and 2-per-year are the same thing, so the curves must be identical.
   for (const int year : {2007, 2009, 2011}) {
     const cdsmodel::Date d = *cdsmodel::make_date(year, 10, 9);
-    EXPECT_EQ(a->zero_price(d), b->zero_price(d)) << year;
+    EXPECT_EQ((*a)->zero_price(d), (*b)->zero_price(d)) << year;
   }
 
   // And a frequency that does not divide 12 is refused rather than rounded.
@@ -319,11 +319,11 @@ TEST(Curves, CleanSpreadCurveBuildBootstrapsACreditCurve) {
 
   const auto curve = s.curves.resolve(*text);
   ASSERT_TRUE(curve.has_value());
-  EXPECT_EQ(curve->points().size(), 2u) << "one point per included benchmark";
+  EXPECT_EQ((*curve)->points().size(), 2u) << "one point per included benchmark";
   // Survival probabilities fall with maturity, which is the one invariant a
   // credit curve must satisfy whatever the inputs.
-  const double near = curve->zero_price(*cdsmodel::make_date(2009, 10, 9));
-  const double far = curve->zero_price(*cdsmodel::make_date(2011, 10, 9));
+  const double near = (*curve)->zero_price(*cdsmodel::make_date(2009, 10, 9));
+  const double far = (*curve)->zero_price(*cdsmodel::make_date(2011, 10, 9));
   EXPECT_LT(far, near);
   EXPECT_GT(far, 0.0);
 }
@@ -343,11 +343,11 @@ TEST(Curves, IncludeFlagsDropBenchmarks) {
 
   const XlValue both = build(XlValue{}, "A");
   ASSERT_TRUE(both.as_string().has_value()) << both.describe();
-  EXPECT_EQ(s.curves.resolve(*both.as_string())->points().size(), 2u);
+  EXPECT_EQ((*s.curves.resolve(*both.as_string()))->points().size(), 2u);
 
   const XlValue one = build(col({XlValue{true}, XlValue{false}}), "B");
   ASSERT_TRUE(one.as_string().has_value()) << one.describe();
-  EXPECT_EQ(s.curves.resolve(*one.as_string())->points().size(), 1u)
+  EXPECT_EQ((*s.curves.resolve(*one.as_string()))->points().size(), 1u)
       << "the excluded benchmark still produced a point";
 
   // A flag column of the wrong length is refused rather than silently padded.

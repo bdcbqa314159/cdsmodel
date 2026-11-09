@@ -28,6 +28,7 @@
 #include "xlcall.h"
 
 #include <array>
+#include <exception>
 #include <string>
 #include <vector>
 
@@ -50,24 +51,53 @@ cdsmodel::xl::CalendarRegistry &calendar_registry() {
 /// `count` is what the registration table declared, so a mismatch between the
 /// two is impossible by construction here -- C4 checks the table against
 /// itself, and this uses the same number.
-LPXLOPER12 run(std::string_view name, std::initializer_list<LPXLOPER12> opers) {
-  // The SDK's temp memory is freed on entry, not on exit: Excel reads our
-  // result after we return, so it has to outlive the call.
-  FreeAllTempMemory();
+/// Gathers the arguments, calls the function, renders the result -- and lets
+/// NOTHING escape.
+///
+/// Excel is a C host: an exception crossing out of an XLL is undefined
+/// behaviour, and the realistic failure is not exotic. `run` reserves a
+/// vector, every dispatcher builds `std::string` messages, and
+/// `parse_holiday_file` reads a whole file into memory -- any of which can
+/// throw `bad_alloc`. Without this boundary a low-memory Excel takes the
+/// process down instead of showing a cell error.
+///
+/// The catch-all is deliberately the LAST thing here and the only one in the
+/// add-in: `xl/core` reports failure through `Expected`, so an exception
+/// reaching this point means something unforeseen, and the honest response is
+/// to say so in the cell rather than to guess.
+LPXLOPER12 run(std::string_view name, std::initializer_list<LPXLOPER12> opers) noexcept {
+  try {
+    // The SDK's temp memory is freed on entry, not on exit: Excel reads our
+    // result after we return, so it has to outlive the call.
+    FreeAllTempMemory();
 
-  const cdsmodel::xl::FunctionSpec *spec = cdsmodel::xl::find_function(name);
-  if (spec == nullptr) {
-    return cdsmodel::xl::temp_string("this add-in has no function by that name");
+    const cdsmodel::xl::FunctionSpec *spec = cdsmodel::xl::find_function(name);
+    if (spec == nullptr) {
+      return cdsmodel::xl::temp_string("this add-in has no function by that name");
+    }
+
+    std::vector<cdsmodel::xl::XlValue> args;
+    args.reserve(opers.size());
+    for (const LPXLOPER12 oper : opers) {
+      args.push_back(cdsmodel::xl::from_oper(oper));
+    }
+
+    cdsmodel::xl::CallContext context{curve_registry(), calendar_registry()};
+    return cdsmodel::xl::to_oper(cdsmodel::xl::invoke(*spec, args, context));
+  } catch (const std::exception &e) {
+    // temp_string allocates, so it can throw too -- hence the nested try.
+    try {
+      return cdsmodel::xl::temp_string(std::string("internal error: ") + e.what());
+    } catch (...) {
+      return nullptr; // Excel shows #VALUE! for a null return
+    }
+  } catch (...) {
+    try {
+      return cdsmodel::xl::temp_string("internal error of unknown type");
+    } catch (...) {
+      return nullptr;
+    }
   }
-
-  std::vector<cdsmodel::xl::XlValue> args;
-  args.reserve(opers.size());
-  for (const LPXLOPER12 oper : opers) {
-    args.push_back(cdsmodel::xl::from_oper(oper));
-  }
-
-  cdsmodel::xl::CallContext context{curve_registry(), calendar_registry()};
-  return cdsmodel::xl::to_oper(cdsmodel::xl::invoke(*spec, args, context));
 }
 
 /// Registers one table entry. Eleven arguments is what `xlfRegister` takes;
@@ -128,7 +158,7 @@ CdsPrice(LPXLOPER12 today, LPXLOPER12 cash_settle, LPXLOPER12 step_in, LPXLOPER1
 
 __declspec(dllexport) LPXLOPER12 CDSPrice(LPXLOPER12 valuation, LPXLOPER12 trade,
                                           LPXLOPER12 conventions, LPXLOPER12 market,
-                                          LPXLOPER12 clean) {
+                                          LPXLOPER12 clean) noexcept {
   return run("CDS.Price", {valuation, trade, conventions, market, clean});
 }
 
@@ -140,7 +170,7 @@ __declspec(dllexport) LPXLOPER12 ParSpreads(LPXLOPER12 a1, LPXLOPER12 a2, LPXLOP
                                             LPXLOPER12 a4, LPXLOPER12 a5, LPXLOPER12 a6,
                                             LPXLOPER12 a7, LPXLOPER12 a8, LPXLOPER12 a9,
                                             LPXLOPER12 a10, LPXLOPER12 a11, LPXLOPER12 a12,
-                                            LPXLOPER12 a13) {
+                                            LPXLOPER12 a13) noexcept {
   return run("ParSpreads", {a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13});
 }
 
@@ -149,7 +179,7 @@ __declspec(dllexport) LPXLOPER12 UpfrontFlat(LPXLOPER12 a1, LPXLOPER12 a2, LPXLO
                                              LPXLOPER12 a7, LPXLOPER12 a8, LPXLOPER12 a9,
                                              LPXLOPER12 a10, LPXLOPER12 a11, LPXLOPER12 a12,
                                              LPXLOPER12 a13, LPXLOPER12 a14, LPXLOPER12 a15,
-                                             LPXLOPER12 a16, LPXLOPER12 a17) {
+                                             LPXLOPER12 a16, LPXLOPER12 a17) noexcept {
   return run("UpfrontFlat",
              {a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17});
 }
@@ -159,7 +189,7 @@ __declspec(dllexport) LPXLOPER12 ParSpreadFlat(LPXLOPER12 a1, LPXLOPER12 a2, LPX
                                                LPXLOPER12 a7, LPXLOPER12 a8, LPXLOPER12 a9,
                                                LPXLOPER12 a10, LPXLOPER12 a11, LPXLOPER12 a12,
                                                LPXLOPER12 a13, LPXLOPER12 a14, LPXLOPER12 a15,
-                                               LPXLOPER12 a16, LPXLOPER12 a17) {
+                                               LPXLOPER12 a16, LPXLOPER12 a17) noexcept {
   return run("ParSpreadFlat",
              {a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17});
 }
@@ -167,70 +197,74 @@ __declspec(dllexport) LPXLOPER12 ParSpreadFlat(LPXLOPER12 a1, LPXLOPER12 a2, LPX
 __declspec(dllexport) LPXLOPER12 DefaultAccrual(LPXLOPER12 a1, LPXLOPER12 a2, LPXLOPER12 a3,
                                                 LPXLOPER12 a4, LPXLOPER12 a5, LPXLOPER12 a6,
                                                 LPXLOPER12 a7, LPXLOPER12 a8, LPXLOPER12 a9,
-                                                LPXLOPER12 a10, LPXLOPER12 a11) {
+                                                LPXLOPER12 a10, LPXLOPER12 a11) noexcept {
   return run("DefaultAccrual", {a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11});
 }
 
 __declspec(dllexport) LPXLOPER12 FeeLegFlows(LPXLOPER12 a1, LPXLOPER12 a2, LPXLOPER12 a3,
                                              LPXLOPER12 a4, LPXLOPER12 a5, LPXLOPER12 a6,
-                                             LPXLOPER12 a7, LPXLOPER12 a8, LPXLOPER12 a9) {
+                                             LPXLOPER12 a7, LPXLOPER12 a8, LPXLOPER12 a9) noexcept {
   return run("FeeLegFlows", {a1, a2, a3, a4, a5, a6, a7, a8, a9});
 }
 
 __declspec(dllexport) LPXLOPER12 IRZeroCurveMake(LPXLOPER12 a1, LPXLOPER12 a2, LPXLOPER12 a3,
-                                                 LPXLOPER12 a4, LPXLOPER12 a5, LPXLOPER12 a6) {
+                                                 LPXLOPER12 a4, LPXLOPER12 a5,
+                                                 LPXLOPER12 a6) noexcept {
   return run("IRZeroCurveMake", {a1, a2, a3, a4, a5, a6});
 }
 
 __declspec(dllexport) LPXLOPER12 IRZeroCurveBuild(LPXLOPER12 a1, LPXLOPER12 a2, LPXLOPER12 a3,
                                                   LPXLOPER12 a4, LPXLOPER12 a5, LPXLOPER12 a6,
                                                   LPXLOPER12 a7, LPXLOPER12 a8, LPXLOPER12 a9,
-                                                  LPXLOPER12 a10, LPXLOPER12 a11, LPXLOPER12 a12) {
+                                                  LPXLOPER12 a10, LPXLOPER12 a11,
+                                                  LPXLOPER12 a12) noexcept {
   return run("IRZeroCurveBuild", {a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12});
 }
 
 __declspec(dllexport) LPXLOPER12 CleanSpreadCurveBuild(
     LPXLOPER12 a1, LPXLOPER12 a2, LPXLOPER12 a3, LPXLOPER12 a4, LPXLOPER12 a5, LPXLOPER12 a6,
     LPXLOPER12 a7, LPXLOPER12 a8, LPXLOPER12 a9, LPXLOPER12 a10, LPXLOPER12 a11, LPXLOPER12 a12,
-    LPXLOPER12 a13, LPXLOPER12 a14, LPXLOPER12 a15, LPXLOPER12 a16) {
+    LPXLOPER12 a13, LPXLOPER12 a14, LPXLOPER12 a15, LPXLOPER12 a16) noexcept {
   return run("CleanSpreadCurveBuild",
              {a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16});
 }
 
-__declspec(dllexport) LPXLOPER12 DiscountFactor(LPXLOPER12 curve, LPXLOPER12 date) {
+__declspec(dllexport) LPXLOPER12 DiscountFactor(LPXLOPER12 curve, LPXLOPER12 date) noexcept {
   return run("DiscountFactor", {curve, date});
 }
 
-__declspec(dllexport) LPXLOPER12 DatesAndRates(LPXLOPER12 curve) {
+__declspec(dllexport) LPXLOPER12 DatesAndRates(LPXLOPER12 curve) noexcept {
   return run("DatesAndRates", {curve});
 }
 
-__declspec(dllexport) LPXLOPER12 LoadHolidays(LPXLOPER12 path, LPXLOPER12 name) {
+__declspec(dllexport) LPXLOPER12 LoadHolidays(LPXLOPER12 path, LPXLOPER12 name) noexcept {
   return run("LoadHolidays", {path, name});
 }
 
 __declspec(dllexport) LPXLOPER12 CDSCalendar(LPXLOPER12 dates, LPXLOPER12 weekend,
-                                             LPXLOPER12 name) {
+                                             LPXLOPER12 name) noexcept {
   return run("CDS.Calendar", {dates, weekend, name});
 }
 
-__declspec(dllexport) LPXLOPER12 CDSCalendarFromFile(LPXLOPER12 path, LPXLOPER12 name) {
+__declspec(dllexport) LPXLOPER12 CDSCalendarFromFile(LPXLOPER12 path, LPXLOPER12 name) noexcept {
   return run("CDS.CalendarFromFile", {path, name});
 }
 
-__declspec(dllexport) LPXLOPER12 CDSCalendarDates(LPXLOPER12 handle) {
+__declspec(dllexport) LPXLOPER12 CDSCalendarDates(LPXLOPER12 handle) noexcept {
   return run("CDS.CalendarDates", {handle});
 }
 
-__declspec(dllexport) LPXLOPER12 CdsModelVersion(void) {
+__declspec(dllexport) LPXLOPER12 CdsModelVersion(void) noexcept try {
   FreeAllTempMemory();
   return cdsmodel::xl::temp_string(std::string(cdsmodel::version()) + " (port of ISDA " +
                                    std::string(cdsmodel::upstream_version()) + ")");
+} catch (...) {
+  return nullptr;
 }
 
 // ----------------------------------------------------------- the entry points
 
-__declspec(dllexport) short xlAutoOpen(void) {
+__declspec(dllexport) short xlAutoOpen(void) noexcept try {
   XLOPER12 dll_name;
   Excel12(xlGetName, &dll_name, 0);
   for (const cdsmodel::xl::FunctionSpec &spec : cdsmodel::xl::all_functions()) {
@@ -254,9 +288,14 @@ __declspec(dllexport) short xlAutoOpen(void) {
 
   Excel12(xlFree, nullptr, 1, &dll_name);
   return 1;
+} catch (...) {
+  // Registration builds a string per argument per function -- 16 functions
+  // times 11 arguments. Returning 0 tells Excel the add-in failed to open,
+  // which is far better than throwing into it.
+  return 0;
 }
 
-__declspec(dllexport) short xlAutoClose(void) {
+__declspec(dllexport) short xlAutoClose(void) noexcept {
   // C7: every handle stops resolving. Upstream's cache persisted for the life
   // of the process, so a reload left stale names resolvable.
   curve_registry().clear();
@@ -268,11 +307,11 @@ __declspec(dllexport) short xlAutoClose(void) {
 /// memory, which `FreeAllTempMemory()` releases at the start of the next call.
 /// Returning memory Excel must free would mean setting `xlbitDLLFree`, and
 /// nothing here does.
-__declspec(dllexport) void xlAutoFree12(LPXLOPER12) {}
+__declspec(dllexport) void xlAutoFree12(LPXLOPER12) noexcept {}
 
-__declspec(dllexport) short xlAutoAdd(void) { return 1; }
+__declspec(dllexport) short xlAutoAdd(void) noexcept { return 1; }
 
-__declspec(dllexport) short xlAutoRemove(void) { return 1; }
+__declspec(dllexport) short xlAutoRemove(void) noexcept { return 1; }
 
 } // extern "C"
 

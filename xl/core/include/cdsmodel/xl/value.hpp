@@ -14,6 +14,7 @@
 /// the 12 functions need, which is why it can be plain C++: a number, a
 /// string, a boolean, a 2-D grid of values, a missing argument, or an error.
 
+#include <cdsmodel/date.hpp>
 #include <cdsmodel/expected.hpp>
 
 #include <cstddef>
@@ -101,5 +102,27 @@ public:
 private:
   Storage storage_;
 };
+
+/// Excel's date serial and the port's `Date` share nothing but a day count.
+///
+/// Serial 1 is 1900-01-01 and the Unix epoch -- which is what `Date` counts
+/// from -- is serial 25569. This project juggles three epochs (1601 for
+/// upstream's TDate, 1900 for Excel, 1970 for `Date`), and confusing two of
+/// them has already caused three test bugs, so the conversion lives in exactly
+/// one place.
+///
+/// Pinned by a non-circular test against serials read off Excel itself:
+/// 1900-03-01 is 61, 1970-01-01 is 25569, 2024-03-15 is 45366.
+inline constexpr long kExcelEpochOffset = 25569;
+
+/// An Excel serial as a `Date`.
+///
+/// A fractional serial is a time of day, which this model has no concept of.
+/// Truncating silently would price a trade from a date the sheet does not
+/// show, so it is refused and `what` names the offending cell.
+[[nodiscard]] Expected<Date> date_from_excel_serial(double serial, std::string_view what);
+
+/// A `Date` as an Excel serial.
+[[nodiscard]] double excel_serial_from_date(Date date);
 
 } // namespace cdsmodel::xl
