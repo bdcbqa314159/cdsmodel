@@ -27,6 +27,11 @@ is checking arithmetic, it is in the wrong file.
 | casters `chrono.h` ships | exactly two: durations, and `time_point`. **`year_month_day` is not mentioned anywhere in nanobind** |
 | direction of the gap | **input is already correct** — a Python `date` is accepted. No caster ever *returns* one |
 | `date(2024,3,15) == datetime(2024,3,15,0,0)` | **`False`**, silently. Ordering and subtraction raise `TypeError`; set intersection is empty |
+| the stock caster's `from_cpp` | routes through `system_clock::to_time_t` and `localtime_r`; `from_python` through `mktime` — **local time on both sides** |
+| stock caster, `TZ=UTC` / `Europe/London` | `2024-03-15 00:00:00` — right day, wrong type |
+| stock caster, `TZ=America/New_York` | **`2024-03-14 20:00:00` — the wrong day** |
+| stock caster, `TZ=Pacific/Auckland`, round trip | **`2024-03-14 13:00:00` — the wrong day** |
+| a caster built on `year_month_day` | `2024-03-15`, type `date`, correct in all four zones; compiles and runs under `STABLE_ABI` |
 | proof build | `proof-0.0.1-cp312-abi3-macosx_26_0_arm64.whl`, imports and runs |
 
 The stable-ABI floor shapes everything else, and it belongs to **CPython**,
@@ -46,7 +51,8 @@ prefer one over the other, and switching would buy a worse one.
 1. `python/` holding a `src`-layout package: `cdsmodel/` with `_core` (the
    extension), `__init__.py`, `_core.pyi`, and `py.typed`.
 2. **A `Date` caster to and from `datetime.date`**, not the stock chrono one,
-   and **`nanobind/stl/chrono.h` included nowhere in the project.**
+   and **`nanobind/stl/chrono.h` included nowhere in the project** — it is not
+   merely redundant for our type, it is measurably wrong for it.
 3. `Expected<T>` → raised exceptions, one class per `ErrorKind`, each also
    deriving from the builtin a Python caller would expect.
 4. The twelve functions upstream's XLL exposed, plus the types they need.
@@ -86,7 +92,7 @@ prefer one over the other, and switching would buy a worse one.
 | ID | Criterion | Oracle | Rung |
 |----|-----------|--------|------|
 | P1 | A `cp312-abi3` wheel builds on all three OSes and imports | `cibuildwheel`; the tag is asserted, not eyeballed | 3 |
-| P2 | WHEN a `datetime.date` goes in, THEN a `datetime.date` comes out — never a `datetime` | round-trip test over a swept date range, `type()` asserted | — |
+| P2 | WHEN a `datetime.date` goes in, THEN the same `datetime.date` comes out — same day, and never a `datetime` | round-trip over a swept date range **under `TZ` set to UTC, America/New_York, Europe/London and Pacific/Auckland**, asserting both the value and `type()`. The western zones are the positive control: the stock caster passes in UTC and London and fails in New York, so a UTC-only test would measure the fixture rather than the code | — |
 | P3 | Every price the package returns equals the C++ value **bit for bit** | a generated fixture of inputs and `%.17g` outputs, produced by a C++ program linking the same library; pytest compares exactly | 3 |
 | P4 | IF a call fails, THEN it raises the mapped exception with the library's own message | one test per `ErrorKind`, asserting both the class and that the message names the offending value | — |
 | P5 | `except ValueError` catches a bad argument, and `except CdsModelError` catches everything | two tests per exception class, on the base and on the builtin | — |
@@ -105,7 +111,7 @@ prefer one over the other, and switching would buy a worse one.
 |---|----------|--------------|----------|--------------|
 | D1 | **Python ≥ 3.12, `cp312-abi3`, linked mode** | split mode for a 3.10 floor; per-version wheels for a 3.11 floor; pybind11 | Three wheels total instead of twelve, covering 3.12, 3.13, 3.14 and later. The floor is CPython's and pybind11 shares it exactly, so it is not a library-choice question. 3.10 went end-of-life last month and 3.11 follows in under a year, so the floor costs us no supported version | a user needs 3.11 — then D1a, which is a config change, not a rewrite |
 | D1a | **Fallback if 3.11 is ever needed: drop the stable ABI, build per-version wheels** | split mode | Split mode reaches 3.10 but splits the extension into two shared objects, so the packaging gets harder exactly where it is already hardest. Plain per-version wheels are what every binding library did before abi3 existed; `cibuildwheel` makes twelve wheels as automatically as three. The cost is CI minutes and release artifacts, not design | a real 3.11 user appears |
-| D2 | A custom `Date` caster, in the binding layer only | nanobind's `stl/chrono.h`; changing the library's `Date` type | Measured, and the reason is interop rather than tidiness: a caller passes `date` in and gets `datetime` back, and `date == datetime` is **`False` with no error**, so `if maturity == my_maturity` is silently never true. Ordering and subtraction raise. The input direction already works; only the output is wrong. **Nothing in `include/` or `src/` changes** — `sys_days` is the right type for a day count on the civil calendar, and switching to `year_month_day` would not help because nanobind does not know that type either, while costing the cheap day arithmetic the port uses throughout. The gap is in nanobind's calendar-type coverage, so ~15 lines of glue in the Python layer closes it | nanobind ships a calendar-type caster of its own |
+| D2 | A custom `Date` caster, in the binding layer only, converting via `std::chrono::year_month_day` | nanobind's `stl/chrono.h`; changing the library's `Date` type | **The stock caster returns the wrong day.** It converts through `localtime_r` outbound and `mktime` inbound, and a `sys_days` is midnight UTC, so anywhere west of UTC midnight UTC is yesterday: measured as `2024-03-14` in New York and, on a round trip, in Auckland. It is correct in UTC and London only — so it would pass here and corrupt dates for a user in New York, which is the same silent-landmine shape as the three epoch bugs and the `"Q"`/`"U"` type codes. The wrong *type* is the lesser half, though real on its own: `date == datetime` is `False` with no error, so `if maturity == my_maturity` is silently never true. Converting via `year_month_day` is pure civil-calendar arithmetic — no `std::tm`, no `mktime`, no time zone — and was measured correct in all four zones. **Nothing in `include/` or `src/` changes**: `sys_days` is the right type for a day count, and `year_month_day` would not help as a boundary type because nanobind does not know it either, while costing the cheap day arithmetic the port uses throughout | nanobind ships a calendar-type caster of its own |
 | D3 | One exception class per `ErrorKind`, each deriving from a builtin too | one `CdsModelError`; return a result object | Artifact #01's four kinds exist because upstream's 452 messages collapse to four *kinds*; this is the consumer that finally branches on them. Dual inheritance means `except ValueError` works for a caller who expects Pythonic behaviour and `except CdsModelError` for one who wants the library's | a fifth kind appears |
 | D4 | Expose the XLL's twelve functions, not all 163 | expose everything; expose a minimal four | The XLL surface is **evidence**: it is what a desk used for seventeen years. The other 150 are schedule generation, interpolation and date arithmetic — implementation of those twelve | a user asks for one, which is a better signal than my guess |
 | D5 | `scikit-build-core`, not `setuptools` | `setuptools` + custom build_ext; `meson-python` | It is what nanobind's own documentation builds against, it reads `py-api` straight into the stable-ABI setting, and the proof build worked first time | — |
