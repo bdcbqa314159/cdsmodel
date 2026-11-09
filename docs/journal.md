@@ -5700,3 +5700,237 @@ Every remaining XLL function is **marshalling only** — the library function
 exists for each one, differential-tested and with golden vectors behind it. The
 hard half is done. What is left to call the upgrade complete is wiring, and one
 manual run in Excel that only a Windows machine can do.
+
+---
+
+## Decision 53 — Seventeen arguments, and the type that was missing
+
+Ten functions remained, and the measurement that mattered was taken before any
+of them was written. Across upstream's eight priced XLL functions:
+
+| | |
+|---|---|
+| total arguments | **111** |
+| distinct concepts they cover | ~38 |
+| `Holidays` appears in | **8 of 8** |
+| `Coupon Interval` · `Stub Type` · `Payment DCC` · `Bad Day Convention` | **7 of 8** each |
+
+Two-thirds of the parameter surface is the same six values retyped per formula.
+`UpfrontFlat` and `ParSpreadFlat` take seventeen positional arguments;
+`CdsPrice` and `CleanSpreadCurveBuild` take sixteen.
+
+That block is a conventions struct, and upstream had nowhere to put it: a C API
+with no aggregate, feeding a grid with only positional cells. **The
+seventeen-argument signature is the absence of a type** — not carelessness —
+which is exactly what a C++20 replacement is for.
+
+### Both forms, and why that was not a trade-off
+
+I had posed it as a blocking question: compatibility *or* usability. Keep the
+original argument lists and existing workbooks keep working, or replace them
+and every sheet breaks.
+
+It is a false dichotomy. An XLL registers a *table*, so it registers both:
+
+    CdsPrice     16 args   Today · CashSettle · StepIn · Start · End · Coupon ·
+                           PayAcc · Interval · Stub · DCC · BadDay · Holidays ·
+                           Discount · Spread · Recovery · Clean
+    CDS.Price     5 args   Valuation · Trade · Conventions · Market · Clean
+
+And the conventions block is cells a reader can see:
+
+    Coupon Interval    3M
+    Stub Type          f/s
+    Payment DCC        ACT/360
+
+### The design decision that made agreement structural
+
+**Both forms read into the same four structs and then run one code path.** The
+sixteen-argument form fills them from positional cells; the grouped form from
+labelled ranges. After the read there is only one implementation.
+
+That is why "the two forms agree" is not something a test has to keep
+catching — it is true by construction, and the test that compares them
+bitwise is checking the readers, not the arithmetic.
+
+### What the wide scope forced that a narrow one would not have
+
+Narrowed to one function I would only have had to classify its failures.
+Across all sixteen, every refusal has to name its own field — because a user
+staring at seventeen cells needs to know *which* one. So every message carries
+the field and the value: `Payment DCC "ACT/999"`, `Types row 2: "X"`,
+`Include Flags has 1 entries and End Dates has 2`.
+
+And one design choice I would not have thought of without the shape of the
+data: **`ParSpreads` does not lose a whole column to one bad maturity.** A
+failing row carries its own message and the rest still price. Thirteen
+maturities where one is wrong should not become one error.
+
+### Two oracles rather than smoke tests
+
+`UpfrontFlat` and `ParSpreadFlat` are **inverses**: convert a quoted spread to
+an upfront charge, convert it back, and the spread must return. Four quotes, to
+the solver's stopping tolerance. Neither direction needs a recorded number to
+be checked.
+
+And `ParSpreads` at the curve's own benchmark returns its quote — the curve was
+bootstrapped from one benchmark at 100bp, so asking for the par spread at that
+maturity gives 100bp back to 1e-7. The bootstrap and the par-spread
+calculation are inverses, and that is the only input where it is checkable
+without a second implementation.
+
+### A trap that caught me twice
+
+`as_grid()` wraps *any* single value in a 1×1 range, by design — so
+`EXPECT_FALSE(got.as_grid().has_value())` passes for a failure *string*. It
+caught me on `Include Flags` and again on `DefaultAccrual`. The assertions now
+check the column count, and the comment names the trap so a third time is less
+likely.
+
+Sixteen functions registered, covering all twelve upstream exposed. The six
+error-log functions are gone, and a test asserts their absence: `Expected<T>`
+carries the reason to the cell that asked, so a process-wide log has nothing
+left to report.
+
+---
+
+## Decision 54 — Typechecking the code no compiler had seen
+
+`xl/sdk` and `xl/interface` sit behind a platform guard, so on macOS they
+compile to nothing. About 300 lines had been written and never seen by a
+compiler — and the honest description of the add-in was "written blind".
+
+The fix came from a question I had been answering badly. I kept saying the
+Excel SDK was something to supply on Windows. It was already on the machine,
+in a previous project, and I had read those very files to learn the API. The
+only action was `cp`.
+
+With the real `xlcall.h` present, the Windows-only code can be typechecked
+here — `tools/typecheck_xl.sh`, with a ten-typedef `<windows.h>` stand-in. It
+found four bugs, each of which would have failed a first Windows build:
+
+| bug | why it would have failed |
+|---|---|
+| `oper.hpp` included `xlcall.h` with no `<windows.h>` first | the SDK's own comment says to; every `XLOPER12` type comes from there |
+| `static_cast<LPXLOPER12>(GetTempMemory(...))` | it returns `LPSTR`; casting between unrelated pointer types is ill-formed |
+| `CallContext{registry()}` | needs two registries since calendars landed — uninitialised reference member |
+| **13 of 16 functions had no exported wrapper** | Excel would register them and find nothing |
+
+### The one the typechecker could not find
+
+`xlcall.h` says it directly, above the `XLOPER12` definition:
+
+> *Excel 12's fundamental data type: can hold data of any type.*
+> **Use "U" as the argument type in the REGISTER function.**
+
+We registered everything as `"Q"` — the pre-2007 `XLOPER` — while every
+function takes `LPXLOPER12`. Excel would have passed the wrong struct type to
+all sixteen.
+
+A type code is a **runtime string**. No compiler can see the mismatch and the
+typechecker could not either. I found it by reading the header. The regression
+test walks the table and asserts every code is `U`, because that is the only
+mechanism that can hold it.
+
+`cpp_fdm_world` has the same bug, which is worth saying: the architecture I
+borrowed was sound, and a detail inside it was not.
+
+### What the exercise is worth, and what it is not
+
+It catches wrong field names, wrong casts, missing declarations, arity
+mistakes. It cannot see the ABI's layout or the calling conventions — the shim
+defines `pascal` and `_cdecl` as nothing — and it certainly cannot see whether
+Excel accepts what we build.
+
+**Four of the six defects found in the add-in came from reading the SDK or
+typechecking, not from testing.** That is the ratio worth remembering for any
+layer a test suite cannot reach: the reading is not a substitute for the test,
+it is what you do when there is no test to be had.
+
+---
+
+## Decision 55 — The audit, and two hazards I had written off
+
+An audit of everything added since the XLL foundation. Four findings — and the
+first draft of this entry recorded two of them as acceptable. On a second look
+neither was.
+
+### Three implementations of one conversion
+
+`functions.cpp` had a bare `- 25569`. `arguments.cpp` and `calendars.cpp` each
+had their own `constexpr` — with **opposite sign conventions** — and each had
+its own whole-number check.
+
+One piece of knowledge in three places, in a project that has already produced
+three test bugs from confusing its three epochs: 1601 for upstream's TDate,
+1900 for Excel, 1970 for `Date`. The lesson is not "be careful with dates" but
+that **a magic number appearing twice is a bug with a delay on it.**
+
+### Nothing stopped an exception reaching Excel
+
+`run()` reserves a vector on every call. Every dispatcher builds `std::string`
+messages. `parse_holiday_file` reads whole files into memory. Any of those can
+throw `bad_alloc`, and **an exception crossing out of an XLL is undefined
+behaviour** — Excel is a C host with no handler. A low-memory Excel would have
+taken the process down instead of showing a cell error.
+
+Now 22 `noexcept` markers and a catch-all, nested because `temp_string`
+allocates too and so the handler itself can throw.
+
+### The two I had excused
+
+**"The registries are not thread-safe, and that is sound because every
+function registers with `"1"`."** True — and one character from false.
+Appending `"$"` to a type-code string marks a function thread-safe and lets
+Excel recalculate it on worker threads. A comment explaining why something
+does not need to be true is a worse artefact than the mutex it was avoiding.
+
+**"`resolve()` copies the whole curve; fix with `shared_ptr` if a profile
+demands it."** My own sentence explaining why a reference would not work said
+it "would dangle across a `store` that rehashes the map" — and Excel chooses
+recalculation order, so one cell holding a resolved curve while another
+rebuilds that name is ordinary. **It was a correctness bug wearing a
+performance bug's clothes.** I had written the evidence down and drawn the
+wrong conclusion from it.
+
+Both fixed. There is a test that resolves a curve, overwrites the name twice,
+clears the entire registry, and reads the held value correctly.
+
+### The positive control that makes the race test mean something
+
+    data races reported WITHOUT the mutex: 2
+    data races reported WITH it:           0
+
+I removed the locks and reran under ThreadSanitizer before trusting that it
+passed. A concurrency test that cannot fail is decoration.
+
+### Where the milestone leaves the project
+
+| | |
+|---|---|
+| C library, in-scope functions | **163/163** + the holiday reader |
+| upstream XLL functions covered | **12 of 12** |
+| functions registered | 16 |
+| defects catalogued | **41** — 39 reproduced, 2 corrected |
+| tests, with the oracle | **863** |
+| tests, without it | 540 |
+| coverage, library | 85.8% lines, 81.3% branches |
+| coverage, `xl/core` | 91.0% lines, 86.9% branches |
+| `xl/` implementation | 3,232 lines |
+| `xl/` tests | 2,270 lines |
+| verify gates | 12 |
+| ratified specs | 4 |
+
+The upstream XLL was 4,770 lines serving eighteen functions, six of which
+existed to manage an error log. Ours is 3,232 serving sixteen, with two
+signature forms for every priced function and no log at all.
+
+**And it has never run in Excel.** That is the whole of what remains: the SDK
+is a `cp`, the first MSVC build will want debugging, and a workbook that builds
+its own curves is committed and waiting. `specs/reasoning/C8.md` says NOT YET
+RUN and will keep saying so until someone watches Excel load it.
+
+The honest summary of this milestone is **code-complete and product-unproven**,
+and the two halves of that sentence were earned differently: the library half
+by 863 tests against an oracle, and the add-in half by reading a header
+carefully in the absence of anything better.
