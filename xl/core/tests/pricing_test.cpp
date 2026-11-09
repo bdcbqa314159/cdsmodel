@@ -14,6 +14,7 @@
 
 #include <cmath>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -378,6 +379,24 @@ TEST(Pricing, TheRemainingCellsOfParSpreadsAndTheGridFunctionsAreNamed) {
 }
 
 // --------------------------------------------------------- the whole surface
+
+TEST(Pricing, EveryTypeCodeIsUNotQ) {
+  // `xlcall.h`, directly above the XLOPER12 definition: "Use \"U\" as the
+  // argument type in the REGISTER function." `Q` is the pre-2007 XLOPER, and
+  // registering it against a function taking LPXLOPER12 hands Excel the wrong
+  // struct for every argument.
+  //
+  // This is a string, so no compiler can catch it and the typechecker could
+  // not either -- it was found by reading the SDK header. This test is what
+  // stops it coming back.
+  for (const cdsmodel::xl::FunctionSpec &f : cdsmodel::xl::all_functions()) {
+    EXPECT_EQ(f.type_codes.find('Q'), std::string_view::npos)
+        << f.name << " registers type code Q (XLOPER); XLOPER12 needs U";
+    for (const char c : f.type_codes) {
+      EXPECT_EQ(c, 'U') << f.name << " has an unexpected type code '" << c << "'";
+    }
+  }
+}
 
 TEST(Pricing, EveryFunctionUpstreamExposedIsNowRegistered) {
   // Upstream's XLL registered 18 functions. Six managed a global error log and

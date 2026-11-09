@@ -1098,63 +1098,63 @@ constexpr std::array<ParamSpec, 2> kDiscountFactorParams{
 constexpr std::array<ParamSpec, 1> kDatesAndRatesParams{{{"Curve", "A curve handle"}}};
 
 constexpr std::array<FunctionSpec, 16> kFunctions{
-    {{"CdsPrice", "QQQQQQQQQQQQQQQQQ", kCdsPriceLegacyParams,
+    {{"CdsPrice", "UUUUUUUUUUUUUUUUU", kCdsPriceLegacyParams,
       "Prices a CDS. The original 16-argument form, kept so existing "
       "workbooks keep working; CDS.Price is the same calculation with the "
       "arguments grouped.",
       kCategory, &dispatch_cds_price_legacy},
-     {"CDS.Price", "QQQQQQ", kCdsPriceGroupedParams,
+     {"CDS.Price", "UUUUUU", kCdsPriceGroupedParams,
       "Prices a CDS from four labelled ranges. Identical to CdsPrice, with "
       "the six convention values written once instead of per formula.",
       kCategory, &dispatch_cds_price_grouped},
-     {"LoadHolidays", "QQQ", kLoadHolidaysParams,
+     {"LoadHolidays", "UUU", kLoadHolidaysParams,
       "Reads a holiday file and returns a handle. Upstream's signature, "
       "unchanged.",
       kCategory, &dispatch_load_holidays},
-     {"CDS.Calendar", "QQQQ", kCalendarRangeParams,
+     {"CDS.Calendar", "UUUU", kCalendarRangeParams,
       "Builds a calendar from a range of dates in the sheet. No file, no "
       "path, and the holidays are visible where they are used.",
       kCategory, &dispatch_calendar_from_range},
-     {"CDS.CalendarFromFile", "QQQ", kLoadHolidaysParams,
+     {"CDS.CalendarFromFile", "UUU", kLoadHolidaysParams,
       "Reads a holiday file and returns a handle. Same as LoadHolidays.", kCategory,
       &dispatch_calendar_from_file},
-     {"CDS.CalendarDates", "QQ", kCalendarDatesParams,
+     {"CDS.CalendarDates", "UU", kCalendarDatesParams,
       "The dates in a calendar, as a column. Use it to pull a holiday file "
       "into a sheet once and drop the file dependency.",
       kCategory, &dispatch_calendar_dates},
-     {"IRZeroCurveMake", "QQQQQQQ", kIRZeroCurveMakeParams,
+     {"IRZeroCurveMake", "UUUUUUU", kIRZeroCurveMakeParams,
       "Builds an interest-rate curve from dates and rates stated directly, "
       "and returns a handle.",
       kCategory, &dispatch_ir_zero_curve_make},
-     {"IRZeroCurveBuild", "QQQQQQQQQQQQQ", kIRZeroCurveBuildParams,
+     {"IRZeroCurveBuild", "UUUUUUUUUUUUU", kIRZeroCurveBuildParams,
       "Bootstraps an interest-rate curve from money-market and swap quotes, "
       "and returns a handle.",
       kCategory, &dispatch_ir_zero_curve_build},
-     {"DiscountFactor", "QQQ", kDiscountFactorParams, "The discount factor from a curve to a date.",
+     {"DiscountFactor", "UUU", kDiscountFactorParams, "The discount factor from a curve to a date.",
       kCategory, &dispatch_discount_factor},
-     {"CleanSpreadCurveBuild", "QQQQQQQQQQQQQQQQQ", kCleanSpreadCurveBuildParams,
+     {"CleanSpreadCurveBuild", "UUUUUUUUUUUUUUUUU", kCleanSpreadCurveBuildParams,
       "Bootstraps a clean spread (credit) curve from benchmark CDS quotes, "
       "and returns a handle.",
       kCategory, &dispatch_clean_spread_curve_build},
-     {"ParSpreads", "QQQQQQQQQQQQQQ", kParSpreadsParams,
+     {"ParSpreads", "UUUUUUUUUUUUUU", kParSpreadsParams,
       "The par spread of a CDS at each of several maturities, as a column.", kCategory,
       &dispatch_par_spreads},
-     {"UpfrontFlat", "QQQQQQQQQQQQQQQQQQ", kUpfrontFlatParams,
+     {"UpfrontFlat", "UUUUUUUUUUUUUUUUUU", kUpfrontFlatParams,
       "The upfront charge implied by a quoted par spread, through a flat "
       "credit curve.",
       kCategory, &dispatch_upfront_flat},
-     {"ParSpreadFlat", "QQQQQQQQQQQQQQQQQQ", kParSpreadFlatParams,
+     {"ParSpreadFlat", "UUUUUUUUUUUUUUUUUU", kParSpreadFlatParams,
       "The flat par spread implied by an upfront charge. The inverse of "
       "UpfrontFlat.",
       kCategory, &dispatch_par_spread_flat},
-     {"DefaultAccrual", "QQQQQQQQQQQQ", kDefaultAccrualParams,
+     {"DefaultAccrual", "UUUUUUUUUUUU", kDefaultAccrualParams,
       "Accrued interest owed on a defaulted CDS: the day count and the "
       "amount, as two columns.",
       kCategory, &dispatch_default_accrual},
-     {"FeeLegFlows", "QQQQQQQQQQ", kFeeLegFlowsParams,
+     {"FeeLegFlows", "UUUUUUUUUU", kFeeLegFlowsParams,
       "The fee leg's cash flows: pay date and amount, one row each.", kCategory,
       &dispatch_fee_leg_flows},
-     {"DatesAndRates", "QQ", kDatesAndRatesParams,
+     {"DatesAndRates", "UU", kDatesAndRatesParams,
       "A curve's points, as two columns: dates then rates.", kCategory,
       &dispatch_dates_and_rates}}};
 

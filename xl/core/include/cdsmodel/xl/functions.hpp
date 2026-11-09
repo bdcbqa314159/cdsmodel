@@ -49,8 +49,17 @@ struct FunctionSpec {
   /// The name as it appears in a cell.
   std::string_view name;
   /// Excel's type-code string: one per return plus one per argument.
-  /// `Q` is an `XLOPER12` in and out, which is what every function here uses
-  /// so that an error can come back as text in the cell rather than `#VALUE!`.
+  ///
+  /// **`U`, not `Q`.** `xlcall.h` says so directly above the `XLOPER12`
+  /// definition -- *"Use "U" as the argument type in the REGISTER
+  /// function"* -- because `Q` is the pre-2007 `XLOPER`. Registering `Q`
+  /// against a function taking `LPXLOPER12` hands it the wrong struct for
+  /// every argument. Found by reading the header, not by the typechecker: a
+  /// type code is a runtime string, so no compiler can see the mismatch.
+  /// `cpp_fdm_world` has the same bug.
+  ///
+  /// `U` is used throughout so an error can come back as text in the cell
+  /// rather than `#VALUE!`.
   std::string_view type_codes;
   std::span<const ParamSpec> params;
   std::string_view help;

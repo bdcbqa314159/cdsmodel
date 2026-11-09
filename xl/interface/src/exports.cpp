@@ -240,7 +240,7 @@ __declspec(dllexport) short xlAutoOpen(void) {
   std::array<LPXLOPER12, 11> version_argv{
       &dll_name,
       cdsmodel::xl::temp_string("CdsModelVersion"),
-      cdsmodel::xl::temp_string("Q"),
+      cdsmodel::xl::temp_string("U"),
       cdsmodel::xl::temp_string("CdsModelVersion"),
       cdsmodel::xl::temp_string(""),
       cdsmodel::xl::temp_string("1"),
