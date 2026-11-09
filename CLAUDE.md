@@ -113,32 +113,72 @@ precisely because that is where the testable logic must live.
 
 ### Getting the SDK
 
-The four files already exist on this machine, in
-`~/work/throwAwayAfterUse/cpp_fdm_world/libraries/excel_sdk_api/` -- that copy
-is the modern SDK (15 `XLOPER12`-era matches, no 16-bit `far`/`pascal`
-leftovers). Copying them into `xlsdk/` is the whole setup; there is nothing to
-download.
+The SDK is Microsoft's and `framework.h` carries *"Copyright (c) 1997 - 2010
+Microsoft Corporation. All rights reserved."*, so it is gitignored and never
+committed -- this repo is public. Each machine supplies its own copy;
+`python verify.py sdk-absent` enforces that nothing leaks in.
 
-The SDK is **Microsoft's**, so it is gitignored and never committed -- the same
-rule as the ISDA oracle, for the same reason, and this repo is public.
+**The layout does not matter.** CMake searches `CDSMODEL_XLSDK_DIR`
+recursively for four files by name, trying lower case then upper case, so the
+extracted bundle works as-is. All of these are equivalent:
 
-1. Download the **Excel 2013 XLL SDK** from Microsoft.
-2. Put it in `xlsdk/`, or point `CDSMODEL_XLSDK_DIR` anywhere else.
-3. Four files are needed, and CMake searches for them rather than assuming a
-   layout: `xlcall.h`, `xlcall.cpp`, `framework.h`, `framework.c`.
+    xlsdk/                              xlsdk/
+      xlcall.h                            Excel2013XLLSDK/
+      xlcall.cpp                            INCLUDE/
+      framework.h                             xlcall.h
+      framework.c                             framework.h
+                                            SRC/
+                                              xlcall.cpp
+                                              framework.c
+                                            LIB/      <- ignored
+                                            SAMPLES/  <- ignored
 
-There is **no import library**: `xlcall.cpp` resolves the callback with
-`GetProcAddress(hmodule, "MdCallBack12")` from the running Excel process, so
-bitness is the compiler's decision and cannot be mismatched. Build **x64** --
-64-bit Excel cannot load a 32-bit add-in, which is why upstream's `win32`-only
-XLL is unusable rather than merely old.
+Only these four are read. Everything else in the bundle -- `LIB/`,
+`SAMPLES/`, the HTML docs -- is unused: there is no import library to link,
+because `xlcall.cpp` resolves `MdCallBack12` from the running Excel process.
 
-Configure reports what it found, or names each missing file:
+    xlsdk/                     the default
+    CDSMODEL_XLSDK_DIR=...     or point it anywhere, e.g. C:/sdk/Excel2013XLLSDK
+
+Configure prints what it found, or names each missing file:
 
     -- cdsmodel: Excel XLL SDK found
+    --   .../INCLUDE/xlcall.h
+    --   .../SRC/xlcall.cpp
+    --   .../INCLUDE/framework.h
+    --   .../SRC/framework.c
     -- cdsmodel: building cdsmodel.xll
 
-→ enforced by `python verify.py sdk-absent`.
+### What this repo builds, and where
+
+Four targets, in dependency order. Nothing below depends on anything above it.
+
+    include/cdsmodel/        cdsmodel              all platforms
+      src/                                         the ported library, 163 functions
+
+    xl/core/                 cdsmodel_xl_core      all platforms
+      include/cdsmodel/xl/                         XlValue, the registration
+      src/                                         table, dispatch, readers,
+      tests/                                       the handle registries
+
+    xl/sdk/                  cdsmodel_xl_sdk       Windows + SDK
+      include/cdsmodel/xl/oper.hpp                 XLOPER12 <-> XlValue, and
+      src/oper.cpp                                 the SDK's own four files
+                                                   compiled in
+
+    xl/interface/            cdsmodel_xll          Windows + SDK
+      src/exports.cpp                              the five entry points plus
+                                                   one wrapper per function;
+                                                   SUFFIX ".xll"
+
+Supporting directories:
+
+    xlsdk/                   the Excel SDK -- GITIGNORED, see above
+    tools/winshim/           a ten-typedef <windows.h> stand-in, for
+                             tools/typecheck_xl.sh only. Not a compatibility
+                             layer and nothing links it
+    tests/xll/smoke.xlsx     the C8 workbook, self-contained
+    specs/reasoning/C8.md    where the Excel result gets recorded
 
 ### READ THIS BEFORE THE FIRST BUILD ON WINDOWS
 

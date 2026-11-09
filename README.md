@@ -149,9 +149,53 @@ src/                       port implementation
 tests/                     GoogleTest suite (tier 1 always, tier 2 with oracle)
 tests/golden/              recorded reference vectors -- generated, committed
 tools/                     generators that produce tests/golden/ from the oracle
+specs/                     the contracts this was built against
 docs/port-notes.md         migration analysis and plan
+
+xl/core/                   Excel logic -- all platforms, fully tested
+xl/sdk/                    XLOPER12 <-> XlValue -- Windows + SDK only
+xl/interface/              cdsmodel.xll itself -- Windows + SDK only
+tests/xll/smoke.xlsx       the Excel smoke workbook, self-contained
+
 isda_cds_model_c_v1.8.3/   your own upstream copy -- GITIGNORED, never committed
+xlsdk/                     your own Excel XLL SDK copy -- GITIGNORED, same reason
 ```
+
+The `xl/` split exists so that everything deciding anything is testable off
+Windows. `xl/core` holds the marshalling rules, the registration table, the
+dispatchers and the handle registries, and CI runs its tests on three
+platforms. Only the thin `XLOPER12` adapter and the five Excel entry points
+need Windows, which is also the only code CI cannot compile -- so
+`tools/typecheck_xl.sh` checks it against the real `xlcall.h` using a
+ten-typedef shim.
+
+## Building the Excel add-in
+
+Needs Windows, MSVC, and the Microsoft Excel XLL SDK. Four files are read --
+`xlcall.h`, `xlcall.cpp`, `framework.h`, `framework.c` -- and **the layout
+does not matter**: CMake searches recursively, so the extracted SDK bundle
+works unchanged.
+
+```
+xlsdk/Excel2013XLLSDK/INCLUDE/xlcall.h     <- or just the four files flat
+xlsdk/Excel2013XLLSDK/SRC/xlcall.cpp          in xlsdk/; both work
+...
+```
+
+There is no import library to link: `xlcall.cpp` resolves `MdCallBack12` from
+the running Excel process, so the bundle's `LIB/` and `SAMPLES/` are unused
+and bitness is the compiler's decision.
+
+```
+cmake --preset release
+cmake --build --preset release --target cdsmodel_xll
+python tools/gen_xll_workbook.py        # writes tests/xll/smoke.xlsx
+```
+
+Then load `cdsmodel.xll` in 64-bit Excel and open the workbook: it builds its
+own curves and reports PASS/FAIL per row against values the C++ library
+computed. See `CLAUDE.md` for what to expect on a first build, and
+`specs/reasoning/C8.md` for where to record the result.
 
 ## Licence
 

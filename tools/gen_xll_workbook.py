@@ -182,19 +182,63 @@ def main() -> int:
     wb = Workbook()
     ws = wb.active
     ws.title = "Smoke"
-
     bold = Font(bold=True)
-    ws["A1"] = "cdsmodel.xll smoke test"
-    ws["A1"].font = Font(bold=True, size=14)
-    ws["A2"] = (
-        "Load cdsmodel.xll, then let this recalculate. The Verdict column "
-        "compares Excel's answer against the C++ library's. Report what it says."
-    )
-    ws["A2"].alignment = Alignment(wrap_text=True)
 
-    # --- the conventions block: this IS the feature, so it is a real range ---
-    ws["A4"] = "CONVENTIONS"
-    ws["A4"].font = bold
+    def put(cell: str, value, *, strong: bool = False, wrap: bool = False):
+        ws[cell] = value
+        if strong:
+            ws[cell].font = bold
+        if wrap:
+            ws[cell].alignment = Alignment(wrap_text=True)
+
+    put("A1", "cdsmodel.xll smoke test", strong=True)
+    ws["A1"].font = Font(bold=True, size=14)
+    put(
+        "A2",
+        "Load cdsmodel.xll, then let this recalculate. The workbook builds its "
+        "own curves, so the Verdict column tests numbers and not just whether "
+        "the add-in loaded. Report what Verdict says, and B6/B7 if they hold "
+        "text instead of a handle.",
+        wrap=True,
+    )
+
+    today = serial(dt.date(2006, 10, 9))
+
+    # ---- the curves, built BY the add-in from cells in this sheet ----------
+    #
+    # These were two FILL IN placeholders until the curve functions existed.
+    # A workbook that builds its own inputs is what makes C8 a real check:
+    # if IRZeroCurveMake returns text, that text is the diagnostic.
+    put("A4", "CURVES", strong=True)
+    put("A5", "Today")
+    put("B5", today)
+    put("A6", "Discount")
+    put("B6", f'=IRZeroCurveMake($B$5,$A$12:$A$13,$B$12:$B$13,5000,"ACT/365F","USD")')
+    put("A7", "Credit")
+    put(
+        "B7",
+        "=CleanSpreadCurveBuild($B$5,$B$5,$B$5,$B$5,$D$12:$D$12,$E$12:$E$12,,"
+        'TRUE,"3M","f/s","ACT/360","N","NONE",$B$6,$B$8,"ACME")',
+    )
+    put("A8", "Recovery")
+    put("B8", 0.4)
+    put("A9", "Version")
+    put("B9", "=CdsModelVersion()")
+
+    # ---- curve inputs ------------------------------------------------------
+    put("A11", "Discount dates", strong=True)
+    put("B11", "Zero rates", strong=True)
+    put("D11", "Benchmark maturity", strong=True)
+    put("E11", "Benchmark spread", strong=True)
+    put("A12", serial(dt.date(2007, 1, 1)))
+    put("B12", 0.04)
+    put("A13", serial(dt.date(2030, 1, 1)))
+    put("B13", 0.04)
+    put("D12", serial(dt.date(2011, 10, 9)))
+    put("E12", 0.01)
+
+    # ---- the conventions block, which is the whole point of CDS.Price -----
+    put("A15", "CONVENTIONS", strong=True)
     conventions = [
         ("Pay Accrual On Default", True),
         ("Coupon Interval", "3M"),
@@ -203,42 +247,32 @@ def main() -> int:
         ("Bad Day Convention", "N"),
         ("Holidays", "NONE"),
     ]
-    for i, (label, value) in enumerate(conventions, start=5):
+    for i, (label, value) in enumerate(conventions, start=16):
         ws.cell(row=i, column=1, value=label)
         ws.cell(row=i, column=2, value=value)
-    conv_range = f"$A$5:$B${4 + len(conventions)}"
+    conv_range = f"$A$16:$B${15 + len(conventions)}"
 
-    ws["A12"] = "MARKET"
-    ws["A12"].font = bold
-    # The curves are built by the add-in and handed back as handles, so these
-    # two cells are formulas, not constants.
-    ws["A13"] = "Discount Curve"
-    ws["B13"] = "FILL IN: a handle from IRZeroCurveBuild"
-    ws["A14"] = "Spread Curve"
-    ws["B14"] = "FILL IN: a handle from CleanSpreadCurveBuild"
-    ws["A15"] = "Recovery Rate"
-    ws["B15"] = 0.4
-    market_range = "$A$13:$B$15"
+    put("D15", "MARKET", strong=True)
+    market = [("Discount Curve", "=$B$6"), ("Spread Curve", "=$B$7"),
+              ("Recovery Rate", "=$B$8")]
+    for i, (label, value) in enumerate(market, start=16):
+        ws.cell(row=i, column=4, value=label)
+        ws.cell(row=i, column=5, value=value)
+    market_range = "$D$16:$E$18"
 
-    ws["A17"] = (
-        "NOTE: the two curve handles above must come from the curve-building "
-        "functions, which arrive with artifact #4. Until then the rows below "
-        "will report the handle error, which is itself the correct outcome to "
-        "record -- it proves the add-in loaded, registered, dispatched, and "
-        "returned a readable message rather than #VALUE!."
-    )
-    ws["A17"].alignment = Alignment(wrap_text=True)
-
-    # --- one row per case ---
-    header_row = 19
+    # ---- one row per case --------------------------------------------------
+    header = 24
     headers = ["Case", "Today", "Start", "End", "Coupon", "Clean",
-               "CdsPrice (16 args)", "CDS.Price (5 args)", "Expected (C++)", "Verdict"]
+               "CdsPrice (16 args)", "CDS.Price (5 args)", "Expected (C++)",
+               "Verdict", "Forms agree?"]
     for col, text in enumerate(headers, start=1):
-        cell = ws.cell(row=header_row, column=col, value=text)
-        cell.font = bold
+        ws.cell(row=header, column=col, value=text).font = bold
 
+    # Each case needs its own two-row valuation and trade blocks for the
+    # grouped form. They sit to the right, on the same row as the case, so a
+    # reader can follow one trade across.
     for i, (case, expected) in enumerate(zip(CASES, values)):
-        r = header_row + 1 + i
+        r = header + 1 + i
         ws.cell(row=r, column=1, value=case["label"])
         ws.cell(row=r, column=2, value=serial(case["today"]))
         ws.cell(row=r, column=3, value=serial(case["start"]))
@@ -246,57 +280,69 @@ def main() -> int:
         ws.cell(row=r, column=5, value=case["coupon"])
         ws.cell(row=r, column=6, value=case["clean"])
 
-        # The 16-argument form, cell by cell, exactly as a 2009 sheet wrote it.
-        legacy = (
-            f"=CdsPrice(B{r},B{r},B{r},C{r},D{r},E{r},"
-            f"$B$5,$B$6,$B$7,$B$8,$B$9,$B$10,$B$13,$B$14,$B$15,F{r})"
+        # The original 16-argument form, cell by cell, exactly as a 2009 sheet
+        # wrote it.
+        ws.cell(
+            row=r, column=7,
+            value=(f"=CdsPrice(B{r},B{r},B{r},C{r},D{r},E{r},"
+                   f"$B$16,$B$17,$B$18,$B$19,$B$20,$B$21,$B$6,$B$7,$B$8,F{r})"),
         )
-        ws.cell(row=r, column=7, value=legacy)
 
-        # The grouped form. The valuation and trade blocks are built inline
-        # from this row's cells, so the sheet stays one row per trade.
-        grouped = f"=CDS.Price(valuation_{r},trade_{r},{conv_range},{market_range},F{r})"
-        # Named inline ranges are not worth the complexity for three rows, so
-        # the grouped call reads the same per-row blocks written out below.
-        ws.cell(row=r, column=8, value=grouped)
+        # The grouped form. Its valuation and trade blocks are written below
+        # the cases, three rows each, labelled.
+        vblock = header + 2 + len(CASES) + i * 7
+        ws.cell(row=r, column=8,
+                value=(f"=CDS.Price($L${vblock}:$M${vblock + 2},"
+                       f"$L${vblock + 3}:$M${vblock + 5},{conv_range},{market_range},F{r})"))
 
-        ws.cell(row=r, column=9, value=float(expected) if "ERROR" not in expected else expected)
-        verdict = (
-            f'=IF(ISNUMBER(G{r}),IF(ABS(G{r}-I{r})<0.000001,"PASS",'
-            f'"FAIL by "&TEXT(G{r}-I{r},"0.00E+00")),"NOT A NUMBER: "&G{r})'
+        ws.cell(row=r, column=9,
+                value=float(expected) if "ERROR" not in expected else expected)
+        ws.cell(
+            row=r, column=10,
+            value=(f'=IF(ISNUMBER(G{r}),IF(ABS(G{r}-I{r})<0.000001,"PASS",'
+                   f'"FAIL by "&TEXT(G{r}-I{r},"0.00E+00")),"NOT A NUMBER: "&G{r})'),
         )
-        ws.cell(row=r, column=10, value=verdict)
+        # The 16-argument and 5-argument forms read into the same four structs
+        # and then run one code path, so they cannot disagree -- a test proves
+        # it bitwise off Excel. This column proves it IN Excel, which also
+        # catches a marshalling difference between the two argument shapes.
+        ws.cell(
+            row=r, column=11,
+            value=(f'=IF(AND(ISNUMBER(G{r}),ISNUMBER(H{r})),'
+                   f'IF(G{r}=H{r},"SAME","DIFFER by "&TEXT(G{r}-H{r},"0.00E+00")),'
+                   f'"NOT BOTH NUMBERS: "&G{r}&" | "&H{r})'),
+        )
 
-    # Per-row valuation and trade blocks for the grouped form.
-    block_start = header_row + 2 + len(CASES)
-    ws.cell(row=block_start, column=1, value="PER-ROW BLOCKS for CDS.Price").font = bold
-    row = block_start + 1
-    for i, case in enumerate(CASES):
-        case_row = header_row + 1 + i
-        ws.cell(row=row, column=1, value=f"valuation_{case_row}")
+        # valuation: Today, Cash Settle, Step In -- all this row's Today
         for j, label in enumerate(["Today", "Cash Settle Date", "Step In Date"]):
-            ws.cell(row=row + j, column=2, value=label)
-            ws.cell(row=row + j, column=3, value=f"=B{case_row}")
-        ws.cell(row=row, column=5, value=f"trade_{case_row}")
-        for j, (label, col) in enumerate(
-            [("Start Date", "C"), ("End Date", "D"), ("Coupon Rate", "E")]
-        ):
-            ws.cell(row=row + j, column=6, value=label)
-            ws.cell(row=row + j, column=7, value=f"={col}{case_row}")
-        row += 4
+            ws.cell(row=vblock + j, column=12, value=label)
+            ws.cell(row=vblock + j, column=13, value=f"=B{r}")
+        # trade: Start, End, Coupon
+        for j, (label, col) in enumerate([("Start Date", "C"), ("End Date", "D"),
+                                          ("Coupon Rate", "E")]):
+            ws.cell(row=vblock + 3 + j, column=12, value=label)
+            ws.cell(row=vblock + 3 + j, column=13, value=f"={col}{r}")
 
-    ws.column_dimensions["A"].width = 26
-    ws.column_dimensions["B"].width = 18
-    for col in "GHIJ":
+    blocks_start = header + 2 + len(CASES)
+    ws.cell(row=blocks_start - 1, column=12,
+            value="PER-ROW BLOCKS for CDS.Price (one valuation + one trade per case)").font = bold
+
+    ws.column_dimensions["A"].width = 24
+    ws.column_dimensions["B"].width = 16
+    ws.column_dimensions["D"].width = 20
+    ws.column_dimensions["E"].width = 16
+    ws.column_dimensions["L"].width = 20
+    for col in "GHIJK":
         ws.column_dimensions[col].width = 22
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     wb.save(OUT)
     print(f"wrote {OUT.relative_to(ROOT)}")
-    print(f"  {len(CASES)} cases, expected values computed from the library:")
+    print(f"  {len(CASES)} cases; the workbook builds its own curves")
+    print("  expected values, computed from the library:")
     for case, v in zip(CASES, values):
         print(f"    {case['label']:<24} {v}")
-    print("\nNext: build cdsmodel.xll on Windows, load it, open this workbook,")
+    print("\nOn Windows: build cdsmodel.xll, load it, open this workbook,")
     print("and record the Verdict column in specs/reasoning/C8.md")
     return 0
 
