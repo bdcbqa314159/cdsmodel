@@ -151,14 +151,19 @@ def expected_values() -> list[str]:
     compiler = shutil.which("c++") or shutil.which("cl")
     if compiler is None:
         sys.exit("no C++ compiler on PATH; cannot compute expected values")
+    is_msvc = Path(compiler).stem.lower() == "cl"
     with tempfile.TemporaryDirectory() as tmp:
         src = Path(tmp) / "expected.cpp"
         src.write_text(EXPECTED_SOURCE, encoding="utf-8")
-        exe = Path(tmp) / "expected"
-        build = subprocess.run(
-            [compiler, "-std=c++20", f"-I{ROOT / 'include'}", str(src), "-o", str(exe)],
-            capture_output=True, text=True,
-        )
+        exe = Path(tmp) / ("expected.exe" if is_msvc else "expected")
+        if is_msvc:
+            # cl takes /-flags and emits the .obj into cwd, so build inside tmp.
+            cmd = [compiler, "/nologo", "/std:c++20", "/EHsc",
+                   f"/I{ROOT / 'include'}", str(src), f"/Fe:{exe}"]
+        else:
+            cmd = [compiler, "-std=c++20", f"-I{ROOT / 'include'}",
+                   str(src), "-o", str(exe)]
+        build = subprocess.run(cmd, capture_output=True, text=True, cwd=tmp)
         if build.returncode != 0:
             sys.exit("could not build the expected-value generator:\n" + build.stderr[-1500:])
         run = subprocess.run([str(exe)], capture_output=True, text=True)
