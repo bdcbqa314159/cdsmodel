@@ -120,6 +120,19 @@ Expected<bool> XlValue::as_bool() const {
   return fail(ErrorKind::bad_argument, "expected TRUE or FALSE, got " + describe());
 }
 
+Expected<Date> date_from_excel_serial(double serial, std::string_view what) {
+  if (serial != static_cast<double>(static_cast<long>(serial))) {
+    return fail(ErrorKind::bad_argument, std::string(what) +
+                                             ": a date must be a whole number of days, got " +
+                                             detail::num(serial));
+  }
+  return Date{} + std::chrono::days{static_cast<long>(serial) - kExcelEpochOffset};
+}
+
+double excel_serial_from_date(Date date) {
+  return static_cast<double>(date.time_since_epoch().count() + kExcelEpochOffset);
+}
+
 Expected<XlGrid> XlValue::as_grid() const {
   if (const auto *g = std::get_if<XlGrid>(&storage_)) {
     return *g;

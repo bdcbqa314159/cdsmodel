@@ -60,6 +60,10 @@ struct FunctionSpec {
   ///
   /// `U` is used throughout so an error can come back as text in the cell
   /// rather than `#VALUE!`.
+  ///
+  /// No code here ends with `"$"`. That suffix marks a function thread-safe
+  /// and lets Excel recalculate it on worker threads, which the handle
+  /// registries are not ready for -- see `Registry`.
   std::string_view type_codes;
   std::span<const ParamSpec> params;
   std::string_view help;
