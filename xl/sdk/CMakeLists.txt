@@ -8,8 +8,7 @@ project(cdsmodel_xl_sdk LANGUAGES C CXX)
 
 add_library(cdsmodel_xl_sdk STATIC
             src/oper.cpp
-            ${CDSMODEL_XLSDK_XLCALL_CPP}
-            ${CDSMODEL_XLSDK_FRAMEWORK_C})
+            ${CDSMODEL_XLSDK_SOURCES})
 add_library(cdsmodel::xl_sdk ALIAS cdsmodel_xl_sdk)
 
 target_include_directories(cdsmodel_xl_sdk PUBLIC
@@ -21,7 +20,7 @@ target_link_libraries(cdsmodel_xl_sdk PUBLIC cdsmodel_xl_core)
 # The SDK's own sources are not ours and are not held to our warning bar --
 # the same policy the ISDA oracle gets, for the same reason.
 set_source_files_properties(
-  ${CDSMODEL_XLSDK_XLCALL_CPP} ${CDSMODEL_XLSDK_FRAMEWORK_C}
+  ${CDSMODEL_XLSDK_SOURCES}
   PROPERTIES COMPILE_FLAGS "/W0")
 
 target_compile_options(cdsmodel_xl_sdk PRIVATE /W4)
