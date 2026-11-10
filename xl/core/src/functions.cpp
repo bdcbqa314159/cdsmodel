@@ -431,6 +431,151 @@ Expected<XlValue> dispatch_ir_zero_curve_make(std::span<const XlValue> args, Cal
   return XlValue{ctx.curves.store(*name, *curve)};
 }
 
+/// The money-market day count and the swap conventions, read from six cells --
+/// positional for IRZeroCurveBuild, labelled for CDS.IRZeroCurve. Both converge
+/// here, so neither parses a convention the other does not.
+struct SwapTerms {
+  DayCount mm_dcc = DayCount::Act360;
+  SwapConventions conventions;
+};
+
+[[nodiscard]] Expected<SwapTerms> read_swap_terms(const XlValue &mm, const XlValue &fixed_ivl,
+                                                  const XlValue &float_ivl,
+                                                  const XlValue &fixed_dcc_cell,
+                                                  const XlValue &float_dcc_cell,
+                                                  const XlValue &bdc_cell) {
+  const Expected<DayCount> mm_dcc = read_day_count(mm, "MMDCC");
+  if (!mm_dcc) {
+    return unexpected(mm_dcc.error());
+  }
+  SwapConventions conv;
+  const Expected<long> fixed_freq = read_frequency(fixed_ivl, "Fixed IVL");
+  if (!fixed_freq) {
+    return unexpected(fixed_freq.error());
+  }
+  conv.fixed_frequency = *fixed_freq;
+  const Expected<long> float_freq = read_frequency(float_ivl, "Float IVL");
+  if (!float_freq) {
+    return unexpected(float_freq.error());
+  }
+  conv.float_frequency = *float_freq;
+  const Expected<DayCount> fixed_dcc = read_day_count(fixed_dcc_cell, "Fixed DCC");
+  if (!fixed_dcc) {
+    return unexpected(fixed_dcc.error());
+  }
+  conv.fixed_day_count = *fixed_dcc;
+  const Expected<DayCount> float_dcc = read_day_count(float_dcc_cell, "Float DCC");
+  if (!float_dcc) {
+    return unexpected(float_dcc.error());
+  }
+  conv.float_day_count = *float_dcc;
+  const Expected<BadDayConv> bdc = read_bad_day(bdc_cell, "Swap BDC");
+  if (!bdc) {
+    return unexpected(bdc.error());
+  }
+  conv.bad_day = *bdc;
+  return SwapTerms{*mm_dcc, conv};
+}
+
+/// The money-market and swap quotes, from three parallel columns.
+[[nodiscard]] Expected<std::vector<InstrumentQuote>>
+build_instruments(const std::vector<std::string> &types, const std::vector<Date> &ends,
+                  const std::vector<double> &rates) {
+  if (types.size() != ends.size() || types.size() != rates.size()) {
+    return fail(ErrorKind::bad_argument,
+                "Types, End Dates and Rates must be the same length -- got " +
+                    detail::num(types.size()) + ", " + detail::num(ends.size()) + " and " +
+                    detail::num(rates.size()));
+  }
+  std::vector<InstrumentQuote> instruments;
+  instruments.reserve(types.size());
+  for (std::size_t i = 0; i < types.size(); ++i) {
+    const std::string &code = types[i];
+    if (code.size() != 1) {
+      return fail(ErrorKind::bad_argument, "Types row " + detail::num(i + 1) + ": \"" + code +
+                                               "\" -- expected M (money market) or S (swap)");
+    }
+    const Expected<InstrumentKind> kind = instrument_kind_from_code(code.front());
+    if (!kind) {
+      return fail(kind.error().kind, "Types row " + detail::num(i + 1) + ": \"" + code + "\" -- " +
+                                         kind.error().message);
+    }
+    instruments.push_back(InstrumentQuote{*kind, ends[i], rates[i]});
+  }
+  return instruments;
+}
+
+/// The grouped form's quotes: a table with columns Type, End Date and Rate, kept
+/// row-aligned so a wholly blank trailing row is skipped as one unit.
+[[nodiscard]] Expected<std::vector<InstrumentQuote>> read_instrument_table(const XlValue &block) {
+  static constexpr std::array<LabelSpec, 3> kColumns{
+      {{"Type", true}, {"End Date", true}, {"Rate", true}}};
+  const Expected<XlGrid> grid = block.as_grid();
+  if (!grid) {
+    return fail(ErrorKind::bad_argument,
+                "the instruments block: expected a range, got " + block.describe());
+  }
+  const Expected<LabelledTable> table = LabelledTable::read(*grid, kColumns);
+  if (!table) {
+    return fail(table.error().kind, "the instruments block: " + table.error().message);
+  }
+  const Expected<std::vector<XlValue>> type_cells = table->column("Type");
+  if (!type_cells) {
+    return unexpected(type_cells.error());
+  }
+  const Expected<std::vector<XlValue>> end_cells = table->column("End Date");
+  if (!end_cells) {
+    return unexpected(end_cells.error());
+  }
+  const Expected<std::vector<XlValue>> rate_cells = table->column("Rate");
+  if (!rate_cells) {
+    return unexpected(rate_cells.error());
+  }
+  std::vector<std::string> types;
+  std::vector<Date> ends;
+  std::vector<double> rates;
+  for (std::size_t i = 0; i < table->rows(); ++i) {
+    if ((*type_cells)[i].is_missing() && (*end_cells)[i].is_missing() &&
+        (*rate_cells)[i].is_missing()) {
+      continue;
+    }
+    const Expected<std::string> type = (*type_cells)[i].as_string();
+    if (!type) {
+      return fail(ErrorKind::bad_argument, "Type row " + detail::num(i + 1) +
+                                               ": expected text, got " + (*type_cells)[i].describe());
+    }
+    const Expected<Date> end = read_single_date((*end_cells)[i], "End Date");
+    if (!end) {
+      return unexpected(end.error());
+    }
+    const Expected<double> rate = (*rate_cells)[i].as_double();
+    if (!rate) {
+      return fail(ErrorKind::bad_argument, "Rate row " + detail::num(i + 1) +
+                                               ": expected a number, got " + (*rate_cells)[i].describe());
+    }
+    types.push_back(*type);
+    ends.push_back(*end);
+    rates.push_back(*rate);
+  }
+  if (types.empty()) {
+    return fail(ErrorKind::bad_argument, "the instruments block has no rows");
+  }
+  return build_instruments(types, ends, rates);
+}
+
+/// The shared tail of both IR curve forms: bootstrap and store.
+[[nodiscard]] Expected<XlValue>
+ir_zero_curve_from(Date value_date, std::span<const InstrumentQuote> instruments, DayCount mm_dcc,
+                   const SwapConventions &conventions, const Calendar &calendar,
+                   const std::string &name, CallContext &ctx) {
+  const Expected<ZeroCurve> curve =
+      build_ir_zero_curve(value_date, instruments, mm_dcc, conventions, calendar);
+  if (!curve) {
+    return unexpected(curve.error());
+  }
+  return XlValue{ctx.curves.store(name, *curve)};
+}
+
 /// `IRZeroCurveBuild(value, types, ends, rates, mmdcc, fixedIvl, floatIvl,
 ///                   fixedDcc, floatDcc, swapBdc, holidays, name)`
 /// -- bootstrapped from money-market and swap quotes.
@@ -455,61 +600,16 @@ Expected<XlValue> dispatch_ir_zero_curve_build(std::span<const XlValue> args, Ca
   if (!rates) {
     return unexpected(rates.error());
   }
-  if (types->size() != ends->size() || types->size() != rates->size()) {
-    return fail(ErrorKind::bad_argument,
-                "Types, End Dates and Rates must be the same length -- got " +
-                    detail::num(types->size()) + ", " + detail::num(ends->size()) + " and " +
-                    detail::num(rates->size()));
+  const Expected<std::vector<InstrumentQuote>> instruments =
+      build_instruments(*types, *ends, *rates);
+  if (!instruments) {
+    return unexpected(instruments.error());
   }
-
-  std::vector<InstrumentQuote> instruments;
-  instruments.reserve(types->size());
-  for (std::size_t i = 0; i < types->size(); ++i) {
-    const std::string &code = (*types)[i];
-    if (code.size() != 1) {
-      return fail(ErrorKind::bad_argument, "Types row " + detail::num(i + 1) + ": \"" + code +
-                                               "\" -- expected M (money market) or S (swap)");
-    }
-    const Expected<InstrumentKind> kind = instrument_kind_from_code(code.front());
-    if (!kind) {
-      return fail(kind.error().kind, "Types row " + detail::num(i + 1) + ": \"" + code + "\" -- " +
-                                         kind.error().message);
-    }
-    instruments.push_back(InstrumentQuote{*kind, (*ends)[i], (*rates)[i]});
+  const Expected<SwapTerms> swap =
+      read_swap_terms(args[4], args[5], args[6], args[7], args[8], args[9]);
+  if (!swap) {
+    return unexpected(swap.error());
   }
-
-  const Expected<DayCount> mm_dcc = read_day_count(args[4], "MMDCC");
-  if (!mm_dcc) {
-    return unexpected(mm_dcc.error());
-  }
-
-  SwapConventions conventions;
-  const Expected<long> fixed_freq = read_frequency(args[5], "Fixed IVL");
-  if (!fixed_freq) {
-    return unexpected(fixed_freq.error());
-  }
-  conventions.fixed_frequency = *fixed_freq;
-  const Expected<long> float_freq = read_frequency(args[6], "Float IVL");
-  if (!float_freq) {
-    return unexpected(float_freq.error());
-  }
-  conventions.float_frequency = *float_freq;
-  const Expected<DayCount> fixed_dcc = read_day_count(args[7], "Fixed DCC");
-  if (!fixed_dcc) {
-    return unexpected(fixed_dcc.error());
-  }
-  conventions.fixed_day_count = *fixed_dcc;
-  const Expected<DayCount> float_dcc = read_day_count(args[8], "Float DCC");
-  if (!float_dcc) {
-    return unexpected(float_dcc.error());
-  }
-  conventions.float_day_count = *float_dcc;
-  const Expected<BadDayConv> bdc = read_bad_day(args[9], "Swap BDC");
-  if (!bdc) {
-    return unexpected(bdc.error());
-  }
-  conventions.bad_day = *bdc;
-
   const Expected<Calendar> calendar = read_calendar_argument(args[10], ctx);
   if (!calendar) {
     return unexpected(calendar.error());
@@ -518,13 +618,53 @@ Expected<XlValue> dispatch_ir_zero_curve_build(std::span<const XlValue> args, Ca
   if (!name) {
     return unexpected(name.error());
   }
+  return ir_zero_curve_from(*value_date, *instruments, swap->mm_dcc, swap->conventions, *calendar,
+                            *name, ctx);
+}
 
-  const Expected<ZeroCurve> curve =
-      build_ir_zero_curve(*value_date, instruments, *mm_dcc, conventions, *calendar);
-  if (!curve) {
-    return unexpected(curve.error());
+/// `CDS.IRZeroCurve(valueDate, instruments, conventions, holidays, name)` -- the
+/// grouped form. The quotes become a Type/End Date/Rate table and the six swap
+/// conventions a labelled block; the value date, holidays and name stay loose.
+Expected<XlValue> dispatch_cds_ir_zero_curve_grouped(std::span<const XlValue> args,
+                                                     CallContext &ctx) {
+  if (args.size() != 5) {
+    return fail(ErrorKind::bad_argument,
+                "CDS.IRZeroCurve takes 5 arguments, got " + detail::num(args.size()));
   }
-  return XlValue{ctx.curves.store(*name, *curve)};
+  const Expected<Date> value_date = read_single_date(args[0], "Value Date");
+  if (!value_date) {
+    return unexpected(value_date.error());
+  }
+  const Expected<std::vector<InstrumentQuote>> instruments = read_instrument_table(args[1]);
+  if (!instruments) {
+    return unexpected(instruments.error());
+  }
+  static constexpr std::array<LabelSpec, 6> kSwap{{{"MM DCC", true},
+                                                   {"Fixed IVL", true},
+                                                   {"Float IVL", true},
+                                                   {"Fixed DCC", true},
+                                                   {"Float DCC", true},
+                                                   {"Swap BDC", true}}};
+  const Expected<std::array<XlValue, 6>> cells =
+      labelled_cells(args[2], kSwap, "the conventions block");
+  if (!cells) {
+    return unexpected(cells.error());
+  }
+  const Expected<SwapTerms> swap = read_swap_terms((*cells)[0], (*cells)[1], (*cells)[2],
+                                                   (*cells)[3], (*cells)[4], (*cells)[5]);
+  if (!swap) {
+    return unexpected(swap.error());
+  }
+  const Expected<Calendar> calendar = read_calendar_argument(args[3], ctx);
+  if (!calendar) {
+    return unexpected(calendar.error());
+  }
+  const Expected<std::string> name = read_name(args[4]);
+  if (!name) {
+    return unexpected(name.error());
+  }
+  return ir_zero_curve_from(*value_date, *instruments, swap->mm_dcc, swap->conventions, *calendar,
+                            *name, ctx);
 }
 
 /// `DiscountFactor(curve, date)` -- the only read-only curve function that
@@ -1437,6 +1577,14 @@ constexpr std::array<ParamSpec, 12> kIRZeroCurveBuildParams{
      {"Holidays", "A calendar handle, or NONE for weekends only"},
      {"Name", "Name to reference this curve by"}}};
 
+constexpr std::array<ParamSpec, 5> kCdsIrZeroCurveGroupedParams{
+    {{"Value Date", "Today; the curve is built forward from here"},
+     {"Instruments", "Table with columns Type (M or S), End Date and Rate"},
+     {"Conventions", "Two-column range: MM DCC, Fixed IVL, Float IVL, Fixed DCC, "
+                     "Float DCC, Swap BDC"},
+     {"Holidays", "A calendar handle, or NONE for weekends only"},
+     {"Name", "Name to reference this curve by"}}};
+
 constexpr std::array<ParamSpec, 16> kCleanSpreadCurveBuildParams{
     {{"Today", "Risk starts at the end of today"},
      {"Start Date", "When protection begins on the benchmarks"},
@@ -1588,7 +1736,7 @@ constexpr std::array<ParamSpec, 2> kDiscountFactorParams{
 
 constexpr std::array<ParamSpec, 1> kDatesAndRatesParams{{{"Curve", "A curve handle"}}};
 
-constexpr std::array<FunctionSpec, 22> kFunctions{
+constexpr std::array<FunctionSpec, 23> kFunctions{
     {{"CdsPrice", "UUUUUUUUUUUUUUUUU", kCdsPriceLegacyParams,
       "Prices a CDS. The original 16-argument form, kept so existing "
       "workbooks keep working; CDS.Price is the same calculation with the "
@@ -1621,6 +1769,10 @@ constexpr std::array<FunctionSpec, 22> kFunctions{
       "Bootstraps an interest-rate curve from money-market and swap quotes, "
       "and returns a handle.",
       kCategory, &dispatch_ir_zero_curve_build},
+     {"CDS.IRZeroCurve", "UUUUUU", kCdsIrZeroCurveGroupedParams,
+      "Bootstraps an interest-rate curve from money-market and swap quotes, "
+      "arguments grouped. Same calculation as IRZeroCurveBuild.",
+      kCategory, &dispatch_cds_ir_zero_curve_grouped},
      {"DiscountFactor", "UUU", kDiscountFactorParams, "The discount factor from a curve to a date.",
       kCategory, &dispatch_discount_factor},
      {"CleanSpreadCurveBuild", "UUUUUUUUUUUUUUUUU", kCleanSpreadCurveBuildParams,

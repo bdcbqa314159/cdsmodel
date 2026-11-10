@@ -464,6 +464,56 @@ TEST(ParSpreadFlatDispatch, BothFormsGiveTheIdenticalSpread) {
                            invoke(*find_function("CDS.ParSpreadFlat"), grouped_args, f.ctx));
 }
 
+// --------------------------------------------------------------- CDS.IRZeroCurve
+
+void expect_identical_curves(const XlValue &a, const XlValue &b, CurveRegistry &reg) {
+  const auto ha = a.as_string();
+  const auto hb = b.as_string();
+  ASSERT_TRUE(ha.has_value()) << "legacy returned: " << a.describe();
+  ASSERT_TRUE(hb.has_value()) << "grouped returned: " << b.describe();
+  const auto ca = reg.resolve(*ha);
+  const auto cb = reg.resolve(*hb);
+  ASSERT_TRUE(ca.has_value()) << *ha;
+  ASSERT_TRUE(cb.has_value()) << *hb;
+  const auto pa = (*ca)->points();
+  const auto pb = (*cb)->points();
+  ASSERT_EQ(pa.size(), pb.size());
+  for (std::size_t i = 0; i < pa.size(); ++i) {
+    EXPECT_EQ(pa[i], pb[i]) << "curve point " << i;
+  }
+}
+
+TEST(IRZeroCurveDispatch, BothFormsBuildTheIdenticalCurve) {
+  CurveRegistry curves;
+  CalendarRegistry calendars;
+  CallContext ctx{curves, calendars};
+  const std::vector<XlValue> legacy_args{
+      XlValue{serial(2006, 10, 9)},
+      column({XlValue{"M"}, XlValue{"M"}, XlValue{"S"}, XlValue{"S"}}),
+      column({XlValue{serial(2006, 11, 9)}, XlValue{serial(2007, 1, 9)},
+              XlValue{serial(2008, 10, 9)}, XlValue{serial(2011, 10, 9)}}),
+      column({XlValue{0.0530}, XlValue{0.0535}, XlValue{0.0540}, XlValue{0.0550}}),
+      XlValue{"ACT/360"}, XlValue{"6M"},  XlValue{"6M"},   XlValue{"30/360"},
+      XlValue{"ACT/360"}, XlValue{"N"},   XlValue{"NONE"}, XlValue{"legacy.ir"}};
+  const std::vector<XlValue> grouped_args{
+      XlValue{serial(2006, 10, 9)},
+      table({"Type", "End Date", "Rate"},
+            {{XlValue{"M"}, XlValue{serial(2006, 11, 9)}, XlValue{0.0530}},
+             {XlValue{"M"}, XlValue{serial(2007, 1, 9)}, XlValue{0.0535}},
+             {XlValue{"S"}, XlValue{serial(2008, 10, 9)}, XlValue{0.0540}},
+             {XlValue{"S"}, XlValue{serial(2011, 10, 9)}, XlValue{0.0550}}}),
+      block({{"MM DCC", XlValue{"ACT/360"}},
+             {"Fixed IVL", XlValue{"6M"}},
+             {"Float IVL", XlValue{"6M"}},
+             {"Fixed DCC", XlValue{"30/360"}},
+             {"Float DCC", XlValue{"ACT/360"}},
+             {"Swap BDC", XlValue{"N"}}}),
+      XlValue{"NONE"},
+      XlValue{"grouped.ir"}};
+  expect_identical_curves(invoke(*find_function("IRZeroCurveBuild"), legacy_args, ctx),
+                          invoke(*find_function("CDS.IRZeroCurve"), grouped_args, ctx), curves);
+}
+
 TEST(CdsPriceDispatch, AWrongArgumentCountIsReportedNotIndexedPast) {
   Fixture f;
   const std::vector<XlValue> too_few{XlValue{1.0}, XlValue{2.0}};

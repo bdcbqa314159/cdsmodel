@@ -253,6 +253,12 @@ __declspec(dllexport) LPXLOPER12 IRZeroCurveBuild(LPXLOPER12 a1, LPXLOPER12 a2, 
   return run("IRZeroCurveBuild", {a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12});
 }
 
+__declspec(dllexport) LPXLOPER12 CDSIRZeroCurve(LPXLOPER12 value_date, LPXLOPER12 instruments,
+                                                LPXLOPER12 conventions, LPXLOPER12 holidays,
+                                                LPXLOPER12 name) noexcept {
+  return run("CDS.IRZeroCurve", {value_date, instruments, conventions, holidays, name});
+}
+
 __declspec(dllexport) LPXLOPER12 CleanSpreadCurveBuild(
     LPXLOPER12 a1, LPXLOPER12 a2, LPXLOPER12 a3, LPXLOPER12 a4, LPXLOPER12 a5, LPXLOPER12 a6,
     LPXLOPER12 a7, LPXLOPER12 a8, LPXLOPER12 a9, LPXLOPER12 a10, LPXLOPER12 a11, LPXLOPER12 a12,
