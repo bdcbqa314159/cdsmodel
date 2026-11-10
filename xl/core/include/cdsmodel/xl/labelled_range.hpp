@@ -62,6 +62,41 @@ private:
   std::vector<Entry> entries_;
 };
 
+/// A header-row table: the FIRST row holds column labels, the rows below hold
+/// data. It is the multi-column cousin of `LabelledRange` -- where that reads a
+/// vertical label/value block, this reads a grid whose columns are named by
+/// their header. The parallel arrays upstream passes separately (benchmark
+/// `ends`/`coupons`/`include`, instrument `types`/`ends`/`rates`) become one
+/// range a reader can see line up.
+///
+/// Columns may appear in ANY order. The C10 rule holds column-wise: an unknown
+/// header, a duplicated header, or a missing required column is an ERROR naming
+/// it, never a column silently dropped or defaulted.
+class LabelledTable {
+public:
+  /// Reads `grid` -- header row plus data rows -- against `columns`.
+  [[nodiscard]] static Expected<LabelledTable> read(const XlGrid &grid,
+                                                    std::span<const LabelSpec> columns);
+
+  /// The data cells under `label`, top to bottom. An error if `label` was
+  /// optional and its column absent.
+  [[nodiscard]] Expected<std::vector<XlValue>> column(std::string_view label) const;
+
+  /// Whether an optional column was supplied at all.
+  [[nodiscard]] bool has(std::string_view label) const;
+
+  /// The number of DATA rows (the header row is not counted).
+  [[nodiscard]] std::size_t rows() const noexcept { return rows_; }
+
+private:
+  struct Column {
+    std::string label; // normalised
+    std::vector<XlValue> cells;
+  };
+  std::vector<Column> columns_;
+  std::size_t rows_ = 0;
+};
+
 /// Normalises a label for comparison: trimmed, lower-cased, and internal runs
 /// of whitespace collapsed to one space -- so "Payment  DCC" and "payment dcc"
 /// are the same label, while "Payment DC" is not and is reported.

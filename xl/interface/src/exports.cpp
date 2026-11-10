@@ -229,6 +229,12 @@ __declspec(dllexport) LPXLOPER12 CleanSpreadCurveBuild(
              {a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16});
 }
 
+__declspec(dllexport) LPXLOPER12 CDSSpreadCurve(LPXLOPER12 valuation, LPXLOPER12 benchmarks,
+                                                LPXLOPER12 conventions, LPXLOPER12 discount,
+                                                LPXLOPER12 recovery, LPXLOPER12 name) noexcept {
+  return run("CDS.SpreadCurve", {valuation, benchmarks, conventions, discount, recovery, name});
+}
+
 __declspec(dllexport) LPXLOPER12 DiscountFactor(LPXLOPER12 curve, LPXLOPER12 date) noexcept {
   return run("DiscountFactor", {curve, date});
 }

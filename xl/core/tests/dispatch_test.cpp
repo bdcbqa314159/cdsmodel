@@ -42,6 +42,36 @@ XlValue block(std::initializer_list<std::pair<const char *, XlValue>> rows) {
   return XlValue{g};
 }
 
+/// A single-column range, which is what the legacy forms read for their
+/// parallel arrays (ends, coupons, ...).
+XlValue column(std::initializer_list<XlValue> cells) {
+  XlGrid g;
+  g.rows = cells.size();
+  g.columns = 1;
+  for (const XlValue &c : cells) {
+    g.cells.push_back(c);
+  }
+  return XlValue{g};
+}
+
+/// A header-row table, which is what the grouped forms read for the same data:
+/// row 0 holds `headers`, the rest hold `rows`.
+XlValue table(std::initializer_list<const char *> headers,
+              std::initializer_list<std::initializer_list<XlValue>> rows) {
+  XlGrid g;
+  g.columns = headers.size();
+  g.rows = rows.size() + 1;
+  for (const char *h : headers) {
+    g.cells.emplace_back(std::string(h));
+  }
+  for (const auto &row : rows) {
+    for (const XlValue &c : row) {
+      g.cells.push_back(c);
+    }
+  }
+  return XlValue{g};
+}
+
 cdsmodel::ZeroCurve flat_curve(double rate) {
   const cdsmodel::RatePoint pts[]{{*cdsmodel::make_date(2007, 1, 1), rate},
                                   {*cdsmodel::make_date(2030, 1, 1), rate}};
@@ -182,6 +212,79 @@ TEST(CdsPriceDispatch, C9BothFormsGiveTheIdenticalAnswer) {
   // Bitwise, not near: it is one computation reached two ways. Anything other
   // than exact equality means the readers disagree about an input.
   EXPECT_EQ(*a.as_double(), *b.as_double());
+}
+
+// --------------------------------------------------------------- CDS.SpreadCurve
+
+TEST(SpreadCurveDispatch, BothFormsAreRegistered) {
+  const FunctionSpec *legacy = find_function("CleanSpreadCurveBuild");
+  const FunctionSpec *grouped = find_function("CDS.SpreadCurve");
+  ASSERT_NE(legacy, nullptr);
+  ASSERT_NE(grouped, nullptr);
+  EXPECT_EQ(legacy->declared_arity(), 16u);
+  EXPECT_EQ(grouped->declared_arity(), 6u);
+}
+
+TEST(SpreadCurveDispatch, BothFormsBuildTheIdenticalCurve) {
+  Fixture f;
+  const double today = serial(2006, 10, 9);
+  // Two benchmarks, so the bootstrap solves more than one node.
+  const std::vector<XlValue> legacy_args{
+      XlValue{today},
+      XlValue{today},
+      XlValue{today},
+      XlValue{today},
+      column({XlValue{serial(2011, 10, 9)}, XlValue{serial(2016, 10, 9)}}),
+      column({XlValue{0.01}, XlValue{0.012}}),
+      XlValue{}, // Include Flags blank -> include every benchmark
+      XlValue{true},
+      XlValue{"3M"},
+      XlValue{"f/s"},
+      XlValue{"ACT/360"},
+      XlValue{"N"},
+      XlValue{"NONE"},
+      XlValue{f.discount},
+      XlValue{0.4},
+      XlValue{"legacy.spread"}};
+
+  const std::vector<XlValue> grouped_args{
+      block({{"Today", XlValue{today}},
+             {"Start Date", XlValue{today}},
+             {"Step In Date", XlValue{today}},
+             {"Cash Settle Date", XlValue{today}}}),
+      table({"End Date", "Coupon Rate"},
+            {{XlValue{serial(2011, 10, 9)}, XlValue{0.01}},
+             {XlValue{serial(2016, 10, 9)}, XlValue{0.012}}}),
+      block({{"Pay Accrual On Default", XlValue{true}},
+             {"Coupon Interval", XlValue{"3M"}},
+             {"Stub Type", XlValue{"f/s"}},
+             {"Payment DCC", XlValue{"ACT/360"}},
+             {"Bad Day Convention", XlValue{"N"}},
+             {"Holidays", XlValue{"NONE"}}}),
+      XlValue{f.discount},
+      XlValue{0.4},
+      XlValue{"grouped.spread"}};
+
+  const XlValue a = invoke(*find_function("CleanSpreadCurveBuild"), legacy_args, f.ctx);
+  const XlValue b = invoke(*find_function("CDS.SpreadCurve"), grouped_args, f.ctx);
+  const auto handle_a = a.as_string();
+  const auto handle_b = b.as_string();
+  ASSERT_TRUE(handle_a.has_value()) << a.describe();
+  ASSERT_TRUE(handle_b.has_value()) << b.describe();
+
+  const auto curve_a = f.curves.resolve(*handle_a);
+  const auto curve_b = f.curves.resolve(*handle_b);
+  ASSERT_TRUE(curve_a.has_value()) << *handle_a;
+  ASSERT_TRUE(curve_b.has_value()) << *handle_b;
+
+  const auto points_a = (*curve_a)->points();
+  const auto points_b = (*curve_b)->points();
+  ASSERT_EQ(points_a.size(), points_b.size());
+  // Bitwise: one bootstrap reached two ways. A difference means the readers
+  // disagree about a benchmark, a date or a convention.
+  for (std::size_t i = 0; i < points_a.size(); ++i) {
+    EXPECT_EQ(points_a[i], points_b[i]) << "curve point " << i;
+  }
 }
 
 TEST(CdsPriceDispatch, AWrongArgumentCountIsReportedNotIndexedPast) {

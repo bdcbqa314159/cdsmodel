@@ -158,6 +158,43 @@ read_curve_argument(const XlValue &cell, CallContext &ctx, std::string_view what
   return **named;
 }
 
+// --------------------------------------------------- labelled-block reading
+//
+// The four pricing structs read their blocks through `block_of` in
+// arguments.cpp. The grouped curve and analytics forms below live here, so
+// their label/value reader does too -- same shape: coerce to a grid, read it
+// against the labels, hand back the value cell for each label in label order,
+// with an optional-and-absent label left as XlMissing for the dispatch to
+// default. The dispatch then converts each cell exactly as its positional twin
+// does, which is what keeps the two forms from drifting.
+
+template <std::size_t N>
+[[nodiscard]] Expected<std::array<XlValue, N>>
+labelled_cells(const XlValue &block, const std::array<LabelSpec, N> &labels,
+               std::string_view what) {
+  const Expected<XlGrid> grid = block.as_grid();
+  if (!grid) {
+    return fail(ErrorKind::bad_argument,
+                std::string(what) + ": expected a two-column range, got " + block.describe());
+  }
+  const Expected<LabelledRange> rows = LabelledRange::read(*grid, labels);
+  if (!rows) {
+    return fail(rows.error().kind, std::string(what) + ": " + rows.error().message);
+  }
+  std::array<XlValue, N> cells;
+  for (std::size_t i = 0; i < N; ++i) {
+    if (!labels[i].required && !rows->has(labels[i].label)) {
+      continue; // optional and absent; stays XlMissing, like Conventions::read_block
+    }
+    const Expected<XlValue> v = rows->value_of(labels[i].label);
+    if (!v) {
+      return unexpected(v.error());
+    }
+    cells[i] = *v;
+  }
+  return cells;
+}
+
 // ------------------------------------------------------- CdsPrice, two forms
 //
 // Both read into Valuation / TradeTerms / Conventions / MarketData and then
@@ -502,15 +539,106 @@ Expected<XlValue> dispatch_dates_and_rates(std::span<const XlValue> args, CallCo
   return rate_points_grid((*curve)->points());
 }
 
+/// The shared tail of both CleanSpreadCurveBuild forms: build the convention
+/// carrier, bootstrap, store. Everything above this in each dispatch is parsing;
+/// this is the one code path the legacy and grouped signatures converge on, so
+/// they cannot bootstrap different curves from the same inputs.
+[[nodiscard]] Expected<XlValue>
+spread_curve_from(Date today, Date start, Date stepin, Date cash_settle,
+                  std::span<const Benchmark> benchmarks, const Conventions &conventions,
+                  const ZeroCurve &discount, double recovery, const std::string &name,
+                  CallContext &ctx) {
+  if (benchmarks.empty()) {
+    return fail(ErrorKind::bad_argument, "no benchmarks were supplied to build the curve from");
+  }
+  // The conventions travel as a `Cds` because that is what the library takes;
+  // its start and end are unused by the bootstrap, which reads each benchmark's
+  // own dates.
+  const Cds carrier = make_cds(TradeTerms{start, benchmarks.back().end, 0.0}, conventions);
+  const Expected<ZeroCurve> curve =
+      clean_spread_curve(today, discount, start, stepin, cash_settle, benchmarks, recovery, carrier,
+                         conventions.holidays);
+  if (!curve) {
+    return unexpected(curve.error());
+  }
+  return XlValue{ctx.curves.store(name, *curve)};
+}
+
+/// The grouped form's benchmark quotes: a table whose columns are `End Date`,
+/// `Coupon Rate` and an optional `Include`, in any order. `LabelledTable` keeps
+/// the columns row-aligned including blanks, so a wholly blank trailing row --
+/// what a whole-range selection drags in -- is skipped as one unit.
+[[nodiscard]] Expected<std::vector<Benchmark>> read_benchmark_table(const XlValue &block) {
+  static constexpr std::array<LabelSpec, 3> kColumns{
+      {{"End Date", true}, {"Coupon Rate", true}, {"Include", false}}};
+  const Expected<XlGrid> grid = block.as_grid();
+  if (!grid) {
+    return fail(ErrorKind::bad_argument,
+                "the benchmarks block: expected a range, got " + block.describe());
+  }
+  const Expected<LabelledTable> table = LabelledTable::read(*grid, kColumns);
+  if (!table) {
+    return fail(table.error().kind, "the benchmarks block: " + table.error().message);
+  }
+  const Expected<std::vector<XlValue>> ends = table->column("End Date");
+  if (!ends) {
+    return unexpected(ends.error());
+  }
+  const Expected<std::vector<XlValue>> coupons = table->column("Coupon Rate");
+  if (!coupons) {
+    return unexpected(coupons.error());
+  }
+  const bool has_include = table->has("Include");
+  std::vector<XlValue> includes;
+  if (has_include) {
+    const Expected<std::vector<XlValue>> column = table->column("Include");
+    if (!column) {
+      return unexpected(column.error());
+    }
+    includes = *column;
+  }
+
+  std::vector<Benchmark> out;
+  for (std::size_t i = 0; i < table->rows(); ++i) {
+    const bool blank_row = (*ends)[i].is_missing() && (*coupons)[i].is_missing() &&
+                           (!has_include || includes[i].is_missing());
+    if (blank_row) {
+      continue;
+    }
+    const Expected<Date> end = read_single_date((*ends)[i], "End Date");
+    if (!end) {
+      return unexpected(end.error());
+    }
+    const Expected<double> coupon = (*coupons)[i].as_double();
+    if (!coupon) {
+      return fail(ErrorKind::bad_argument, "Coupon Rate row " + detail::num(i + 1) +
+                                               ": expected a number, got " + (*coupons)[i].describe());
+    }
+    bool include = true;
+    if (has_include && !includes[i].is_missing()) {
+      const Expected<bool> flag = includes[i].as_bool();
+      if (!flag) {
+        return fail(ErrorKind::bad_argument,
+                    "Include row " + detail::num(i + 1) + ": " + flag.error().message);
+      }
+      include = *flag;
+    }
+    out.push_back(Benchmark{*end, *coupon, include});
+  }
+  if (out.empty()) {
+    return fail(ErrorKind::bad_argument, "the benchmarks block has no rows");
+  }
+  return out;
+}
+
 /// `CleanSpreadCurveBuild(today, start, stepin, cashSettle, ends, coupons,
 ///                         includeFlags, payAcc, interval, stub, dcc, bdc,
 ///                         holidays, discount, recovery, name)`
 ///
 /// The credit curve, bootstrapped from benchmark CDS quotes. Sixteen arguments
 /// in upstream's order; the conventions among them are the same six that
-/// `CdsPrice` takes, which is the repetition artifact #4's grouped forms exist
-/// to remove -- a grouped `CDS.SpreadCurve` arrives with the other grouped
-/// forms rather than being invented here on its own.
+/// `CdsPrice` takes. `CDS.SpreadCurve` below is the grouped form that removes
+/// the repetition.
 Expected<XlValue> dispatch_clean_spread_curve_build(std::span<const XlValue> args,
                                                     CallContext &ctx) {
   if (args.size() != 16) {
@@ -611,18 +739,69 @@ Expected<XlValue> dispatch_clean_spread_curve_build(std::span<const XlValue> arg
   for (std::size_t i = 0; i < ends->size(); ++i) {
     benchmarks.push_back(Benchmark{(*ends)[i], (*coupons)[i], include[i]});
   }
+  return spread_curve_from(*today, *start, *stepin, *cash_settle, benchmarks, *conventions,
+                           **discount, *recovery, *name, ctx);
+}
 
-  // The conventions travel as a `Cds` because that is what the library takes;
-  // its start and end are unused by the bootstrap, which reads each
-  // benchmark's own dates.
-  const Cds convention_carrier = make_cds(TradeTerms{*start, (*ends).back(), 0.0}, *conventions);
-  const Expected<ZeroCurve> curve =
-      clean_spread_curve(*today, **discount, *start, *stepin, *cash_settle, benchmarks, *recovery,
-                         convention_carrier, conventions->holidays);
-  if (!curve) {
-    return unexpected(curve.error());
+/// `CDS.SpreadCurve(valuation, benchmarks, conventions, discount, recovery,
+///                   name)` -- the grouped form. The four valuation dates and
+/// the benchmark quotes become labelled ranges, the six conventions the shared
+/// block; a curve handle, a number and a name are all that stay loose.
+Expected<XlValue> dispatch_cds_spread_curve_grouped(std::span<const XlValue> args,
+                                                    CallContext &ctx) {
+  if (args.size() != 6) {
+    return fail(ErrorKind::bad_argument,
+                "CDS.SpreadCurve takes 6 arguments, got " + detail::num(args.size()));
   }
-  return XlValue{ctx.curves.store(*name, *curve)};
+  static constexpr std::array<LabelSpec, 4> kValuation{{{"Today", true},
+                                                        {"Start Date", true},
+                                                        {"Step In Date", true},
+                                                        {"Cash Settle Date", true}}};
+  const Expected<std::array<XlValue, 4>> cells =
+      labelled_cells(args[0], kValuation, "the valuation block");
+  if (!cells) {
+    return unexpected(cells.error());
+  }
+  const Expected<Date> today = read_single_date((*cells)[0], "Today");
+  if (!today) {
+    return unexpected(today.error());
+  }
+  const Expected<Date> start = read_single_date((*cells)[1], "Start Date");
+  if (!start) {
+    return unexpected(start.error());
+  }
+  const Expected<Date> stepin = read_single_date((*cells)[2], "Step In Date");
+  if (!stepin) {
+    return unexpected(stepin.error());
+  }
+  const Expected<Date> cash_settle = read_single_date((*cells)[3], "Cash Settle Date");
+  if (!cash_settle) {
+    return unexpected(cash_settle.error());
+  }
+
+  const Expected<std::vector<Benchmark>> benchmarks = read_benchmark_table(args[1]);
+  if (!benchmarks) {
+    return unexpected(benchmarks.error());
+  }
+  const Expected<Conventions> conventions = Conventions::read_block(args[2], ctx.calendars);
+  if (!conventions) {
+    return unexpected(conventions.error());
+  }
+  const Expected<CurveRegistry::Shared> discount =
+      read_curve_argument(args[3], ctx, "Discount Curve");
+  if (!discount) {
+    return unexpected(discount.error());
+  }
+  const Expected<double> recovery = read_recovery(args[4]);
+  if (!recovery) {
+    return unexpected(recovery.error());
+  }
+  const Expected<std::string> name = read_name(args[5]);
+  if (!name) {
+    return unexpected(name.error());
+  }
+  return spread_curve_from(*today, *start, *stepin, *cash_settle, *benchmarks, *conventions,
+                           **discount, *recovery, *name, ctx);
 }
 
 // --------------------------------------------------------------- pricing
@@ -1015,6 +1194,15 @@ constexpr std::array<ParamSpec, 16> kCleanSpreadCurveBuildParams{
      {"Recovery Rate", "Assumed recovery, 0 to 1"},
      {"Name", "Name to reference this curve by"}}};
 
+constexpr std::array<ParamSpec, 6> kCdsSpreadCurveGroupedParams{
+    {{"Valuation", "Two-column range: Today, Start Date, Step In Date, Cash Settle Date"},
+     {"Benchmarks", "Table with columns End Date, Coupon Rate and optional Include"},
+     {"Conventions", "Two-column range: Pay Accrual On Default, Coupon Interval, "
+                     "Stub Type, Payment DCC, Bad Day Convention, Holidays"},
+     {"Discount Curve", "Handle from IRZeroCurveBuild or IRZeroCurveMake"},
+     {"Recovery Rate", "Assumed recovery, 0 to 1"},
+     {"Name", "Name to reference this curve by"}}};
+
 constexpr std::array<ParamSpec, 13> kParSpreadsParams{
     {{"Today", "Risk starts at the end of today"},
      {"StepIn Date", "Date when step-in begins"},
@@ -1099,7 +1287,7 @@ constexpr std::array<ParamSpec, 2> kDiscountFactorParams{
 
 constexpr std::array<ParamSpec, 1> kDatesAndRatesParams{{{"Curve", "A curve handle"}}};
 
-constexpr std::array<FunctionSpec, 16> kFunctions{
+constexpr std::array<FunctionSpec, 17> kFunctions{
     {{"CdsPrice", "UUUUUUUUUUUUUUUUU", kCdsPriceLegacyParams,
       "Prices a CDS. The original 16-argument form, kept so existing "
       "workbooks keep working; CDS.Price is the same calculation with the "
@@ -1138,6 +1326,10 @@ constexpr std::array<FunctionSpec, 16> kFunctions{
       "Bootstraps a clean spread (credit) curve from benchmark CDS quotes, "
       "and returns a handle.",
       kCategory, &dispatch_clean_spread_curve_build},
+     {"CDS.SpreadCurve", "UUUUUUU", kCdsSpreadCurveGroupedParams,
+      "Bootstraps a clean spread (credit) curve from benchmark CDS quotes, "
+      "arguments grouped. Same calculation as CleanSpreadCurveBuild.",
+      kCategory, &dispatch_cds_spread_curve_grouped},
      {"ParSpreads", "UUUUUUUUUUUUUU", kParSpreadsParams,
       "The par spread of a CDS at each of several maturities, as a column.", kCategory,
       &dispatch_par_spreads},
