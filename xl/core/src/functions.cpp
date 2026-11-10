@@ -1021,6 +1021,69 @@ struct FlatInputs {
   return out;
 }
 
+/// The same `FlatInputs`, read from labelled blocks instead of positional cells.
+/// The grouped Upfront/ParSpreadFlat forms converge on this, so they build the
+/// identical `FlatInputs` the legacy forms do and the two cannot disagree.
+[[nodiscard]] Expected<FlatInputs>
+flat_inputs_from_blocks(const XlValue &valuation, const XlValue &trade_block,
+                        const XlValue &conventions_block, const XlValue &discount_cell,
+                        const XlValue &recovery_cell, const XlValue &clean_cell, CallContext &ctx) {
+  static constexpr std::array<LabelSpec, 4> kDates{{{"Today", true},
+                                                    {"Cash Settle Date", true},
+                                                    {"Benchmark St Date", true},
+                                                    {"Step In Date", true}}};
+  const Expected<std::array<XlValue, 4>> cells =
+      labelled_cells(valuation, kDates, "the valuation block");
+  if (!cells) {
+    return unexpected(cells.error());
+  }
+  const Expected<Date> today = read_single_date((*cells)[0], "Today");
+  if (!today) {
+    return unexpected(today.error());
+  }
+  const Expected<Date> cash_settle = read_single_date((*cells)[1], "Cash Settle Date");
+  if (!cash_settle) {
+    return unexpected(cash_settle.error());
+  }
+  const Expected<Date> benchmark_start = read_single_date((*cells)[2], "Benchmark St Date");
+  if (!benchmark_start) {
+    return unexpected(benchmark_start.error());
+  }
+  const Expected<Date> stepin = read_single_date((*cells)[3], "Step In Date");
+  if (!stepin) {
+    return unexpected(stepin.error());
+  }
+  const Expected<TradeTerms> terms = TradeTerms::read_block(trade_block);
+  if (!terms) {
+    return unexpected(terms.error());
+  }
+  const Expected<Conventions> conventions =
+      Conventions::read_block(conventions_block, ctx.calendars);
+  if (!conventions) {
+    return unexpected(conventions.error());
+  }
+  const Expected<CurveRegistry::Shared> discount =
+      read_curve_argument(discount_cell, ctx, "Discount Curve");
+  if (!discount) {
+    return unexpected(discount.error());
+  }
+  const Expected<double> recovery = read_recovery(recovery_cell);
+  if (!recovery) {
+    return unexpected(recovery.error());
+  }
+  const Expected<bool> clean = clean_cell.as_bool();
+  if (!clean) {
+    return fail(ErrorKind::bad_argument, "Clean Price: " + clean.error().message);
+  }
+  FlatInputs out{UpfrontDates{*today, *cash_settle, *benchmark_start, *stepin},
+                 make_cds(*terms, *conventions),
+                 conventions->holidays,
+                 **discount,
+                 *recovery,
+                 *clean};
+  return out;
+}
+
 /// `UpfrontFlat(..., marketParSpread, recovery, clean)` -- the upfront charge
 /// implied by a quoted par spread.
 Expected<XlValue> dispatch_upfront_flat(std::span<const XlValue> args, CallContext &ctx) {
@@ -1060,6 +1123,57 @@ Expected<XlValue> dispatch_par_spread_flat(std::span<const XlValue> args, CallCo
   if (!upfront) {
     return fail(ErrorKind::bad_argument,
                 "Upfront Charge: expected a number, got " + args[14].describe());
+  }
+  const Expected<double> spread = cdsone_spread(in->cds, in->dates, in->holidays, in->discount,
+                                                *upfront, in->recovery, in->clean);
+  if (!spread) {
+    return unexpected(spread.error());
+  }
+  return XlValue{*spread};
+}
+
+/// `CDS.Upfront(valuation, trade, conventions, discount, marketSpread, recovery,
+///              clean)` -- the grouped form of UpfrontFlat.
+Expected<XlValue> dispatch_cds_upfront_grouped(std::span<const XlValue> args, CallContext &ctx) {
+  if (args.size() != 7) {
+    return fail(ErrorKind::bad_argument,
+                "CDS.Upfront takes 7 arguments, got " + detail::num(args.size()));
+  }
+  const Expected<FlatInputs> in =
+      flat_inputs_from_blocks(args[0], args[1], args[2], args[3], args[5], args[6], ctx);
+  if (!in) {
+    return unexpected(in.error());
+  }
+  const Expected<double> market_spread = args[4].as_double();
+  if (!market_spread) {
+    return fail(ErrorKind::bad_argument,
+                "Market Par Spread: expected a number, got " + args[4].describe());
+  }
+  const Expected<double> charge = cdsone_upfront_charge(
+      in->cds, in->dates, in->holidays, in->discount, *market_spread, in->recovery, in->clean);
+  if (!charge) {
+    return unexpected(charge.error());
+  }
+  return XlValue{*charge};
+}
+
+/// `CDS.ParSpreadFlat(valuation, trade, conventions, discount, upfront, recovery,
+///                     clean)` -- the grouped form of ParSpreadFlat.
+Expected<XlValue> dispatch_cds_par_spread_flat_grouped(std::span<const XlValue> args,
+                                                       CallContext &ctx) {
+  if (args.size() != 7) {
+    return fail(ErrorKind::bad_argument,
+                "CDS.ParSpreadFlat takes 7 arguments, got " + detail::num(args.size()));
+  }
+  const Expected<FlatInputs> in =
+      flat_inputs_from_blocks(args[0], args[1], args[2], args[3], args[5], args[6], ctx);
+  if (!in) {
+    return unexpected(in.error());
+  }
+  const Expected<double> upfront = args[4].as_double();
+  if (!upfront) {
+    return fail(ErrorKind::bad_argument,
+                "Upfront Charge: expected a number, got " + args[4].describe());
   }
   const Expected<double> spread = cdsone_spread(in->cds, in->dates, in->holidays, in->discount,
                                                 *upfront, in->recovery, in->clean);
@@ -1410,6 +1524,26 @@ constexpr std::array<ParamSpec, 17> kParSpreadFlatParams{
      {"Recovery Rate", "Assumed recovery, 0 to 1"},
      {"Clean Price", "TRUE for clean, FALSE for dirty"}}};
 
+constexpr std::array<ParamSpec, 7> kCdsUpfrontGroupedParams{
+    {{"Valuation", "Two-column range: Today, Cash Settle Date, Benchmark St Date, Step In Date"},
+     {"Trade", "Two-column range: Start Date, End Date, Coupon Rate"},
+     {"Conventions", "Two-column range: Pay Accrual On Default, Coupon Interval, "
+                     "Stub Type, Payment DCC, Bad Day Convention, Holidays"},
+     {"Discount Curve", "Handle from IRZeroCurveBuild or IRZeroCurveMake"},
+     {"Market Par Spread", "Quoted par spread to imply the charge from"},
+     {"Recovery Rate", "Assumed recovery, 0 to 1"},
+     {"Clean Price", "TRUE for clean, FALSE for dirty"}}};
+
+constexpr std::array<ParamSpec, 7> kCdsParSpreadFlatGroupedParams{
+    {{"Valuation", "Two-column range: Today, Cash Settle Date, Benchmark St Date, Step In Date"},
+     {"Trade", "Two-column range: Start Date, End Date, Coupon Rate"},
+     {"Conventions", "Two-column range: Pay Accrual On Default, Coupon Interval, "
+                     "Stub Type, Payment DCC, Bad Day Convention, Holidays"},
+     {"Discount Curve", "Handle from IRZeroCurveBuild or IRZeroCurveMake"},
+     {"Upfront Charge", "Present value of the CDS to imply the spread from"},
+     {"Recovery Rate", "Assumed recovery, 0 to 1"},
+     {"Clean Price", "TRUE for clean, FALSE for dirty"}}};
+
 constexpr std::array<ParamSpec, 11> kDefaultAccrualParams{{
     {"Trade Date", "When the trade was struck"},
     {"EDD Date", "Event determination date"},
@@ -1454,7 +1588,7 @@ constexpr std::array<ParamSpec, 2> kDiscountFactorParams{
 
 constexpr std::array<ParamSpec, 1> kDatesAndRatesParams{{{"Curve", "A curve handle"}}};
 
-constexpr std::array<FunctionSpec, 20> kFunctions{
+constexpr std::array<FunctionSpec, 22> kFunctions{
     {{"CdsPrice", "UUUUUUUUUUUUUUUUU", kCdsPriceLegacyParams,
       "Prices a CDS. The original 16-argument form, kept so existing "
       "workbooks keep working; CDS.Price is the same calculation with the "
@@ -1508,10 +1642,18 @@ constexpr std::array<FunctionSpec, 20> kFunctions{
       "The upfront charge implied by a quoted par spread, through a flat "
       "credit curve.",
       kCategory, &dispatch_upfront_flat},
+     {"CDS.Upfront", "UUUUUUUU", kCdsUpfrontGroupedParams,
+      "The upfront charge implied by a quoted par spread, arguments grouped. "
+      "Same calculation as UpfrontFlat.",
+      kCategory, &dispatch_cds_upfront_grouped},
      {"ParSpreadFlat", "UUUUUUUUUUUUUUUUUU", kParSpreadFlatParams,
       "The flat par spread implied by an upfront charge. The inverse of "
       "UpfrontFlat.",
       kCategory, &dispatch_par_spread_flat},
+     {"CDS.ParSpreadFlat", "UUUUUUUU", kCdsParSpreadFlatGroupedParams,
+      "The flat par spread implied by an upfront charge, arguments grouped. "
+      "Same calculation as ParSpreadFlat.",
+      kCategory, &dispatch_cds_par_spread_flat_grouped},
      {"DefaultAccrual", "UUUUUUUUUUUU", kDefaultAccrualParams,
       "Accrued interest owed on a defaulted CDS: the day count and the "
       "amount, as two columns.",

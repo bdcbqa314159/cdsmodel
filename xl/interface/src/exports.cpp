@@ -189,6 +189,14 @@ __declspec(dllexport) LPXLOPER12 UpfrontFlat(LPXLOPER12 a1, LPXLOPER12 a2, LPXLO
              {a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17});
 }
 
+__declspec(dllexport) LPXLOPER12 CDSUpfront(LPXLOPER12 valuation, LPXLOPER12 trade,
+                                            LPXLOPER12 conventions, LPXLOPER12 discount,
+                                            LPXLOPER12 market_spread, LPXLOPER12 recovery,
+                                            LPXLOPER12 clean) noexcept {
+  return run("CDS.Upfront",
+             {valuation, trade, conventions, discount, market_spread, recovery, clean});
+}
+
 __declspec(dllexport) LPXLOPER12 ParSpreadFlat(LPXLOPER12 a1, LPXLOPER12 a2, LPXLOPER12 a3,
                                                LPXLOPER12 a4, LPXLOPER12 a5, LPXLOPER12 a6,
                                                LPXLOPER12 a7, LPXLOPER12 a8, LPXLOPER12 a9,
@@ -197,6 +205,14 @@ __declspec(dllexport) LPXLOPER12 ParSpreadFlat(LPXLOPER12 a1, LPXLOPER12 a2, LPX
                                                LPXLOPER12 a16, LPXLOPER12 a17) noexcept {
   return run("ParSpreadFlat",
              {a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17});
+}
+
+__declspec(dllexport) LPXLOPER12 CDSParSpreadFlat(LPXLOPER12 valuation, LPXLOPER12 trade,
+                                                  LPXLOPER12 conventions, LPXLOPER12 discount,
+                                                  LPXLOPER12 upfront, LPXLOPER12 recovery,
+                                                  LPXLOPER12 clean) noexcept {
+  return run("CDS.ParSpreadFlat",
+             {valuation, trade, conventions, discount, upfront, recovery, clean});
 }
 
 __declspec(dllexport) LPXLOPER12 DefaultAccrual(LPXLOPER12 a1, LPXLOPER12 a2, LPXLOPER12 a3,

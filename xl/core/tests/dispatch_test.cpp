@@ -399,6 +399,71 @@ TEST(ParSpreadsDispatch, BothFormsGiveTheIdenticalColumn) {
                          invoke(*find_function("CDS.ParSpreads"), grouped_args, f.ctx));
 }
 
+// --------------------------------------------------------------- CDS.Upfront / CDS.ParSpreadFlat
+
+void expect_identical_scalars(const XlValue &a, const XlValue &b) {
+  ASSERT_TRUE(a.as_double().has_value()) << "legacy returned: " << a.describe();
+  ASSERT_TRUE(b.as_double().has_value()) << "grouped returned: " << b.describe();
+  EXPECT_EQ(*a.as_double(), *b.as_double());
+}
+
+// The valuation block the two flat forms share: four dates in upstream's names.
+XlValue flat_valuation() {
+  return block({{"Today", XlValue{serial(2006, 10, 9)}},
+                {"Cash Settle Date", XlValue{serial(2006, 10, 9)}},
+                {"Benchmark St Date", XlValue{serial(2006, 10, 9)}},
+                {"Step In Date", XlValue{serial(2006, 10, 9)}}});
+}
+
+XlValue flat_trade() {
+  return block({{"Start Date", XlValue{serial(2006, 10, 9)}},
+                {"End Date", XlValue{serial(2011, 10, 9)}},
+                {"Coupon Rate", XlValue{0.01}}});
+}
+
+XlValue flat_conventions() {
+  return block({{"Pay Accrual On Default", XlValue{true}},
+                {"Coupon Interval", XlValue{"3M"}},
+                {"Stub Type", XlValue{"f/s"}},
+                {"Payment DCC", XlValue{"ACT/360"}},
+                {"Bad Day Convention", XlValue{"N"}},
+                {"Holidays", XlValue{"NONE"}}});
+}
+
+TEST(UpfrontDispatch, BothFormsGiveTheIdenticalCharge) {
+  Fixture f;
+  // The 17 positional cells, with the market par spread at index 14.
+  const std::vector<XlValue> legacy_args{
+      XlValue{serial(2006, 10, 9)}, XlValue{serial(2006, 10, 9)}, XlValue{serial(2006, 10, 9)},
+      XlValue{serial(2006, 10, 9)}, XlValue{serial(2006, 10, 9)}, XlValue{serial(2011, 10, 9)},
+      XlValue{0.01},                XlValue{true},                XlValue{"3M"},
+      XlValue{"f/s"},               XlValue{"ACT/360"},           XlValue{"N"},
+      XlValue{"NONE"},              XlValue{f.discount},          XlValue{0.02},
+      XlValue{0.4},                 XlValue{true}};
+  const std::vector<XlValue> grouped_args{flat_valuation(), flat_trade(), flat_conventions(),
+                                          XlValue{f.discount}, XlValue{0.02}, XlValue{0.4},
+                                          XlValue{true}};
+  expect_identical_scalars(invoke(*find_function("UpfrontFlat"), legacy_args, f.ctx),
+                           invoke(*find_function("CDS.Upfront"), grouped_args, f.ctx));
+}
+
+TEST(ParSpreadFlatDispatch, BothFormsGiveTheIdenticalSpread) {
+  Fixture f;
+  // The inverse: an upfront charge at index 14 rather than a market spread.
+  const std::vector<XlValue> legacy_args{
+      XlValue{serial(2006, 10, 9)}, XlValue{serial(2006, 10, 9)}, XlValue{serial(2006, 10, 9)},
+      XlValue{serial(2006, 10, 9)}, XlValue{serial(2006, 10, 9)}, XlValue{serial(2011, 10, 9)},
+      XlValue{0.01},                XlValue{true},                XlValue{"3M"},
+      XlValue{"f/s"},               XlValue{"ACT/360"},           XlValue{"N"},
+      XlValue{"NONE"},              XlValue{f.discount},          XlValue{0.02},
+      XlValue{0.4},                 XlValue{true}};
+  const std::vector<XlValue> grouped_args{flat_valuation(), flat_trade(), flat_conventions(),
+                                          XlValue{f.discount}, XlValue{0.02}, XlValue{0.4},
+                                          XlValue{true}};
+  expect_identical_scalars(invoke(*find_function("ParSpreadFlat"), legacy_args, f.ctx),
+                           invoke(*find_function("CDS.ParSpreadFlat"), grouped_args, f.ctx));
+}
+
 TEST(CdsPriceDispatch, AWrongArgumentCountIsReportedNotIndexedPast) {
   Fixture f;
   const std::vector<XlValue> too_few{XlValue{1.0}, XlValue{2.0}};
