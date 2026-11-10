@@ -363,6 +363,42 @@ TEST(FeeLegFlowsDispatch, BothFormsGiveTheIdenticalGrid) {
                          invoke(*find_function("CDS.FeeLegFlows"), grouped_args, ctx));
 }
 
+// --------------------------------------------------------------- CDS.ParSpreads
+
+TEST(ParSpreadsDispatch, BothFormsGiveTheIdenticalColumn) {
+  Fixture f;
+  const std::vector<XlValue> legacy_args{XlValue{serial(2006, 10, 9)},
+                                         XlValue{serial(2006, 10, 9)},
+                                         XlValue{serial(2006, 10, 9)},
+                                         column({XlValue{serial(2011, 10, 9)},
+                                                 XlValue{serial(2016, 10, 9)}}),
+                                         XlValue{true},
+                                         XlValue{"3M"},
+                                         XlValue{"f/s"},
+                                         XlValue{"ACT/360"},
+                                         XlValue{"N"},
+                                         XlValue{"NONE"},
+                                         XlValue{f.discount},
+                                         XlValue{f.spread},
+                                         XlValue{0.4}};
+  const std::vector<XlValue> grouped_args{
+      block({{"Today", XlValue{serial(2006, 10, 9)}},
+             {"Step In Date", XlValue{serial(2006, 10, 9)}},
+             {"Start Date", XlValue{serial(2006, 10, 9)}}}),
+      column({XlValue{serial(2011, 10, 9)}, XlValue{serial(2016, 10, 9)}}),
+      block({{"Pay Accrual On Default", XlValue{true}},
+             {"Coupon Interval", XlValue{"3M"}},
+             {"Stub Type", XlValue{"f/s"}},
+             {"Payment DCC", XlValue{"ACT/360"}},
+             {"Bad Day Convention", XlValue{"N"}},
+             {"Holidays", XlValue{"NONE"}}}),
+      block({{"Discount Curve", XlValue{f.discount}},
+             {"Spread Curve", XlValue{f.spread}},
+             {"Recovery Rate", XlValue{0.4}}})};
+  expect_identical_grids(invoke(*find_function("ParSpreads"), legacy_args, f.ctx),
+                         invoke(*find_function("CDS.ParSpreads"), grouped_args, f.ctx));
+}
+
 TEST(CdsPriceDispatch, AWrongArgumentCountIsReportedNotIndexedPast) {
   Fixture f;
   const std::vector<XlValue> too_few{XlValue{1.0}, XlValue{2.0}};

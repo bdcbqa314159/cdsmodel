@@ -174,6 +174,11 @@ __declspec(dllexport) LPXLOPER12 ParSpreads(LPXLOPER12 a1, LPXLOPER12 a2, LPXLOP
   return run("ParSpreads", {a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13});
 }
 
+__declspec(dllexport) LPXLOPER12 CDSParSpreads(LPXLOPER12 valuation, LPXLOPER12 end_dates,
+                                               LPXLOPER12 conventions, LPXLOPER12 market) noexcept {
+  return run("CDS.ParSpreads", {valuation, end_dates, conventions, market});
+}
+
 __declspec(dllexport) LPXLOPER12 UpfrontFlat(LPXLOPER12 a1, LPXLOPER12 a2, LPXLOPER12 a3,
                                              LPXLOPER12 a4, LPXLOPER12 a5, LPXLOPER12 a6,
                                              LPXLOPER12 a7, LPXLOPER12 a8, LPXLOPER12 a9,

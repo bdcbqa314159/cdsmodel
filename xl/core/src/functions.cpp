@@ -831,6 +831,30 @@ Expected<XlValue> dispatch_cds_spread_curve_grouped(std::span<const XlValue> arg
 // there is nothing new here beyond their argument orders -- which are
 // upstream's, and are the reason artifact #4's grouped forms exist.
 
+/// The shared tail of both ParSpreads forms: one par spread per maturity, as a
+/// column. A bad maturity shows its own message in its row and the rest still
+/// price -- a column that is mostly right beats a single error.
+[[nodiscard]] XlValue par_spreads_from(Date today, Date stepin, Date start,
+                                       std::span<const Date> ends, const Conventions &conventions,
+                                       const ZeroCurve &discount, const ZeroCurve &spread,
+                                       double recovery) {
+  XlGrid out;
+  out.rows = ends.size();
+  out.columns = 1;
+  out.cells.reserve(out.rows);
+  for (const Date &end : ends) {
+    const Cds cds = make_cds(TradeTerms{start, end, 0.0}, conventions);
+    const Expected<double> par =
+        cds_par_spread(cds, today, stepin, conventions.holidays, discount, spread, recovery);
+    if (!par) {
+      out.cells.emplace_back(std::string(to_string(par.error().kind)) + ": " + par.error().message);
+    } else {
+      out.cells.emplace_back(*par);
+    }
+  }
+  return XlValue{out};
+}
+
 /// `ParSpreads(today, stepin, start, ends, payAcc, interval, stub, dcc, bdc,
 ///             holidays, discount, spread, recovery)`
 ///
@@ -878,24 +902,52 @@ Expected<XlValue> dispatch_par_spreads(std::span<const XlValue> args, CallContex
     return unexpected(recovery.error());
   }
 
-  XlGrid out;
-  out.rows = ends->size();
-  out.columns = 1;
-  out.cells.reserve(out.rows);
-  for (std::size_t i = 0; i < ends->size(); ++i) {
-    const Cds cds = make_cds(TradeTerms{*start, (*ends)[i], 0.0}, *conventions);
-    const Expected<double> par = cds_par_spread(cds, *today, *stepin, conventions->holidays,
-                                                **discount, **spread, *recovery);
-    // One bad maturity does not lose the whole column: the failing row shows
-    // its own message and the rest still price. A column where one cell is
-    // wrong and twelve are right is more useful than one error.
-    if (!par) {
-      out.cells.emplace_back(std::string(to_string(par.error().kind)) + ": " + par.error().message);
-    } else {
-      out.cells.emplace_back(*par);
-    }
+  return par_spreads_from(*today, *stepin, *start, *ends, *conventions, **discount, **spread,
+                          *recovery);
+}
+
+/// `CDS.ParSpreads(valuation, endDates, conventions, market)` -- the grouped
+/// form. The valuation dates and the market block are labelled ranges; the end
+/// dates stay a plain column, since they are the one list the function sweeps.
+Expected<XlValue> dispatch_cds_par_spreads_grouped(std::span<const XlValue> args,
+                                                   CallContext &ctx) {
+  if (args.size() != 4) {
+    return fail(ErrorKind::bad_argument,
+                "CDS.ParSpreads takes 4 arguments, got " + detail::num(args.size()));
   }
-  return XlValue{out};
+  static constexpr std::array<LabelSpec, 3> kValuation{
+      {{"Today", true}, {"Step In Date", true}, {"Start Date", true}}};
+  const Expected<std::array<XlValue, 3>> cells =
+      labelled_cells(args[0], kValuation, "the valuation block");
+  if (!cells) {
+    return unexpected(cells.error());
+  }
+  const Expected<Date> today = read_single_date((*cells)[0], "Today");
+  if (!today) {
+    return unexpected(today.error());
+  }
+  const Expected<Date> stepin = read_single_date((*cells)[1], "Step In Date");
+  if (!stepin) {
+    return unexpected(stepin.error());
+  }
+  const Expected<Date> start = read_single_date((*cells)[2], "Start Date");
+  if (!start) {
+    return unexpected(start.error());
+  }
+  const Expected<std::vector<Date>> ends = read_dates(args[1], "End Dates");
+  if (!ends) {
+    return unexpected(ends.error());
+  }
+  const Expected<Conventions> conventions = Conventions::read_block(args[2], ctx.calendars);
+  if (!conventions) {
+    return unexpected(conventions.error());
+  }
+  const Expected<MarketData> market = MarketData::read_block(args[3], ctx.curves);
+  if (!market) {
+    return unexpected(market.error());
+  }
+  return par_spreads_from(*today, *stepin, *start, *ends, *conventions, market->discount,
+                          market->spread, market->recovery);
 }
 
 /// The seven cells `ParSpreadFlat` and `UpfrontFlat` share, read once.
@@ -1313,6 +1365,13 @@ constexpr std::array<ParamSpec, 13> kParSpreadsParams{
      {"Spread Curve", "Handle from CleanSpreadCurveBuild"},
      {"Recovery Rate", "Assumed recovery, 0 to 1"}}};
 
+constexpr std::array<ParamSpec, 4> kCdsParSpreadsGroupedParams{
+    {{"Valuation", "Two-column range: Today, Step In Date, Start Date"},
+     {"End Dates", "A range of maturities; one par spread comes back per row"},
+     {"Conventions", "Two-column range: Pay Accrual On Default, Coupon Interval, "
+                     "Stub Type, Payment DCC, Bad Day Convention, Holidays"},
+     {"Market", "Two-column range: Discount Curve, Spread Curve, Recovery Rate"}}};
+
 constexpr std::array<ParamSpec, 17> kUpfrontFlatParams{
     {{"Today", "Risk starts at the end of today"},
      {"CashSettle Date", "Date for which the PV is calculated"},
@@ -1395,7 +1454,7 @@ constexpr std::array<ParamSpec, 2> kDiscountFactorParams{
 
 constexpr std::array<ParamSpec, 1> kDatesAndRatesParams{{{"Curve", "A curve handle"}}};
 
-constexpr std::array<FunctionSpec, 19> kFunctions{
+constexpr std::array<FunctionSpec, 20> kFunctions{
     {{"CdsPrice", "UUUUUUUUUUUUUUUUU", kCdsPriceLegacyParams,
       "Prices a CDS. The original 16-argument form, kept so existing "
       "workbooks keep working; CDS.Price is the same calculation with the "
@@ -1441,6 +1500,10 @@ constexpr std::array<FunctionSpec, 19> kFunctions{
      {"ParSpreads", "UUUUUUUUUUUUUU", kParSpreadsParams,
       "The par spread of a CDS at each of several maturities, as a column.", kCategory,
       &dispatch_par_spreads},
+     {"CDS.ParSpreads", "UUUUU", kCdsParSpreadsGroupedParams,
+      "The par spread at each of several maturities, arguments grouped. Same "
+      "calculation as ParSpreads.",
+      kCategory, &dispatch_cds_par_spreads_grouped},
      {"UpfrontFlat", "UUUUUUUUUUUUUUUUUU", kUpfrontFlatParams,
       "The upfront charge implied by a quoted par spread, through a flat "
       "credit curve.",
