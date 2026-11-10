@@ -195,6 +195,27 @@ labelled_cells(const XlValue &block, const std::array<LabelSpec, N> &labels,
   return cells;
 }
 
+/// The conventions block for the two functions that do NOT expose
+/// `Pay Accrual On Default` -- DefaultAccrual and FeeLegFlows force it TRUE, as
+/// upstream does. The grouped block carries five labels; TRUE is injected before
+/// the shared positional reader, exactly as the legacy forms inject it.
+[[nodiscard]] Expected<Conventions> read_conventions_no_payacc(const XlValue &block,
+                                                               CallContext &ctx) {
+  static constexpr std::array<LabelSpec, 5> kLabels{{{"Coupon Interval", true},
+                                                     {"Stub Type", true},
+                                                     {"Payment DCC", true},
+                                                     {"Bad Day Convention", true},
+                                                     {"Holidays", false}}};
+  const Expected<std::array<XlValue, 5>> cells =
+      labelled_cells(block, kLabels, "the conventions block");
+  if (!cells) {
+    return unexpected(cells.error());
+  }
+  const std::array<XlValue, 6> with_payacc{XlValue{true}, (*cells)[0], (*cells)[1],
+                                           (*cells)[2],    (*cells)[3], (*cells)[4]};
+  return Conventions::read_positional(with_payacc, ctx.calendars);
+}
+
 // ------------------------------------------------------- CdsPrice, two forms
 //
 // Both read into Valuation / TradeTerms / Conventions / MarketData and then
@@ -996,6 +1017,24 @@ Expected<XlValue> dispatch_par_spread_flat(std::span<const XlValue> args, CallCo
   return XlValue{*spread};
 }
 
+/// The shared tail of both DefaultAccrual forms: build the CDS, accrue, render
+/// the two-cell grid. The trade's start/end are the effective and maturity
+/// dates -- upstream's names for a CDS's own start and end.
+[[nodiscard]] Expected<XlValue> default_accrual_from(Date trade, Date edd, const TradeTerms &terms,
+                                                     double notional, const Conventions &c) {
+  const Cds cds = make_cds(terms, c);
+  const Expected<DefaultAccrual> accrual = default_accrual(cds, trade, edd, notional, c.holidays);
+  if (!accrual) {
+    return unexpected(accrual.error());
+  }
+  XlGrid out;
+  out.rows = 1;
+  out.columns = 2;
+  out.cells.emplace_back(static_cast<double>(accrual->days));
+  out.cells.emplace_back(accrual->amount);
+  return XlValue{out};
+}
+
 /// `DefaultAccrual(trade, edd, effective, maturity, coupon, notional,
 ///                 interval, stub, dcc, bdc, holidays)`
 ///
@@ -1042,18 +1081,70 @@ Expected<XlValue> dispatch_default_accrual(std::span<const XlValue> args, CallCo
     return unexpected(conventions.error());
   }
 
-  const Cds cds = make_cds(TradeTerms{*effective, *maturity, *coupon}, *conventions);
-  const Expected<DefaultAccrual> accrual =
-      default_accrual(cds, *trade, *edd, *notional, conventions->holidays);
-  if (!accrual) {
-    return unexpected(accrual.error());
-  }
+  return default_accrual_from(*trade, *edd, TradeTerms{*effective, *maturity, *coupon}, *notional,
+                              *conventions);
+}
 
+/// `CDS.DefaultAccrual(dates, trade, notional, conventions)` -- the grouped
+/// form. `dates` carries Trade Date and EDD Date; `trade` is the shared Trade
+/// block; the five conventions have pay-accrual forced on, as the legacy form
+/// does.
+Expected<XlValue> dispatch_cds_default_accrual_grouped(std::span<const XlValue> args,
+                                                       CallContext &ctx) {
+  if (args.size() != 4) {
+    return fail(ErrorKind::bad_argument,
+                "CDS.DefaultAccrual takes 4 arguments, got " + detail::num(args.size()));
+  }
+  static constexpr std::array<LabelSpec, 2> kDates{{{"Trade Date", true}, {"EDD Date", true}}};
+  const Expected<std::array<XlValue, 2>> dates = labelled_cells(args[0], kDates, "the dates block");
+  if (!dates) {
+    return unexpected(dates.error());
+  }
+  const Expected<Date> trade = read_single_date((*dates)[0], "Trade Date");
+  if (!trade) {
+    return unexpected(trade.error());
+  }
+  const Expected<Date> edd = read_single_date((*dates)[1], "EDD Date");
+  if (!edd) {
+    return unexpected(edd.error());
+  }
+  const Expected<TradeTerms> terms = TradeTerms::read_block(args[1]);
+  if (!terms) {
+    return unexpected(terms.error());
+  }
+  const Expected<double> notional = args[2].as_double();
+  if (!notional) {
+    return fail(ErrorKind::bad_argument, "Notional: expected a number, got " + args[2].describe());
+  }
+  const Expected<Conventions> conventions = read_conventions_no_payacc(args[3], ctx);
+  if (!conventions) {
+    return unexpected(conventions.error());
+  }
+  return default_accrual_from(*trade, *edd, *terms, *notional, *conventions);
+}
+
+/// The shared tail of both FeeLegFlows forms: build the CDS, generate the fee
+/// leg's flows, render them as a two-column grid.
+[[nodiscard]] Expected<XlValue> fee_leg_flows_from(const TradeTerms &terms, double notional,
+                                                   const Conventions &c) {
+  const Cds cds = make_cds(terms, c);
+  const Expected<std::vector<CashFlow>> flows = cds_fee_leg_flows(cds, notional, c.holidays);
+  if (!flows) {
+    return unexpected(flows.error());
+  }
   XlGrid out;
-  out.rows = 1;
+  out.rows = flows->empty() ? 1 : flows->size();
   out.columns = 2;
-  out.cells.emplace_back(static_cast<double>(accrual->days));
-  out.cells.emplace_back(accrual->amount);
+  out.cells.reserve(out.rows * 2);
+  if (flows->empty()) {
+    out.cells.emplace_back(std::string("the fee leg has no payments"));
+    out.cells.emplace_back(XlValue{});
+    return XlValue{out};
+  }
+  for (const CashFlow &f : *flows) {
+    out.cells.emplace_back(to_excel_serial(f.date));
+    out.cells.emplace_back(f.amount);
+  }
   return XlValue{out};
 }
 
@@ -1091,27 +1182,31 @@ Expected<XlValue> dispatch_fee_leg_flows(std::span<const XlValue> args, CallCont
     return unexpected(conventions.error());
   }
 
-  const Cds cds = make_cds(TradeTerms{*start, *end, *coupon}, *conventions);
-  const Expected<std::vector<CashFlow>> flows =
-      cds_fee_leg_flows(cds, *notional, conventions->holidays);
-  if (!flows) {
-    return unexpected(flows.error());
-  }
+  return fee_leg_flows_from(TradeTerms{*start, *end, *coupon}, *notional, *conventions);
+}
 
-  XlGrid out;
-  out.rows = flows->empty() ? 1 : flows->size();
-  out.columns = 2;
-  out.cells.reserve(out.rows * 2);
-  if (flows->empty()) {
-    out.cells.emplace_back(std::string("the fee leg has no payments"));
-    out.cells.emplace_back(XlValue{});
-    return XlValue{out};
+/// `CDS.FeeLegFlows(trade, notional, conventions)` -- the grouped form. Three
+/// arguments against nine: the shared Trade block, a notional, and the five
+/// conventions with pay-accrual forced on.
+Expected<XlValue> dispatch_cds_fee_leg_flows_grouped(std::span<const XlValue> args,
+                                                     CallContext &ctx) {
+  if (args.size() != 3) {
+    return fail(ErrorKind::bad_argument,
+                "CDS.FeeLegFlows takes 3 arguments, got " + detail::num(args.size()));
   }
-  for (const CashFlow &f : *flows) {
-    out.cells.emplace_back(to_excel_serial(f.date));
-    out.cells.emplace_back(f.amount);
+  const Expected<TradeTerms> terms = TradeTerms::read_block(args[0]);
+  if (!terms) {
+    return unexpected(terms.error());
   }
-  return XlValue{out};
+  const Expected<double> notional = args[1].as_double();
+  if (!notional) {
+    return fail(ErrorKind::bad_argument, "Notional: expected a number, got " + args[1].describe());
+  }
+  const Expected<Conventions> conventions = read_conventions_no_payacc(args[2], ctx);
+  if (!conventions) {
+    return unexpected(conventions.error());
+  }
+  return fee_leg_flows_from(*terms, *notional, *conventions);
 }
 
 // ------------------------------------------------------------ the table
@@ -1282,12 +1377,25 @@ constexpr std::array<ParamSpec, 9> kFeeLegFlowsParams{{
     {"Holidays", "A calendar handle, or NONE for weekends only"},
 }};
 
+constexpr std::array<ParamSpec, 4> kCdsDefaultAccrualGroupedParams{
+    {{"Dates", "Two-column range: Trade Date, EDD Date"},
+     {"Trade", "Two-column range: Start Date, End Date, Coupon Rate"},
+     {"Notional", "Trade notional"},
+     {"Conventions", "Two-column range: Coupon Interval, Stub Type, Payment DCC, "
+                     "Bad Day Convention, Holidays"}}};
+
+constexpr std::array<ParamSpec, 3> kCdsFeeLegFlowsGroupedParams{
+    {{"Trade", "Two-column range: Start Date, End Date, Coupon Rate"},
+     {"Notional", "Trade notional"},
+     {"Conventions", "Two-column range: Coupon Interval, Stub Type, Payment DCC, "
+                     "Bad Day Convention, Holidays"}}};
+
 constexpr std::array<ParamSpec, 2> kDiscountFactorParams{
     {{"Curve", "A curve handle"}, {"Date", "The date to discount to"}}};
 
 constexpr std::array<ParamSpec, 1> kDatesAndRatesParams{{{"Curve", "A curve handle"}}};
 
-constexpr std::array<FunctionSpec, 17> kFunctions{
+constexpr std::array<FunctionSpec, 19> kFunctions{
     {{"CdsPrice", "UUUUUUUUUUUUUUUUU", kCdsPriceLegacyParams,
       "Prices a CDS. The original 16-argument form, kept so existing "
       "workbooks keep working; CDS.Price is the same calculation with the "
@@ -1345,9 +1453,17 @@ constexpr std::array<FunctionSpec, 17> kFunctions{
       "Accrued interest owed on a defaulted CDS: the day count and the "
       "amount, as two columns.",
       kCategory, &dispatch_default_accrual},
+     {"CDS.DefaultAccrual", "UUUUU", kCdsDefaultAccrualGroupedParams,
+      "Accrued interest owed on a defaulted CDS, arguments grouped. Same "
+      "calculation as DefaultAccrual.",
+      kCategory, &dispatch_cds_default_accrual_grouped},
      {"FeeLegFlows", "UUUUUUUUUU", kFeeLegFlowsParams,
       "The fee leg's cash flows: pay date and amount, one row each.", kCategory,
       &dispatch_fee_leg_flows},
+     {"CDS.FeeLegFlows", "UUUU", kCdsFeeLegFlowsGroupedParams,
+      "The fee leg's cash flows, arguments grouped. Same calculation as "
+      "FeeLegFlows.",
+      kCategory, &dispatch_cds_fee_leg_flows_grouped},
      {"DatesAndRates", "UU", kDatesAndRatesParams,
       "A curve's points, as two columns: dates then rates.", kCategory,
       &dispatch_dates_and_rates}}};

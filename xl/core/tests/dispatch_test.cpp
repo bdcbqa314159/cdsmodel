@@ -287,6 +287,82 @@ TEST(SpreadCurveDispatch, BothFormsBuildTheIdenticalCurve) {
   }
 }
 
+// Compares the two grids a legacy/grouped pair returns, cell by numeric cell.
+void expect_identical_grids(const XlValue &a, const XlValue &b) {
+  const auto ga = a.as_grid();
+  const auto gb = b.as_grid();
+  ASSERT_TRUE(ga.has_value()) << "legacy did not return a grid: " << a.describe();
+  ASSERT_TRUE(gb.has_value()) << "grouped did not return a grid: " << b.describe();
+  ASSERT_EQ(ga->rows, gb->rows);
+  ASSERT_EQ(ga->columns, gb->columns);
+  ASSERT_EQ(ga->cells.size(), gb->cells.size());
+  for (std::size_t i = 0; i < ga->cells.size(); ++i) {
+    EXPECT_EQ(ga->cells[i].as_double(), gb->cells[i].as_double()) << "cell " << i;
+  }
+}
+
+// --------------------------------------------------------------- CDS.DefaultAccrual
+
+TEST(DefaultAccrualDispatch, BothFormsGiveTheIdenticalGrid) {
+  CurveRegistry curves;
+  CalendarRegistry calendars;
+  CallContext ctx{curves, calendars};
+  const std::vector<XlValue> legacy_args{XlValue{serial(2008, 2, 15)}, // trade
+                                         XlValue{serial(2008, 3, 20)}, // edd
+                                         XlValue{serial(2006, 10, 9)}, // effective
+                                         XlValue{serial(2011, 10, 9)}, // maturity
+                                         XlValue{0.01},
+                                         XlValue{1.0e7},
+                                         XlValue{"3M"},
+                                         XlValue{"f/s"},
+                                         XlValue{"ACT/360"},
+                                         XlValue{"N"},
+                                         XlValue{"NONE"}};
+  const std::vector<XlValue> grouped_args{
+      block({{"Trade Date", XlValue{serial(2008, 2, 15)}},
+             {"EDD Date", XlValue{serial(2008, 3, 20)}}}),
+      block({{"Start Date", XlValue{serial(2006, 10, 9)}},
+             {"End Date", XlValue{serial(2011, 10, 9)}},
+             {"Coupon Rate", XlValue{0.01}}}),
+      XlValue{1.0e7},
+      block({{"Coupon Interval", XlValue{"3M"}},
+             {"Stub Type", XlValue{"f/s"}},
+             {"Payment DCC", XlValue{"ACT/360"}},
+             {"Bad Day Convention", XlValue{"N"}},
+             {"Holidays", XlValue{"NONE"}}})};
+  expect_identical_grids(invoke(*find_function("DefaultAccrual"), legacy_args, ctx),
+                         invoke(*find_function("CDS.DefaultAccrual"), grouped_args, ctx));
+}
+
+// --------------------------------------------------------------- CDS.FeeLegFlows
+
+TEST(FeeLegFlowsDispatch, BothFormsGiveTheIdenticalGrid) {
+  CurveRegistry curves;
+  CalendarRegistry calendars;
+  CallContext ctx{curves, calendars};
+  const std::vector<XlValue> legacy_args{XlValue{serial(2006, 10, 9)},
+                                         XlValue{serial(2011, 10, 9)},
+                                         XlValue{0.01},
+                                         XlValue{1.0e7},
+                                         XlValue{"3M"},
+                                         XlValue{"f/s"},
+                                         XlValue{"ACT/360"},
+                                         XlValue{"N"},
+                                         XlValue{"NONE"}};
+  const std::vector<XlValue> grouped_args{
+      block({{"Start Date", XlValue{serial(2006, 10, 9)}},
+             {"End Date", XlValue{serial(2011, 10, 9)}},
+             {"Coupon Rate", XlValue{0.01}}}),
+      XlValue{1.0e7},
+      block({{"Coupon Interval", XlValue{"3M"}},
+             {"Stub Type", XlValue{"f/s"}},
+             {"Payment DCC", XlValue{"ACT/360"}},
+             {"Bad Day Convention", XlValue{"N"}},
+             {"Holidays", XlValue{"NONE"}}})};
+  expect_identical_grids(invoke(*find_function("FeeLegFlows"), legacy_args, ctx),
+                         invoke(*find_function("CDS.FeeLegFlows"), grouped_args, ctx));
+}
+
 TEST(CdsPriceDispatch, AWrongArgumentCountIsReportedNotIndexedPast) {
   Fixture f;
   const std::vector<XlValue> too_few{XlValue{1.0}, XlValue{2.0}};

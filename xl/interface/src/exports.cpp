@@ -201,10 +201,21 @@ __declspec(dllexport) LPXLOPER12 DefaultAccrual(LPXLOPER12 a1, LPXLOPER12 a2, LP
   return run("DefaultAccrual", {a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11});
 }
 
+__declspec(dllexport) LPXLOPER12 CDSDefaultAccrual(LPXLOPER12 dates, LPXLOPER12 trade,
+                                                   LPXLOPER12 notional,
+                                                   LPXLOPER12 conventions) noexcept {
+  return run("CDS.DefaultAccrual", {dates, trade, notional, conventions});
+}
+
 __declspec(dllexport) LPXLOPER12 FeeLegFlows(LPXLOPER12 a1, LPXLOPER12 a2, LPXLOPER12 a3,
                                              LPXLOPER12 a4, LPXLOPER12 a5, LPXLOPER12 a6,
                                              LPXLOPER12 a7, LPXLOPER12 a8, LPXLOPER12 a9) noexcept {
   return run("FeeLegFlows", {a1, a2, a3, a4, a5, a6, a7, a8, a9});
+}
+
+__declspec(dllexport) LPXLOPER12 CDSFeeLegFlows(LPXLOPER12 trade, LPXLOPER12 notional,
+                                                LPXLOPER12 conventions) noexcept {
+  return run("CDS.FeeLegFlows", {trade, notional, conventions});
 }
 
 __declspec(dllexport) LPXLOPER12 IRZeroCurveMake(LPXLOPER12 a1, LPXLOPER12 a2, LPXLOPER12 a3,
