@@ -381,6 +381,32 @@ else()
     get_filename_component(_xlsdk_srcdir "${_xlsdk_xlcall_cpp}" DIRECTORY)
     file(GLOB CDSMODEL_XLSDK_SOURCES
          "${_xlsdk_srcdir}/*.c" "${_xlsdk_srcdir}/*.cpp")
+
+    # The PRISTINE sample framework.c compiles xlcall.cpp by #including it inline
+    # (`#include <xlcall.cpp>`); copies that un-inline it leave xlcall.cpp a
+    # standalone source. Compiling it BOTH ways double-defines every Excel
+    # callback. So if framework.c inlines it, drop xlcall.cpp from the separate
+    # compile list -- which is what lets a pristine, unedited SDK build, with the
+    # licence-unmodifiable xlcall.cpp left exactly as Microsoft shipped it.
+    foreach(_src ${CDSMODEL_XLSDK_SOURCES})
+      get_filename_component(_name "${_src}" NAME)
+      string(TOLOWER "${_name}" _name)
+      if(_name STREQUAL "framework.c" OR _name STREQUAL "framewrk.c")
+        file(READ "${_src}" _xlsdk_framework_text)
+      endif()
+    endforeach()
+    if(_xlsdk_framework_text MATCHES "include[ \t]*<xlcall\\.cpp>")
+      set(_xlsdk_kept "")
+      foreach(_src ${CDSMODEL_XLSDK_SOURCES})
+        get_filename_component(_name "${_src}" NAME)
+        string(TOLOWER "${_name}" _name)
+        if(NOT _name STREQUAL "xlcall.cpp")
+          list(APPEND _xlsdk_kept "${_src}")
+        endif()
+      endforeach()
+      set(CDSMODEL_XLSDK_SOURCES "${_xlsdk_kept}")
+      message(STATUS "cdsmodel: framework.c inlines xlcall.cpp; compiling it once")
+    endif()
     message(STATUS "cdsmodel: XLL SDK sources: ${CDSMODEL_XLSDK_SOURCES}")
   endif()
 endif()

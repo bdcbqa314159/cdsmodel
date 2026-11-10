@@ -113,40 +113,43 @@ precisely because that is where the testable logic must live.
 
 ### Getting the SDK
 
-The SDK is Microsoft's and `framework.h` carries *"Copyright (c) 1997 - 2010
-Microsoft Corporation. All rights reserved."*, so it is gitignored and never
-committed -- this repo is public. Each machine supplies its own copy;
-`python verify.py sdk-absent` enforces that nothing leaks in.
+The SDK is Microsoft's -- `xlcall.h` carries *"Copyright (c) 1997 - 2010
+Microsoft Corporation"* -- and its licence (the Excel 2013 XLL SDK terms)
+**forbids redistributing any of its files** (clause 2.b). So it is gitignored
+and never committed; this repo is public. Each machine supplies its own copy,
+and `python verify.py sdk-absent` enforces that nothing leaks in. Same rule, and
+same reason, as the ISDA oracle.
 
-**The layout does not matter.** CMake searches `CDSMODEL_XLSDK_DIR`
-recursively for four files by name, trying lower case then upper case, so the
-extracted bundle works as-is. All of these are equivalent:
+Two further licence points shape how we use it:
 
-    xlsdk/                              xlsdk/
-      xlcall.h                            Excel2013XLLSDK/
-      xlcall.cpp                            INCLUDE/
-      framework.h                             xlcall.h
-      framework.c                             framework.h
-                                            SRC/
-                                              xlcall.cpp
-                                              framework.c
-                                            LIB/      <- ignored
-                                            SAMPLES/  <- ignored
+- `xlcall.h` and `src/xlcall.cpp` **may not be modified** (clause 2.a.i) -- they
+  are staged **byte-for-byte**.
+- The **sample** framework (`framewrk.*`, `MemoryManager.*`, `MemoryPool.*`)
+  **may** be modified (clause 2.a.ii), and two edits to `framework.c` are
+  needed: un-inline `xlcall.cpp` (the pristine sample `#include`s it, which
+  would double-define every callback), and compile out the 8-bit `Excel4`
+  helpers that a 64-bit add-in cannot link.
 
-Only these four are read. Everything else in the bundle -- `LIB/`,
-`SAMPLES/`, the HTML docs -- is unused: there is no import library to link,
-because `xlcall.cpp` resolves `MdCallBack12` from the running Excel process.
+**Eight files** are compiled, not four -- `framework.c` pulls in the memory
+manager:
 
-    xlsdk/                     the default
-    CDSMODEL_XLSDK_DIR=...     or point it anywhere, e.g. C:/sdk/Excel2013XLLSDK
+    xlcall.h  xlcall.cpp  framework.h  framework.c
+    MemoryManager.h  MemoryManager.cpp  MemoryPool.h  MemoryPool.cpp
 
-Configure prints what it found, or names each missing file:
+The easiest way to stage them from your own download:
+
+    python tools/setup_xlsdk.py  /path/to/extracted/Excel2013XLLSDK
+
+It copies `xlcall.*` and the memory manager pristine, applies the two sample
+edits to `framework.c`, and writes all eight into `xlsdk/` (gitignored). Then
+`cmake --preset release` configures and builds the add-in.
+
+You can also populate `xlsdk/` (or `CDSMODEL_XLSDK_DIR`) by hand; CMake searches
+recursively for `xlcall.h/.cpp` and `framework.h/.c` by name, and if it finds a
+`framework.c` that still `#include`s `xlcall.cpp` inline it compiles `xlcall.cpp`
+once rather than twice. Configure prints what it found:
 
     -- cdsmodel: Excel XLL SDK found
-    --   .../INCLUDE/xlcall.h
-    --   .../SRC/xlcall.cpp
-    --   .../INCLUDE/framework.h
-    --   .../SRC/framework.c
     -- cdsmodel: building cdsmodel.xll
 
 ### What this repo builds, and where
