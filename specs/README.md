@@ -27,7 +27,7 @@ action and reasoning records of work already done.
 |---|---|---|---|
 | 01 | [`01_error_channel.md`](01_error_channel.md) | **current** | `std::optional` → `Expected<T>` in C++20; all 341 sites; the four-kind taxonomy |
 | 02 | [`02_consumability.md`](02_consumability.md) | **current** | install/export, package config, the umbrella header |
-| 03 | [`03_xll.md`](03_xll.md) | **current** (7/10; C1, C2, C8 need Windows) | the XLL foundation: SDK, x64, XLOPER12, one function end to end |
+| 03 | [`03_xll.md`](03_xll.md) | **current** (8/10; C8 passed in Excel 2026-11-11; C1 lacks `/WX`, C2 lacks an `xl/sdk` test) | the XLL foundation: SDK, x64, XLOPER12, one function end to end |
 | 04 | [`04_holiday_calendars.md`](04_holiday_calendars.md) | **ratified** | reading a holiday file; UPSTREAM-41 |
 
 ## ► ARCHIVED
