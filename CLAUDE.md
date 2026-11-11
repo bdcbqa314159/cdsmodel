@@ -101,6 +101,13 @@ the add-in itself, and that is by design, not a limitation to work around.
     xl/core           XlValue, dispatch, readers    all platforms
     xl/sdk            XLOPER12 <-> XlValue          Windows + SDK
     xl/interface      cdsmodel.xll                  Windows + SDK
+    python            the nanobind extension        all platforms
+
+`python/` is a **peer of `xl/core`, not a layer above it**: both bind the same
+`cdsmodel` functions, and neither may depend on the other. It mirrors
+`xl/core`'s four argument blocks by hand rather than including them, because
+those types carry `XlValue` and the handle registries.
+→ enforced by `python verify.py python-layer`.
 
 Dependencies run **downward only**: `cdsmodel` knows nothing about Excel, and
 `xl/core` knows nothing about `XLOPER12`. **Logic does not belong in `xl/sdk`
@@ -295,5 +302,8 @@ assert the arity the type codes declare equals the documented parameter count.
 
 ## Formatting
 
-`clang-format` covers `include/`, `src/` and `tests/` only. Upstream C is never
-reformatted — it is not ours, and a reformatted oracle is a modified oracle.
+`clang-format` covers our own C++ only: `include/`, `src/`, `tests/`, `tools/`
+and `python/src/`. Upstream C is never reformatted — it is not ours, and a
+reformatted oracle is a modified oracle. The Excel SDK is excluded for the same
+reason, and `xl/` is excluded because it was not in scope when the gate was
+written.

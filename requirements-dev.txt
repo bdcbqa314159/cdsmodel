@@ -1,2 +1,4 @@
 clang-format==18.1.8
 openpyxl==3.1.5   # tools/gen_xll_workbook.py -- the C8 smoke workbook
+pytest==8.3.3     # tests/python -- the nanobind package's suite
+build==1.2.2      # python -m build, for the wheel
