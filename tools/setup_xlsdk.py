@@ -12,9 +12,17 @@ What it does, and why it is licence-clean:
   * xlcall.h, xlcall.cpp and the memory-manager samples are copied BYTE-FOR-BYTE
     -- clause 2.a.i forbids modifying xlcall.h/xlcall.cpp, so they stay pristine.
   * framework.c is a SAMPLE (clause 2.a.ii permits modifying samples), and the
-    only change made is to its #include lines: the pristine sample compiles
-    xlcall.cpp by #including it inline, which would double-define every callback
-    when xlcall.cpp is also built on its own. Un-inlining it is the one edit.
+    only change made is to its #include lines -- its executable code is left
+    exactly as Microsoft ships it. The pristine sample compiles xlcall.cpp by
+    #including it inline, which would double-define every callback when xlcall.cpp
+    is also built on its own, so that one include is dropped; the framework and
+    memory-manager includes are repointed at the names we stage them under.
+
+    The sample's 8-bit (Excel4) helpers are NOT touched: a 64-bit link would
+    otherwise leave `Excel4`/`Excel4v` unresolved, but that is fixed on OUR side
+    of the seam by xl/sdk/src/excel4_stub.cpp, which defines the two symbols the
+    helpers reference (a 64-bit add-in never calls them). So nothing in this
+    sample's body is edited to make the add-in build.
 
 Nothing is committed: xlsdk/ is gitignored. You still accept Microsoft's licence
 when you download the SDK.
@@ -62,21 +70,6 @@ def find(sdk: Path, names: tuple[str, ...]) -> Path | None:
     return None
 
 
-# The sample framework defines 8-bit (Excel4 / LPXLOPER) helpers that 64-bit
-# Excel does not provide an entry point for -- `Excel4`/`Excel4v` are unresolved
-# in an x64 link. A 64-bit add-in never calls them (it uses the `*12` forms), so
-# they are compiled out. Matched by their exact 8-bit signatures, never the
-# `*12` variants beside them.
-EIGHT_BIT_SIGNATURES = (
-    "int cdecl Excel(",
-    "int _cdecl Excel(",
-    "LPXLOPER TempActiveRef(",
-    "LPXLOPER TempActiveCell(",
-    "LPXLOPER TempActiveRow(",
-    "LPXLOPER TempActiveColumn(",
-)
-
-
 def fix_includes(text: str) -> str:
     """Stop framework.c compiling xlcall.cpp inline, and point its framework and
     memory includes at the names we stage them under."""
@@ -95,33 +88,8 @@ def fix_includes(text: str) -> str:
     return "".join(out)
 
 
-def disable_8bit(text: str) -> str:
-    """Wrap each 8-bit helper (signature to matching close brace) in `#if 0`."""
-    lines = text.splitlines(keepends=True)
-    out: list[str] = []
-    i = 0
-    while i < len(lines):
-        if any(lines[i].lstrip().startswith(sig) for sig in EIGHT_BIT_SIGNATURES):
-            out.append("#if 0 // 8-bit Excel4 API: no entry point in 64-bit Excel\n")
-            depth = 0
-            seen_brace = False
-            while i < len(lines):
-                out.append(lines[i])
-                depth += lines[i].count("{") - lines[i].count("}")
-                if "{" in lines[i]:
-                    seen_brace = True
-                i += 1
-                if seen_brace and depth == 0:
-                    break
-            out.append("#endif\n")
-        else:
-            out.append(lines[i])
-            i += 1
-    return "".join(out)
-
-
 def patch_framework(text: str) -> str:
-    return disable_8bit(fix_includes(text))
+    return fix_includes(text)
 
 
 def main() -> int:

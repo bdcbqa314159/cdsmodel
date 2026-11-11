@@ -8,6 +8,7 @@ project(cdsmodel_xl_sdk LANGUAGES C CXX)
 
 add_library(cdsmodel_xl_sdk STATIC
             src/oper.cpp
+            src/excel4_stub.cpp
             ${CDSMODEL_XLSDK_SOURCES})
 add_library(cdsmodel::xl_sdk ALIAS cdsmodel_xl_sdk)
 
