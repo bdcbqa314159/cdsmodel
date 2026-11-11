@@ -142,6 +142,49 @@ TEST(Registration, BothFormsOfCdsPriceAreRegistered) {
   EXPECT_EQ(grouped->declared_arity(), 5u);
 }
 
+TEST(Registration, NoSingleFunctionOverflowsTheTempPool) {
+  // xlAutoOpen frees the SDK temp pool after each registration, so the
+  // load-time invariant is that ONE function's xlfRegister strings fit the
+  // SDK's fixed per-thread pool. A function wide enough to overflow it on its
+  // own would register as #NAME? in Excel -- and no oracle-free test could see
+  // why, since the Registration tests never touch a live pool. This is the one
+  // that bit CdsModelVersion (registered last, after the pool had filled): see
+  // the port notes. So model the footprint from the table and fail first.
+  //
+  // Constants mirror the SDK: MemoryPool.cpp sizes the pool at MEMORYSIZE =
+  // 10240; temp_string (xl/sdk/src/oper.cpp) allocates one XLOPER12 plus one
+  // (len+1)-XCHAR buffer per string. Both sizes are rounded up so this trips
+  // before the real pool does. register_one builds exactly ten such strings.
+  constexpr std::size_t kPoolBytes = 10240;
+  constexpr std::size_t kOperBytes = 32;  // >= sizeof(XLOPER12), x64
+  constexpr std::size_t kXChar = 2;       // sizeof(XCHAR)
+
+  for (const FunctionSpec &f : all_functions()) {
+    std::size_t dots = 0;
+    for (const char c : f.name) {
+      if (c == '.') {
+        ++dots;  // the exported entry point strips dots from the cell name
+      }
+    }
+    std::size_t arg_names = 0;
+    for (std::size_t i = 0; i < f.params.size(); ++i) {
+      arg_names += f.params[i].name.size() + (i ? 2 : 0);  // joined with ", "
+    }
+    const std::size_t lens[] = {f.name.size() - dots, f.type_codes.size(),
+                                f.name.size(),         arg_names,
+                                1,                     f.category.size(),
+                                0,                     0,
+                                f.help.size(),         0};
+    std::size_t bytes = 0;
+    for (const std::size_t len : lens) {
+      bytes += kOperBytes + (len + 1) * kXChar;
+    }
+    EXPECT_LT(bytes, kPoolBytes)
+        << f.name << " needs " << bytes << " SDK temp bytes to register, over "
+        << "the " << kPoolBytes << "-byte pool -- it would be #NAME? in Excel";
+  }
+}
+
 // ------------------------------------------------------------------- C5/C9
 
 TEST(CdsPriceDispatch, C5TheLegacyFormPricesATrade) {

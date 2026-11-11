@@ -313,6 +313,15 @@ __declspec(dllexport) short xlAutoOpen(void) noexcept try {
   Excel12(xlGetName, &dll_name, 0);
   for (const cdsmodel::xl::FunctionSpec &spec : cdsmodel::xl::all_functions()) {
     register_one(&dll_name, spec);
+    // The SDK's temp-memory pool is a fixed 10 KB per thread (MemoryPool.cpp).
+    // xlfRegister copies its string arguments during the call, so once
+    // register_one returns they are free to release. Doing so here -- instead
+    // of letting two dozen registrations accumulate -- is what stops the pool
+    // overflowing partway through and handing every later registration a
+    // nullptr procedure name, which Excel reports as #NAME? on the worksheet.
+    // dll_name is Excel's own memory (from xlGetName), not temp, so it survives
+    // the free and stays valid for the next iteration.
+    FreeAllTempMemory();
   }
   // Registered by hand: it takes no arguments, so it is not in the table.
   std::array<LPXLOPER12, 11> version_argv{
@@ -329,6 +338,7 @@ __declspec(dllexport) short xlAutoOpen(void) noexcept try {
       cdsmodel::xl::temp_string(""),
   };
   Excel12v(xlfRegister, nullptr, static_cast<int>(version_argv.size()), version_argv.data());
+  FreeAllTempMemory();
 
   Excel12(xlFree, nullptr, 1, &dll_name);
   return 1;
