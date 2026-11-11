@@ -42,6 +42,36 @@ XlValue block(std::initializer_list<std::pair<const char *, XlValue>> rows) {
   return XlValue{g};
 }
 
+/// A single-column range, which is what the legacy forms read for their
+/// parallel arrays (ends, coupons, ...).
+XlValue column(std::initializer_list<XlValue> cells) {
+  XlGrid g;
+  g.rows = cells.size();
+  g.columns = 1;
+  for (const XlValue &c : cells) {
+    g.cells.push_back(c);
+  }
+  return XlValue{g};
+}
+
+/// A header-row table, which is what the grouped forms read for the same data:
+/// row 0 holds `headers`, the rest hold `rows`.
+XlValue table(std::initializer_list<const char *> headers,
+              std::initializer_list<std::initializer_list<XlValue>> rows) {
+  XlGrid g;
+  g.columns = headers.size();
+  g.rows = rows.size() + 1;
+  for (const char *h : headers) {
+    g.cells.emplace_back(std::string(h));
+  }
+  for (const auto &row : rows) {
+    for (const XlValue &c : row) {
+      g.cells.push_back(c);
+    }
+  }
+  return XlValue{g};
+}
+
 cdsmodel::ZeroCurve flat_curve(double rate) {
   const cdsmodel::RatePoint pts[]{{*cdsmodel::make_date(2007, 1, 1), rate},
                                   {*cdsmodel::make_date(2030, 1, 1), rate}};
@@ -110,6 +140,49 @@ TEST(Registration, BothFormsOfCdsPriceAreRegistered) {
   // The whole point, as a number: 16 arguments against 5.
   EXPECT_EQ(legacy->declared_arity(), 16u);
   EXPECT_EQ(grouped->declared_arity(), 5u);
+}
+
+TEST(Registration, NoSingleFunctionOverflowsTheTempPool) {
+  // xlAutoOpen frees the SDK temp pool after each registration, so the
+  // load-time invariant is that ONE function's xlfRegister strings fit the
+  // SDK's fixed per-thread pool. A function wide enough to overflow it on its
+  // own would register as #NAME? in Excel -- and no oracle-free test could see
+  // why, since the Registration tests never touch a live pool. This is the one
+  // that bit CdsModelVersion (registered last, after the pool had filled): see
+  // the port notes. So model the footprint from the table and fail first.
+  //
+  // Constants mirror the SDK: MemoryPool.cpp sizes the pool at MEMORYSIZE =
+  // 10240; temp_string (xl/sdk/src/oper.cpp) allocates one XLOPER12 plus one
+  // (len+1)-XCHAR buffer per string. Both sizes are rounded up so this trips
+  // before the real pool does. register_one builds exactly ten such strings.
+  constexpr std::size_t kPoolBytes = 10240;
+  constexpr std::size_t kOperBytes = 32;  // >= sizeof(XLOPER12), x64
+  constexpr std::size_t kXChar = 2;       // sizeof(XCHAR)
+
+  for (const FunctionSpec &f : all_functions()) {
+    std::size_t dots = 0;
+    for (const char c : f.name) {
+      if (c == '.') {
+        ++dots;  // the exported entry point strips dots from the cell name
+      }
+    }
+    std::size_t arg_names = 0;
+    for (std::size_t i = 0; i < f.params.size(); ++i) {
+      arg_names += f.params[i].name.size() + (i ? 2 : 0);  // joined with ", "
+    }
+    const std::size_t lens[] = {f.name.size() - dots, f.type_codes.size(),
+                                f.name.size(),         arg_names,
+                                1,                     f.category.size(),
+                                0,                     0,
+                                f.help.size(),         0};
+    std::size_t bytes = 0;
+    for (const std::size_t len : lens) {
+      bytes += kOperBytes + (len + 1) * kXChar;
+    }
+    EXPECT_LT(bytes, kPoolBytes)
+        << f.name << " needs " << bytes << " SDK temp bytes to register, over "
+        << "the " << kPoolBytes << "-byte pool -- it would be #NAME? in Excel";
+  }
 }
 
 // ------------------------------------------------------------------- C5/C9
@@ -182,6 +255,306 @@ TEST(CdsPriceDispatch, C9BothFormsGiveTheIdenticalAnswer) {
   // Bitwise, not near: it is one computation reached two ways. Anything other
   // than exact equality means the readers disagree about an input.
   EXPECT_EQ(*a.as_double(), *b.as_double());
+}
+
+// --------------------------------------------------------------- CDS.SpreadCurve
+
+TEST(SpreadCurveDispatch, BothFormsAreRegistered) {
+  const FunctionSpec *legacy = find_function("CleanSpreadCurveBuild");
+  const FunctionSpec *grouped = find_function("CDS.SpreadCurve");
+  ASSERT_NE(legacy, nullptr);
+  ASSERT_NE(grouped, nullptr);
+  EXPECT_EQ(legacy->declared_arity(), 16u);
+  EXPECT_EQ(grouped->declared_arity(), 6u);
+}
+
+TEST(SpreadCurveDispatch, BothFormsBuildTheIdenticalCurve) {
+  Fixture f;
+  const double today = serial(2006, 10, 9);
+  // Two benchmarks, so the bootstrap solves more than one node.
+  const std::vector<XlValue> legacy_args{
+      XlValue{today},
+      XlValue{today},
+      XlValue{today},
+      XlValue{today},
+      column({XlValue{serial(2011, 10, 9)}, XlValue{serial(2016, 10, 9)}}),
+      column({XlValue{0.01}, XlValue{0.012}}),
+      XlValue{}, // Include Flags blank -> include every benchmark
+      XlValue{true},
+      XlValue{"3M"},
+      XlValue{"f/s"},
+      XlValue{"ACT/360"},
+      XlValue{"N"},
+      XlValue{"NONE"},
+      XlValue{f.discount},
+      XlValue{0.4},
+      XlValue{"legacy.spread"}};
+
+  const std::vector<XlValue> grouped_args{
+      block({{"Today", XlValue{today}},
+             {"Start Date", XlValue{today}},
+             {"Step In Date", XlValue{today}},
+             {"Cash Settle Date", XlValue{today}}}),
+      table({"End Date", "Coupon Rate"},
+            {{XlValue{serial(2011, 10, 9)}, XlValue{0.01}},
+             {XlValue{serial(2016, 10, 9)}, XlValue{0.012}}}),
+      block({{"Pay Accrual On Default", XlValue{true}},
+             {"Coupon Interval", XlValue{"3M"}},
+             {"Stub Type", XlValue{"f/s"}},
+             {"Payment DCC", XlValue{"ACT/360"}},
+             {"Bad Day Convention", XlValue{"N"}},
+             {"Holidays", XlValue{"NONE"}}}),
+      XlValue{f.discount},
+      XlValue{0.4},
+      XlValue{"grouped.spread"}};
+
+  const XlValue a = invoke(*find_function("CleanSpreadCurveBuild"), legacy_args, f.ctx);
+  const XlValue b = invoke(*find_function("CDS.SpreadCurve"), grouped_args, f.ctx);
+  const auto handle_a = a.as_string();
+  const auto handle_b = b.as_string();
+  ASSERT_TRUE(handle_a.has_value()) << a.describe();
+  ASSERT_TRUE(handle_b.has_value()) << b.describe();
+
+  const auto curve_a = f.curves.resolve(*handle_a);
+  const auto curve_b = f.curves.resolve(*handle_b);
+  ASSERT_TRUE(curve_a.has_value()) << *handle_a;
+  ASSERT_TRUE(curve_b.has_value()) << *handle_b;
+
+  const auto points_a = (*curve_a)->points();
+  const auto points_b = (*curve_b)->points();
+  ASSERT_EQ(points_a.size(), points_b.size());
+  // Bitwise: one bootstrap reached two ways. A difference means the readers
+  // disagree about a benchmark, a date or a convention.
+  for (std::size_t i = 0; i < points_a.size(); ++i) {
+    EXPECT_EQ(points_a[i], points_b[i]) << "curve point " << i;
+  }
+}
+
+// Compares the two grids a legacy/grouped pair returns, cell by numeric cell.
+void expect_identical_grids(const XlValue &a, const XlValue &b) {
+  const auto ga = a.as_grid();
+  const auto gb = b.as_grid();
+  ASSERT_TRUE(ga.has_value()) << "legacy did not return a grid: " << a.describe();
+  ASSERT_TRUE(gb.has_value()) << "grouped did not return a grid: " << b.describe();
+  ASSERT_EQ(ga->rows, gb->rows);
+  ASSERT_EQ(ga->columns, gb->columns);
+  ASSERT_EQ(ga->cells.size(), gb->cells.size());
+  for (std::size_t i = 0; i < ga->cells.size(); ++i) {
+    EXPECT_EQ(ga->cells[i].as_double(), gb->cells[i].as_double()) << "cell " << i;
+  }
+}
+
+// --------------------------------------------------------------- CDS.DefaultAccrual
+
+TEST(DefaultAccrualDispatch, BothFormsGiveTheIdenticalGrid) {
+  CurveRegistry curves;
+  CalendarRegistry calendars;
+  CallContext ctx{curves, calendars};
+  const std::vector<XlValue> legacy_args{XlValue{serial(2008, 2, 15)}, // trade
+                                         XlValue{serial(2008, 3, 20)}, // edd
+                                         XlValue{serial(2006, 10, 9)}, // effective
+                                         XlValue{serial(2011, 10, 9)}, // maturity
+                                         XlValue{0.01},
+                                         XlValue{1.0e7},
+                                         XlValue{"3M"},
+                                         XlValue{"f/s"},
+                                         XlValue{"ACT/360"},
+                                         XlValue{"N"},
+                                         XlValue{"NONE"}};
+  const std::vector<XlValue> grouped_args{
+      block({{"Trade Date", XlValue{serial(2008, 2, 15)}},
+             {"EDD Date", XlValue{serial(2008, 3, 20)}}}),
+      block({{"Start Date", XlValue{serial(2006, 10, 9)}},
+             {"End Date", XlValue{serial(2011, 10, 9)}},
+             {"Coupon Rate", XlValue{0.01}}}),
+      XlValue{1.0e7},
+      block({{"Coupon Interval", XlValue{"3M"}},
+             {"Stub Type", XlValue{"f/s"}},
+             {"Payment DCC", XlValue{"ACT/360"}},
+             {"Bad Day Convention", XlValue{"N"}},
+             {"Holidays", XlValue{"NONE"}}})};
+  expect_identical_grids(invoke(*find_function("DefaultAccrual"), legacy_args, ctx),
+                         invoke(*find_function("CDS.DefaultAccrual"), grouped_args, ctx));
+}
+
+// --------------------------------------------------------------- CDS.FeeLegFlows
+
+TEST(FeeLegFlowsDispatch, BothFormsGiveTheIdenticalGrid) {
+  CurveRegistry curves;
+  CalendarRegistry calendars;
+  CallContext ctx{curves, calendars};
+  const std::vector<XlValue> legacy_args{XlValue{serial(2006, 10, 9)},
+                                         XlValue{serial(2011, 10, 9)},
+                                         XlValue{0.01},
+                                         XlValue{1.0e7},
+                                         XlValue{"3M"},
+                                         XlValue{"f/s"},
+                                         XlValue{"ACT/360"},
+                                         XlValue{"N"},
+                                         XlValue{"NONE"}};
+  const std::vector<XlValue> grouped_args{
+      block({{"Start Date", XlValue{serial(2006, 10, 9)}},
+             {"End Date", XlValue{serial(2011, 10, 9)}},
+             {"Coupon Rate", XlValue{0.01}}}),
+      XlValue{1.0e7},
+      block({{"Coupon Interval", XlValue{"3M"}},
+             {"Stub Type", XlValue{"f/s"}},
+             {"Payment DCC", XlValue{"ACT/360"}},
+             {"Bad Day Convention", XlValue{"N"}},
+             {"Holidays", XlValue{"NONE"}}})};
+  expect_identical_grids(invoke(*find_function("FeeLegFlows"), legacy_args, ctx),
+                         invoke(*find_function("CDS.FeeLegFlows"), grouped_args, ctx));
+}
+
+// --------------------------------------------------------------- CDS.ParSpreads
+
+TEST(ParSpreadsDispatch, BothFormsGiveTheIdenticalColumn) {
+  Fixture f;
+  const std::vector<XlValue> legacy_args{XlValue{serial(2006, 10, 9)},
+                                         XlValue{serial(2006, 10, 9)},
+                                         XlValue{serial(2006, 10, 9)},
+                                         column({XlValue{serial(2011, 10, 9)},
+                                                 XlValue{serial(2016, 10, 9)}}),
+                                         XlValue{true},
+                                         XlValue{"3M"},
+                                         XlValue{"f/s"},
+                                         XlValue{"ACT/360"},
+                                         XlValue{"N"},
+                                         XlValue{"NONE"},
+                                         XlValue{f.discount},
+                                         XlValue{f.spread},
+                                         XlValue{0.4}};
+  const std::vector<XlValue> grouped_args{
+      block({{"Today", XlValue{serial(2006, 10, 9)}},
+             {"Step In Date", XlValue{serial(2006, 10, 9)}},
+             {"Start Date", XlValue{serial(2006, 10, 9)}}}),
+      column({XlValue{serial(2011, 10, 9)}, XlValue{serial(2016, 10, 9)}}),
+      block({{"Pay Accrual On Default", XlValue{true}},
+             {"Coupon Interval", XlValue{"3M"}},
+             {"Stub Type", XlValue{"f/s"}},
+             {"Payment DCC", XlValue{"ACT/360"}},
+             {"Bad Day Convention", XlValue{"N"}},
+             {"Holidays", XlValue{"NONE"}}}),
+      block({{"Discount Curve", XlValue{f.discount}},
+             {"Spread Curve", XlValue{f.spread}},
+             {"Recovery Rate", XlValue{0.4}}})};
+  expect_identical_grids(invoke(*find_function("ParSpreads"), legacy_args, f.ctx),
+                         invoke(*find_function("CDS.ParSpreads"), grouped_args, f.ctx));
+}
+
+// --------------------------------------------------------------- CDS.Upfront / CDS.ParSpreadFlat
+
+void expect_identical_scalars(const XlValue &a, const XlValue &b) {
+  ASSERT_TRUE(a.as_double().has_value()) << "legacy returned: " << a.describe();
+  ASSERT_TRUE(b.as_double().has_value()) << "grouped returned: " << b.describe();
+  EXPECT_EQ(*a.as_double(), *b.as_double());
+}
+
+// The valuation block the two flat forms share: four dates in upstream's names.
+XlValue flat_valuation() {
+  return block({{"Today", XlValue{serial(2006, 10, 9)}},
+                {"Cash Settle Date", XlValue{serial(2006, 10, 9)}},
+                {"Benchmark St Date", XlValue{serial(2006, 10, 9)}},
+                {"Step In Date", XlValue{serial(2006, 10, 9)}}});
+}
+
+XlValue flat_trade() {
+  return block({{"Start Date", XlValue{serial(2006, 10, 9)}},
+                {"End Date", XlValue{serial(2011, 10, 9)}},
+                {"Coupon Rate", XlValue{0.01}}});
+}
+
+XlValue flat_conventions() {
+  return block({{"Pay Accrual On Default", XlValue{true}},
+                {"Coupon Interval", XlValue{"3M"}},
+                {"Stub Type", XlValue{"f/s"}},
+                {"Payment DCC", XlValue{"ACT/360"}},
+                {"Bad Day Convention", XlValue{"N"}},
+                {"Holidays", XlValue{"NONE"}}});
+}
+
+TEST(UpfrontDispatch, BothFormsGiveTheIdenticalCharge) {
+  Fixture f;
+  // The 17 positional cells, with the market par spread at index 14.
+  const std::vector<XlValue> legacy_args{
+      XlValue{serial(2006, 10, 9)}, XlValue{serial(2006, 10, 9)}, XlValue{serial(2006, 10, 9)},
+      XlValue{serial(2006, 10, 9)}, XlValue{serial(2006, 10, 9)}, XlValue{serial(2011, 10, 9)},
+      XlValue{0.01},                XlValue{true},                XlValue{"3M"},
+      XlValue{"f/s"},               XlValue{"ACT/360"},           XlValue{"N"},
+      XlValue{"NONE"},              XlValue{f.discount},          XlValue{0.02},
+      XlValue{0.4},                 XlValue{true}};
+  const std::vector<XlValue> grouped_args{flat_valuation(), flat_trade(), flat_conventions(),
+                                          XlValue{f.discount}, XlValue{0.02}, XlValue{0.4},
+                                          XlValue{true}};
+  expect_identical_scalars(invoke(*find_function("UpfrontFlat"), legacy_args, f.ctx),
+                           invoke(*find_function("CDS.Upfront"), grouped_args, f.ctx));
+}
+
+TEST(ParSpreadFlatDispatch, BothFormsGiveTheIdenticalSpread) {
+  Fixture f;
+  // The inverse: an upfront charge at index 14 rather than a market spread.
+  const std::vector<XlValue> legacy_args{
+      XlValue{serial(2006, 10, 9)}, XlValue{serial(2006, 10, 9)}, XlValue{serial(2006, 10, 9)},
+      XlValue{serial(2006, 10, 9)}, XlValue{serial(2006, 10, 9)}, XlValue{serial(2011, 10, 9)},
+      XlValue{0.01},                XlValue{true},                XlValue{"3M"},
+      XlValue{"f/s"},               XlValue{"ACT/360"},           XlValue{"N"},
+      XlValue{"NONE"},              XlValue{f.discount},          XlValue{0.02},
+      XlValue{0.4},                 XlValue{true}};
+  const std::vector<XlValue> grouped_args{flat_valuation(), flat_trade(), flat_conventions(),
+                                          XlValue{f.discount}, XlValue{0.02}, XlValue{0.4},
+                                          XlValue{true}};
+  expect_identical_scalars(invoke(*find_function("ParSpreadFlat"), legacy_args, f.ctx),
+                           invoke(*find_function("CDS.ParSpreadFlat"), grouped_args, f.ctx));
+}
+
+// --------------------------------------------------------------- CDS.IRZeroCurve
+
+void expect_identical_curves(const XlValue &a, const XlValue &b, CurveRegistry &reg) {
+  const auto ha = a.as_string();
+  const auto hb = b.as_string();
+  ASSERT_TRUE(ha.has_value()) << "legacy returned: " << a.describe();
+  ASSERT_TRUE(hb.has_value()) << "grouped returned: " << b.describe();
+  const auto ca = reg.resolve(*ha);
+  const auto cb = reg.resolve(*hb);
+  ASSERT_TRUE(ca.has_value()) << *ha;
+  ASSERT_TRUE(cb.has_value()) << *hb;
+  const auto pa = (*ca)->points();
+  const auto pb = (*cb)->points();
+  ASSERT_EQ(pa.size(), pb.size());
+  for (std::size_t i = 0; i < pa.size(); ++i) {
+    EXPECT_EQ(pa[i], pb[i]) << "curve point " << i;
+  }
+}
+
+TEST(IRZeroCurveDispatch, BothFormsBuildTheIdenticalCurve) {
+  CurveRegistry curves;
+  CalendarRegistry calendars;
+  CallContext ctx{curves, calendars};
+  const std::vector<XlValue> legacy_args{
+      XlValue{serial(2006, 10, 9)},
+      column({XlValue{"M"}, XlValue{"M"}, XlValue{"S"}, XlValue{"S"}}),
+      column({XlValue{serial(2006, 11, 9)}, XlValue{serial(2007, 1, 9)},
+              XlValue{serial(2008, 10, 9)}, XlValue{serial(2011, 10, 9)}}),
+      column({XlValue{0.0530}, XlValue{0.0535}, XlValue{0.0540}, XlValue{0.0550}}),
+      XlValue{"ACT/360"}, XlValue{"6M"},  XlValue{"6M"},   XlValue{"30/360"},
+      XlValue{"ACT/360"}, XlValue{"N"},   XlValue{"NONE"}, XlValue{"legacy.ir"}};
+  const std::vector<XlValue> grouped_args{
+      XlValue{serial(2006, 10, 9)},
+      table({"Type", "End Date", "Rate"},
+            {{XlValue{"M"}, XlValue{serial(2006, 11, 9)}, XlValue{0.0530}},
+             {XlValue{"M"}, XlValue{serial(2007, 1, 9)}, XlValue{0.0535}},
+             {XlValue{"S"}, XlValue{serial(2008, 10, 9)}, XlValue{0.0540}},
+             {XlValue{"S"}, XlValue{serial(2011, 10, 9)}, XlValue{0.0550}}}),
+      block({{"MM DCC", XlValue{"ACT/360"}},
+             {"Fixed IVL", XlValue{"6M"}},
+             {"Float IVL", XlValue{"6M"}},
+             {"Fixed DCC", XlValue{"30/360"}},
+             {"Float DCC", XlValue{"ACT/360"}},
+             {"Swap BDC", XlValue{"N"}}}),
+      XlValue{"NONE"},
+      XlValue{"grouped.ir"}};
+  expect_identical_curves(invoke(*find_function("IRZeroCurveBuild"), legacy_args, ctx),
+                          invoke(*find_function("CDS.IRZeroCurve"), grouped_args, ctx), curves);
 }
 
 TEST(CdsPriceDispatch, AWrongArgumentCountIsReportedNotIndexedPast) {

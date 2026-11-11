@@ -158,6 +158,64 @@ read_curve_argument(const XlValue &cell, CallContext &ctx, std::string_view what
   return **named;
 }
 
+// --------------------------------------------------- labelled-block reading
+//
+// The four pricing structs read their blocks through `block_of` in
+// arguments.cpp. The grouped curve and analytics forms below live here, so
+// their label/value reader does too -- same shape: coerce to a grid, read it
+// against the labels, hand back the value cell for each label in label order,
+// with an optional-and-absent label left as XlMissing for the dispatch to
+// default. The dispatch then converts each cell exactly as its positional twin
+// does, which is what keeps the two forms from drifting.
+
+template <std::size_t N>
+[[nodiscard]] Expected<std::array<XlValue, N>>
+labelled_cells(const XlValue &block, const std::array<LabelSpec, N> &labels,
+               std::string_view what) {
+  const Expected<XlGrid> grid = block.as_grid();
+  if (!grid) {
+    return fail(ErrorKind::bad_argument,
+                std::string(what) + ": expected a two-column range, got " + block.describe());
+  }
+  const Expected<LabelledRange> rows = LabelledRange::read(*grid, labels);
+  if (!rows) {
+    return fail(rows.error().kind, std::string(what) + ": " + rows.error().message);
+  }
+  std::array<XlValue, N> cells;
+  for (std::size_t i = 0; i < N; ++i) {
+    if (!labels[i].required && !rows->has(labels[i].label)) {
+      continue; // optional and absent; stays XlMissing, like Conventions::read_block
+    }
+    const Expected<XlValue> v = rows->value_of(labels[i].label);
+    if (!v) {
+      return unexpected(v.error());
+    }
+    cells[i] = *v;
+  }
+  return cells;
+}
+
+/// The conventions block for the two functions that do NOT expose
+/// `Pay Accrual On Default` -- DefaultAccrual and FeeLegFlows force it TRUE, as
+/// upstream does. The grouped block carries five labels; TRUE is injected before
+/// the shared positional reader, exactly as the legacy forms inject it.
+[[nodiscard]] Expected<Conventions> read_conventions_no_payacc(const XlValue &block,
+                                                               CallContext &ctx) {
+  static constexpr std::array<LabelSpec, 5> kLabels{{{"Coupon Interval", true},
+                                                     {"Stub Type", true},
+                                                     {"Payment DCC", true},
+                                                     {"Bad Day Convention", true},
+                                                     {"Holidays", false}}};
+  const Expected<std::array<XlValue, 5>> cells =
+      labelled_cells(block, kLabels, "the conventions block");
+  if (!cells) {
+    return unexpected(cells.error());
+  }
+  const std::array<XlValue, 6> with_payacc{XlValue{true}, (*cells)[0], (*cells)[1],
+                                           (*cells)[2],    (*cells)[3], (*cells)[4]};
+  return Conventions::read_positional(with_payacc, ctx.calendars);
+}
+
 // ------------------------------------------------------- CdsPrice, two forms
 //
 // Both read into Valuation / TradeTerms / Conventions / MarketData and then
@@ -373,6 +431,151 @@ Expected<XlValue> dispatch_ir_zero_curve_make(std::span<const XlValue> args, Cal
   return XlValue{ctx.curves.store(*name, *curve)};
 }
 
+/// The money-market day count and the swap conventions, read from six cells --
+/// positional for IRZeroCurveBuild, labelled for CDS.IRZeroCurve. Both converge
+/// here, so neither parses a convention the other does not.
+struct SwapTerms {
+  DayCount mm_dcc = DayCount::Act360;
+  SwapConventions conventions;
+};
+
+[[nodiscard]] Expected<SwapTerms> read_swap_terms(const XlValue &mm, const XlValue &fixed_ivl,
+                                                  const XlValue &float_ivl,
+                                                  const XlValue &fixed_dcc_cell,
+                                                  const XlValue &float_dcc_cell,
+                                                  const XlValue &bdc_cell) {
+  const Expected<DayCount> mm_dcc = read_day_count(mm, "MMDCC");
+  if (!mm_dcc) {
+    return unexpected(mm_dcc.error());
+  }
+  SwapConventions conv;
+  const Expected<long> fixed_freq = read_frequency(fixed_ivl, "Fixed IVL");
+  if (!fixed_freq) {
+    return unexpected(fixed_freq.error());
+  }
+  conv.fixed_frequency = *fixed_freq;
+  const Expected<long> float_freq = read_frequency(float_ivl, "Float IVL");
+  if (!float_freq) {
+    return unexpected(float_freq.error());
+  }
+  conv.float_frequency = *float_freq;
+  const Expected<DayCount> fixed_dcc = read_day_count(fixed_dcc_cell, "Fixed DCC");
+  if (!fixed_dcc) {
+    return unexpected(fixed_dcc.error());
+  }
+  conv.fixed_day_count = *fixed_dcc;
+  const Expected<DayCount> float_dcc = read_day_count(float_dcc_cell, "Float DCC");
+  if (!float_dcc) {
+    return unexpected(float_dcc.error());
+  }
+  conv.float_day_count = *float_dcc;
+  const Expected<BadDayConv> bdc = read_bad_day(bdc_cell, "Swap BDC");
+  if (!bdc) {
+    return unexpected(bdc.error());
+  }
+  conv.bad_day = *bdc;
+  return SwapTerms{*mm_dcc, conv};
+}
+
+/// The money-market and swap quotes, from three parallel columns.
+[[nodiscard]] Expected<std::vector<InstrumentQuote>>
+build_instruments(const std::vector<std::string> &types, const std::vector<Date> &ends,
+                  const std::vector<double> &rates) {
+  if (types.size() != ends.size() || types.size() != rates.size()) {
+    return fail(ErrorKind::bad_argument,
+                "Types, End Dates and Rates must be the same length -- got " +
+                    detail::num(types.size()) + ", " + detail::num(ends.size()) + " and " +
+                    detail::num(rates.size()));
+  }
+  std::vector<InstrumentQuote> instruments;
+  instruments.reserve(types.size());
+  for (std::size_t i = 0; i < types.size(); ++i) {
+    const std::string &code = types[i];
+    if (code.size() != 1) {
+      return fail(ErrorKind::bad_argument, "Types row " + detail::num(i + 1) + ": \"" + code +
+                                               "\" -- expected M (money market) or S (swap)");
+    }
+    const Expected<InstrumentKind> kind = instrument_kind_from_code(code.front());
+    if (!kind) {
+      return fail(kind.error().kind, "Types row " + detail::num(i + 1) + ": \"" + code + "\" -- " +
+                                         kind.error().message);
+    }
+    instruments.push_back(InstrumentQuote{*kind, ends[i], rates[i]});
+  }
+  return instruments;
+}
+
+/// The grouped form's quotes: a table with columns Type, End Date and Rate, kept
+/// row-aligned so a wholly blank trailing row is skipped as one unit.
+[[nodiscard]] Expected<std::vector<InstrumentQuote>> read_instrument_table(const XlValue &block) {
+  static constexpr std::array<LabelSpec, 3> kColumns{
+      {{"Type", true}, {"End Date", true}, {"Rate", true}}};
+  const Expected<XlGrid> grid = block.as_grid();
+  if (!grid) {
+    return fail(ErrorKind::bad_argument,
+                "the instruments block: expected a range, got " + block.describe());
+  }
+  const Expected<LabelledTable> table = LabelledTable::read(*grid, kColumns);
+  if (!table) {
+    return fail(table.error().kind, "the instruments block: " + table.error().message);
+  }
+  const Expected<std::vector<XlValue>> type_cells = table->column("Type");
+  if (!type_cells) {
+    return unexpected(type_cells.error());
+  }
+  const Expected<std::vector<XlValue>> end_cells = table->column("End Date");
+  if (!end_cells) {
+    return unexpected(end_cells.error());
+  }
+  const Expected<std::vector<XlValue>> rate_cells = table->column("Rate");
+  if (!rate_cells) {
+    return unexpected(rate_cells.error());
+  }
+  std::vector<std::string> types;
+  std::vector<Date> ends;
+  std::vector<double> rates;
+  for (std::size_t i = 0; i < table->rows(); ++i) {
+    if ((*type_cells)[i].is_missing() && (*end_cells)[i].is_missing() &&
+        (*rate_cells)[i].is_missing()) {
+      continue;
+    }
+    const Expected<std::string> type = (*type_cells)[i].as_string();
+    if (!type) {
+      return fail(ErrorKind::bad_argument, "Type row " + detail::num(i + 1) +
+                                               ": expected text, got " + (*type_cells)[i].describe());
+    }
+    const Expected<Date> end = read_single_date((*end_cells)[i], "End Date");
+    if (!end) {
+      return unexpected(end.error());
+    }
+    const Expected<double> rate = (*rate_cells)[i].as_double();
+    if (!rate) {
+      return fail(ErrorKind::bad_argument, "Rate row " + detail::num(i + 1) +
+                                               ": expected a number, got " + (*rate_cells)[i].describe());
+    }
+    types.push_back(*type);
+    ends.push_back(*end);
+    rates.push_back(*rate);
+  }
+  if (types.empty()) {
+    return fail(ErrorKind::bad_argument, "the instruments block has no rows");
+  }
+  return build_instruments(types, ends, rates);
+}
+
+/// The shared tail of both IR curve forms: bootstrap and store.
+[[nodiscard]] Expected<XlValue>
+ir_zero_curve_from(Date value_date, std::span<const InstrumentQuote> instruments, DayCount mm_dcc,
+                   const SwapConventions &conventions, const Calendar &calendar,
+                   const std::string &name, CallContext &ctx) {
+  const Expected<ZeroCurve> curve =
+      build_ir_zero_curve(value_date, instruments, mm_dcc, conventions, calendar);
+  if (!curve) {
+    return unexpected(curve.error());
+  }
+  return XlValue{ctx.curves.store(name, *curve)};
+}
+
 /// `IRZeroCurveBuild(value, types, ends, rates, mmdcc, fixedIvl, floatIvl,
 ///                   fixedDcc, floatDcc, swapBdc, holidays, name)`
 /// -- bootstrapped from money-market and swap quotes.
@@ -397,61 +600,16 @@ Expected<XlValue> dispatch_ir_zero_curve_build(std::span<const XlValue> args, Ca
   if (!rates) {
     return unexpected(rates.error());
   }
-  if (types->size() != ends->size() || types->size() != rates->size()) {
-    return fail(ErrorKind::bad_argument,
-                "Types, End Dates and Rates must be the same length -- got " +
-                    detail::num(types->size()) + ", " + detail::num(ends->size()) + " and " +
-                    detail::num(rates->size()));
+  const Expected<std::vector<InstrumentQuote>> instruments =
+      build_instruments(*types, *ends, *rates);
+  if (!instruments) {
+    return unexpected(instruments.error());
   }
-
-  std::vector<InstrumentQuote> instruments;
-  instruments.reserve(types->size());
-  for (std::size_t i = 0; i < types->size(); ++i) {
-    const std::string &code = (*types)[i];
-    if (code.size() != 1) {
-      return fail(ErrorKind::bad_argument, "Types row " + detail::num(i + 1) + ": \"" + code +
-                                               "\" -- expected M (money market) or S (swap)");
-    }
-    const Expected<InstrumentKind> kind = instrument_kind_from_code(code.front());
-    if (!kind) {
-      return fail(kind.error().kind, "Types row " + detail::num(i + 1) + ": \"" + code + "\" -- " +
-                                         kind.error().message);
-    }
-    instruments.push_back(InstrumentQuote{*kind, (*ends)[i], (*rates)[i]});
+  const Expected<SwapTerms> swap =
+      read_swap_terms(args[4], args[5], args[6], args[7], args[8], args[9]);
+  if (!swap) {
+    return unexpected(swap.error());
   }
-
-  const Expected<DayCount> mm_dcc = read_day_count(args[4], "MMDCC");
-  if (!mm_dcc) {
-    return unexpected(mm_dcc.error());
-  }
-
-  SwapConventions conventions;
-  const Expected<long> fixed_freq = read_frequency(args[5], "Fixed IVL");
-  if (!fixed_freq) {
-    return unexpected(fixed_freq.error());
-  }
-  conventions.fixed_frequency = *fixed_freq;
-  const Expected<long> float_freq = read_frequency(args[6], "Float IVL");
-  if (!float_freq) {
-    return unexpected(float_freq.error());
-  }
-  conventions.float_frequency = *float_freq;
-  const Expected<DayCount> fixed_dcc = read_day_count(args[7], "Fixed DCC");
-  if (!fixed_dcc) {
-    return unexpected(fixed_dcc.error());
-  }
-  conventions.fixed_day_count = *fixed_dcc;
-  const Expected<DayCount> float_dcc = read_day_count(args[8], "Float DCC");
-  if (!float_dcc) {
-    return unexpected(float_dcc.error());
-  }
-  conventions.float_day_count = *float_dcc;
-  const Expected<BadDayConv> bdc = read_bad_day(args[9], "Swap BDC");
-  if (!bdc) {
-    return unexpected(bdc.error());
-  }
-  conventions.bad_day = *bdc;
-
   const Expected<Calendar> calendar = read_calendar_argument(args[10], ctx);
   if (!calendar) {
     return unexpected(calendar.error());
@@ -460,13 +618,53 @@ Expected<XlValue> dispatch_ir_zero_curve_build(std::span<const XlValue> args, Ca
   if (!name) {
     return unexpected(name.error());
   }
+  return ir_zero_curve_from(*value_date, *instruments, swap->mm_dcc, swap->conventions, *calendar,
+                            *name, ctx);
+}
 
-  const Expected<ZeroCurve> curve =
-      build_ir_zero_curve(*value_date, instruments, *mm_dcc, conventions, *calendar);
-  if (!curve) {
-    return unexpected(curve.error());
+/// `CDS.IRZeroCurve(valueDate, instruments, conventions, holidays, name)` -- the
+/// grouped form. The quotes become a Type/End Date/Rate table and the six swap
+/// conventions a labelled block; the value date, holidays and name stay loose.
+Expected<XlValue> dispatch_cds_ir_zero_curve_grouped(std::span<const XlValue> args,
+                                                     CallContext &ctx) {
+  if (args.size() != 5) {
+    return fail(ErrorKind::bad_argument,
+                "CDS.IRZeroCurve takes 5 arguments, got " + detail::num(args.size()));
   }
-  return XlValue{ctx.curves.store(*name, *curve)};
+  const Expected<Date> value_date = read_single_date(args[0], "Value Date");
+  if (!value_date) {
+    return unexpected(value_date.error());
+  }
+  const Expected<std::vector<InstrumentQuote>> instruments = read_instrument_table(args[1]);
+  if (!instruments) {
+    return unexpected(instruments.error());
+  }
+  static constexpr std::array<LabelSpec, 6> kSwap{{{"MM DCC", true},
+                                                   {"Fixed IVL", true},
+                                                   {"Float IVL", true},
+                                                   {"Fixed DCC", true},
+                                                   {"Float DCC", true},
+                                                   {"Swap BDC", true}}};
+  const Expected<std::array<XlValue, 6>> cells =
+      labelled_cells(args[2], kSwap, "the conventions block");
+  if (!cells) {
+    return unexpected(cells.error());
+  }
+  const Expected<SwapTerms> swap = read_swap_terms((*cells)[0], (*cells)[1], (*cells)[2],
+                                                   (*cells)[3], (*cells)[4], (*cells)[5]);
+  if (!swap) {
+    return unexpected(swap.error());
+  }
+  const Expected<Calendar> calendar = read_calendar_argument(args[3], ctx);
+  if (!calendar) {
+    return unexpected(calendar.error());
+  }
+  const Expected<std::string> name = read_name(args[4]);
+  if (!name) {
+    return unexpected(name.error());
+  }
+  return ir_zero_curve_from(*value_date, *instruments, swap->mm_dcc, swap->conventions, *calendar,
+                            *name, ctx);
 }
 
 /// `DiscountFactor(curve, date)` -- the only read-only curve function that
@@ -502,15 +700,106 @@ Expected<XlValue> dispatch_dates_and_rates(std::span<const XlValue> args, CallCo
   return rate_points_grid((*curve)->points());
 }
 
+/// The shared tail of both CleanSpreadCurveBuild forms: build the convention
+/// carrier, bootstrap, store. Everything above this in each dispatch is parsing;
+/// this is the one code path the legacy and grouped signatures converge on, so
+/// they cannot bootstrap different curves from the same inputs.
+[[nodiscard]] Expected<XlValue>
+spread_curve_from(Date today, Date start, Date stepin, Date cash_settle,
+                  std::span<const Benchmark> benchmarks, const Conventions &conventions,
+                  const ZeroCurve &discount, double recovery, const std::string &name,
+                  CallContext &ctx) {
+  if (benchmarks.empty()) {
+    return fail(ErrorKind::bad_argument, "no benchmarks were supplied to build the curve from");
+  }
+  // The conventions travel as a `Cds` because that is what the library takes;
+  // its start and end are unused by the bootstrap, which reads each benchmark's
+  // own dates.
+  const Cds carrier = make_cds(TradeTerms{start, benchmarks.back().end, 0.0}, conventions);
+  const Expected<ZeroCurve> curve =
+      clean_spread_curve(today, discount, start, stepin, cash_settle, benchmarks, recovery, carrier,
+                         conventions.holidays);
+  if (!curve) {
+    return unexpected(curve.error());
+  }
+  return XlValue{ctx.curves.store(name, *curve)};
+}
+
+/// The grouped form's benchmark quotes: a table whose columns are `End Date`,
+/// `Coupon Rate` and an optional `Include`, in any order. `LabelledTable` keeps
+/// the columns row-aligned including blanks, so a wholly blank trailing row --
+/// what a whole-range selection drags in -- is skipped as one unit.
+[[nodiscard]] Expected<std::vector<Benchmark>> read_benchmark_table(const XlValue &block) {
+  static constexpr std::array<LabelSpec, 3> kColumns{
+      {{"End Date", true}, {"Coupon Rate", true}, {"Include", false}}};
+  const Expected<XlGrid> grid = block.as_grid();
+  if (!grid) {
+    return fail(ErrorKind::bad_argument,
+                "the benchmarks block: expected a range, got " + block.describe());
+  }
+  const Expected<LabelledTable> table = LabelledTable::read(*grid, kColumns);
+  if (!table) {
+    return fail(table.error().kind, "the benchmarks block: " + table.error().message);
+  }
+  const Expected<std::vector<XlValue>> ends = table->column("End Date");
+  if (!ends) {
+    return unexpected(ends.error());
+  }
+  const Expected<std::vector<XlValue>> coupons = table->column("Coupon Rate");
+  if (!coupons) {
+    return unexpected(coupons.error());
+  }
+  const bool has_include = table->has("Include");
+  std::vector<XlValue> includes;
+  if (has_include) {
+    const Expected<std::vector<XlValue>> column = table->column("Include");
+    if (!column) {
+      return unexpected(column.error());
+    }
+    includes = *column;
+  }
+
+  std::vector<Benchmark> out;
+  for (std::size_t i = 0; i < table->rows(); ++i) {
+    const bool blank_row = (*ends)[i].is_missing() && (*coupons)[i].is_missing() &&
+                           (!has_include || includes[i].is_missing());
+    if (blank_row) {
+      continue;
+    }
+    const Expected<Date> end = read_single_date((*ends)[i], "End Date");
+    if (!end) {
+      return unexpected(end.error());
+    }
+    const Expected<double> coupon = (*coupons)[i].as_double();
+    if (!coupon) {
+      return fail(ErrorKind::bad_argument, "Coupon Rate row " + detail::num(i + 1) +
+                                               ": expected a number, got " + (*coupons)[i].describe());
+    }
+    bool include = true;
+    if (has_include && !includes[i].is_missing()) {
+      const Expected<bool> flag = includes[i].as_bool();
+      if (!flag) {
+        return fail(ErrorKind::bad_argument,
+                    "Include row " + detail::num(i + 1) + ": " + flag.error().message);
+      }
+      include = *flag;
+    }
+    out.push_back(Benchmark{*end, *coupon, include});
+  }
+  if (out.empty()) {
+    return fail(ErrorKind::bad_argument, "the benchmarks block has no rows");
+  }
+  return out;
+}
+
 /// `CleanSpreadCurveBuild(today, start, stepin, cashSettle, ends, coupons,
 ///                         includeFlags, payAcc, interval, stub, dcc, bdc,
 ///                         holidays, discount, recovery, name)`
 ///
 /// The credit curve, bootstrapped from benchmark CDS quotes. Sixteen arguments
 /// in upstream's order; the conventions among them are the same six that
-/// `CdsPrice` takes, which is the repetition artifact #4's grouped forms exist
-/// to remove -- a grouped `CDS.SpreadCurve` arrives with the other grouped
-/// forms rather than being invented here on its own.
+/// `CdsPrice` takes. `CDS.SpreadCurve` below is the grouped form that removes
+/// the repetition.
 Expected<XlValue> dispatch_clean_spread_curve_build(std::span<const XlValue> args,
                                                     CallContext &ctx) {
   if (args.size() != 16) {
@@ -611,18 +900,69 @@ Expected<XlValue> dispatch_clean_spread_curve_build(std::span<const XlValue> arg
   for (std::size_t i = 0; i < ends->size(); ++i) {
     benchmarks.push_back(Benchmark{(*ends)[i], (*coupons)[i], include[i]});
   }
+  return spread_curve_from(*today, *start, *stepin, *cash_settle, benchmarks, *conventions,
+                           **discount, *recovery, *name, ctx);
+}
 
-  // The conventions travel as a `Cds` because that is what the library takes;
-  // its start and end are unused by the bootstrap, which reads each
-  // benchmark's own dates.
-  const Cds convention_carrier = make_cds(TradeTerms{*start, (*ends).back(), 0.0}, *conventions);
-  const Expected<ZeroCurve> curve =
-      clean_spread_curve(*today, **discount, *start, *stepin, *cash_settle, benchmarks, *recovery,
-                         convention_carrier, conventions->holidays);
-  if (!curve) {
-    return unexpected(curve.error());
+/// `CDS.SpreadCurve(valuation, benchmarks, conventions, discount, recovery,
+///                   name)` -- the grouped form. The four valuation dates and
+/// the benchmark quotes become labelled ranges, the six conventions the shared
+/// block; a curve handle, a number and a name are all that stay loose.
+Expected<XlValue> dispatch_cds_spread_curve_grouped(std::span<const XlValue> args,
+                                                    CallContext &ctx) {
+  if (args.size() != 6) {
+    return fail(ErrorKind::bad_argument,
+                "CDS.SpreadCurve takes 6 arguments, got " + detail::num(args.size()));
   }
-  return XlValue{ctx.curves.store(*name, *curve)};
+  static constexpr std::array<LabelSpec, 4> kValuation{{{"Today", true},
+                                                        {"Start Date", true},
+                                                        {"Step In Date", true},
+                                                        {"Cash Settle Date", true}}};
+  const Expected<std::array<XlValue, 4>> cells =
+      labelled_cells(args[0], kValuation, "the valuation block");
+  if (!cells) {
+    return unexpected(cells.error());
+  }
+  const Expected<Date> today = read_single_date((*cells)[0], "Today");
+  if (!today) {
+    return unexpected(today.error());
+  }
+  const Expected<Date> start = read_single_date((*cells)[1], "Start Date");
+  if (!start) {
+    return unexpected(start.error());
+  }
+  const Expected<Date> stepin = read_single_date((*cells)[2], "Step In Date");
+  if (!stepin) {
+    return unexpected(stepin.error());
+  }
+  const Expected<Date> cash_settle = read_single_date((*cells)[3], "Cash Settle Date");
+  if (!cash_settle) {
+    return unexpected(cash_settle.error());
+  }
+
+  const Expected<std::vector<Benchmark>> benchmarks = read_benchmark_table(args[1]);
+  if (!benchmarks) {
+    return unexpected(benchmarks.error());
+  }
+  const Expected<Conventions> conventions = Conventions::read_block(args[2], ctx.calendars);
+  if (!conventions) {
+    return unexpected(conventions.error());
+  }
+  const Expected<CurveRegistry::Shared> discount =
+      read_curve_argument(args[3], ctx, "Discount Curve");
+  if (!discount) {
+    return unexpected(discount.error());
+  }
+  const Expected<double> recovery = read_recovery(args[4]);
+  if (!recovery) {
+    return unexpected(recovery.error());
+  }
+  const Expected<std::string> name = read_name(args[5]);
+  if (!name) {
+    return unexpected(name.error());
+  }
+  return spread_curve_from(*today, *start, *stepin, *cash_settle, *benchmarks, *conventions,
+                           **discount, *recovery, *name, ctx);
 }
 
 // --------------------------------------------------------------- pricing
@@ -630,6 +970,30 @@ Expected<XlValue> dispatch_clean_spread_curve_build(std::span<const XlValue> arg
 // The last five. Each reads into the same four blocks `CdsPrice` uses, so
 // there is nothing new here beyond their argument orders -- which are
 // upstream's, and are the reason artifact #4's grouped forms exist.
+
+/// The shared tail of both ParSpreads forms: one par spread per maturity, as a
+/// column. A bad maturity shows its own message in its row and the rest still
+/// price -- a column that is mostly right beats a single error.
+[[nodiscard]] XlValue par_spreads_from(Date today, Date stepin, Date start,
+                                       std::span<const Date> ends, const Conventions &conventions,
+                                       const ZeroCurve &discount, const ZeroCurve &spread,
+                                       double recovery) {
+  XlGrid out;
+  out.rows = ends.size();
+  out.columns = 1;
+  out.cells.reserve(out.rows);
+  for (const Date &end : ends) {
+    const Cds cds = make_cds(TradeTerms{start, end, 0.0}, conventions);
+    const Expected<double> par =
+        cds_par_spread(cds, today, stepin, conventions.holidays, discount, spread, recovery);
+    if (!par) {
+      out.cells.emplace_back(std::string(to_string(par.error().kind)) + ": " + par.error().message);
+    } else {
+      out.cells.emplace_back(*par);
+    }
+  }
+  return XlValue{out};
+}
 
 /// `ParSpreads(today, stepin, start, ends, payAcc, interval, stub, dcc, bdc,
 ///             holidays, discount, spread, recovery)`
@@ -678,24 +1042,52 @@ Expected<XlValue> dispatch_par_spreads(std::span<const XlValue> args, CallContex
     return unexpected(recovery.error());
   }
 
-  XlGrid out;
-  out.rows = ends->size();
-  out.columns = 1;
-  out.cells.reserve(out.rows);
-  for (std::size_t i = 0; i < ends->size(); ++i) {
-    const Cds cds = make_cds(TradeTerms{*start, (*ends)[i], 0.0}, *conventions);
-    const Expected<double> par = cds_par_spread(cds, *today, *stepin, conventions->holidays,
-                                                **discount, **spread, *recovery);
-    // One bad maturity does not lose the whole column: the failing row shows
-    // its own message and the rest still price. A column where one cell is
-    // wrong and twelve are right is more useful than one error.
-    if (!par) {
-      out.cells.emplace_back(std::string(to_string(par.error().kind)) + ": " + par.error().message);
-    } else {
-      out.cells.emplace_back(*par);
-    }
+  return par_spreads_from(*today, *stepin, *start, *ends, *conventions, **discount, **spread,
+                          *recovery);
+}
+
+/// `CDS.ParSpreads(valuation, endDates, conventions, market)` -- the grouped
+/// form. The valuation dates and the market block are labelled ranges; the end
+/// dates stay a plain column, since they are the one list the function sweeps.
+Expected<XlValue> dispatch_cds_par_spreads_grouped(std::span<const XlValue> args,
+                                                   CallContext &ctx) {
+  if (args.size() != 4) {
+    return fail(ErrorKind::bad_argument,
+                "CDS.ParSpreads takes 4 arguments, got " + detail::num(args.size()));
   }
-  return XlValue{out};
+  static constexpr std::array<LabelSpec, 3> kValuation{
+      {{"Today", true}, {"Step In Date", true}, {"Start Date", true}}};
+  const Expected<std::array<XlValue, 3>> cells =
+      labelled_cells(args[0], kValuation, "the valuation block");
+  if (!cells) {
+    return unexpected(cells.error());
+  }
+  const Expected<Date> today = read_single_date((*cells)[0], "Today");
+  if (!today) {
+    return unexpected(today.error());
+  }
+  const Expected<Date> stepin = read_single_date((*cells)[1], "Step In Date");
+  if (!stepin) {
+    return unexpected(stepin.error());
+  }
+  const Expected<Date> start = read_single_date((*cells)[2], "Start Date");
+  if (!start) {
+    return unexpected(start.error());
+  }
+  const Expected<std::vector<Date>> ends = read_dates(args[1], "End Dates");
+  if (!ends) {
+    return unexpected(ends.error());
+  }
+  const Expected<Conventions> conventions = Conventions::read_block(args[2], ctx.calendars);
+  if (!conventions) {
+    return unexpected(conventions.error());
+  }
+  const Expected<MarketData> market = MarketData::read_block(args[3], ctx.curves);
+  if (!market) {
+    return unexpected(market.error());
+  }
+  return par_spreads_from(*today, *stepin, *start, *ends, *conventions, market->discount,
+                          market->spread, market->recovery);
 }
 
 /// The seven cells `ParSpreadFlat` and `UpfrontFlat` share, read once.
@@ -769,6 +1161,69 @@ struct FlatInputs {
   return out;
 }
 
+/// The same `FlatInputs`, read from labelled blocks instead of positional cells.
+/// The grouped Upfront/ParSpreadFlat forms converge on this, so they build the
+/// identical `FlatInputs` the legacy forms do and the two cannot disagree.
+[[nodiscard]] Expected<FlatInputs>
+flat_inputs_from_blocks(const XlValue &valuation, const XlValue &trade_block,
+                        const XlValue &conventions_block, const XlValue &discount_cell,
+                        const XlValue &recovery_cell, const XlValue &clean_cell, CallContext &ctx) {
+  static constexpr std::array<LabelSpec, 4> kDates{{{"Today", true},
+                                                    {"Cash Settle Date", true},
+                                                    {"Benchmark St Date", true},
+                                                    {"Step In Date", true}}};
+  const Expected<std::array<XlValue, 4>> cells =
+      labelled_cells(valuation, kDates, "the valuation block");
+  if (!cells) {
+    return unexpected(cells.error());
+  }
+  const Expected<Date> today = read_single_date((*cells)[0], "Today");
+  if (!today) {
+    return unexpected(today.error());
+  }
+  const Expected<Date> cash_settle = read_single_date((*cells)[1], "Cash Settle Date");
+  if (!cash_settle) {
+    return unexpected(cash_settle.error());
+  }
+  const Expected<Date> benchmark_start = read_single_date((*cells)[2], "Benchmark St Date");
+  if (!benchmark_start) {
+    return unexpected(benchmark_start.error());
+  }
+  const Expected<Date> stepin = read_single_date((*cells)[3], "Step In Date");
+  if (!stepin) {
+    return unexpected(stepin.error());
+  }
+  const Expected<TradeTerms> terms = TradeTerms::read_block(trade_block);
+  if (!terms) {
+    return unexpected(terms.error());
+  }
+  const Expected<Conventions> conventions =
+      Conventions::read_block(conventions_block, ctx.calendars);
+  if (!conventions) {
+    return unexpected(conventions.error());
+  }
+  const Expected<CurveRegistry::Shared> discount =
+      read_curve_argument(discount_cell, ctx, "Discount Curve");
+  if (!discount) {
+    return unexpected(discount.error());
+  }
+  const Expected<double> recovery = read_recovery(recovery_cell);
+  if (!recovery) {
+    return unexpected(recovery.error());
+  }
+  const Expected<bool> clean = clean_cell.as_bool();
+  if (!clean) {
+    return fail(ErrorKind::bad_argument, "Clean Price: " + clean.error().message);
+  }
+  FlatInputs out{UpfrontDates{*today, *cash_settle, *benchmark_start, *stepin},
+                 make_cds(*terms, *conventions),
+                 conventions->holidays,
+                 **discount,
+                 *recovery,
+                 *clean};
+  return out;
+}
+
 /// `UpfrontFlat(..., marketParSpread, recovery, clean)` -- the upfront charge
 /// implied by a quoted par spread.
 Expected<XlValue> dispatch_upfront_flat(std::span<const XlValue> args, CallContext &ctx) {
@@ -817,6 +1272,75 @@ Expected<XlValue> dispatch_par_spread_flat(std::span<const XlValue> args, CallCo
   return XlValue{*spread};
 }
 
+/// `CDS.Upfront(valuation, trade, conventions, discount, marketSpread, recovery,
+///              clean)` -- the grouped form of UpfrontFlat.
+Expected<XlValue> dispatch_cds_upfront_grouped(std::span<const XlValue> args, CallContext &ctx) {
+  if (args.size() != 7) {
+    return fail(ErrorKind::bad_argument,
+                "CDS.Upfront takes 7 arguments, got " + detail::num(args.size()));
+  }
+  const Expected<FlatInputs> in =
+      flat_inputs_from_blocks(args[0], args[1], args[2], args[3], args[5], args[6], ctx);
+  if (!in) {
+    return unexpected(in.error());
+  }
+  const Expected<double> market_spread = args[4].as_double();
+  if (!market_spread) {
+    return fail(ErrorKind::bad_argument,
+                "Market Par Spread: expected a number, got " + args[4].describe());
+  }
+  const Expected<double> charge = cdsone_upfront_charge(
+      in->cds, in->dates, in->holidays, in->discount, *market_spread, in->recovery, in->clean);
+  if (!charge) {
+    return unexpected(charge.error());
+  }
+  return XlValue{*charge};
+}
+
+/// `CDS.ParSpreadFlat(valuation, trade, conventions, discount, upfront, recovery,
+///                     clean)` -- the grouped form of ParSpreadFlat.
+Expected<XlValue> dispatch_cds_par_spread_flat_grouped(std::span<const XlValue> args,
+                                                       CallContext &ctx) {
+  if (args.size() != 7) {
+    return fail(ErrorKind::bad_argument,
+                "CDS.ParSpreadFlat takes 7 arguments, got " + detail::num(args.size()));
+  }
+  const Expected<FlatInputs> in =
+      flat_inputs_from_blocks(args[0], args[1], args[2], args[3], args[5], args[6], ctx);
+  if (!in) {
+    return unexpected(in.error());
+  }
+  const Expected<double> upfront = args[4].as_double();
+  if (!upfront) {
+    return fail(ErrorKind::bad_argument,
+                "Upfront Charge: expected a number, got " + args[4].describe());
+  }
+  const Expected<double> spread = cdsone_spread(in->cds, in->dates, in->holidays, in->discount,
+                                                *upfront, in->recovery, in->clean);
+  if (!spread) {
+    return unexpected(spread.error());
+  }
+  return XlValue{*spread};
+}
+
+/// The shared tail of both DefaultAccrual forms: build the CDS, accrue, render
+/// the two-cell grid. The trade's start/end are the effective and maturity
+/// dates -- upstream's names for a CDS's own start and end.
+[[nodiscard]] Expected<XlValue> default_accrual_from(Date trade, Date edd, const TradeTerms &terms,
+                                                     double notional, const Conventions &c) {
+  const Cds cds = make_cds(terms, c);
+  const Expected<DefaultAccrual> accrual = default_accrual(cds, trade, edd, notional, c.holidays);
+  if (!accrual) {
+    return unexpected(accrual.error());
+  }
+  XlGrid out;
+  out.rows = 1;
+  out.columns = 2;
+  out.cells.emplace_back(static_cast<double>(accrual->days));
+  out.cells.emplace_back(accrual->amount);
+  return XlValue{out};
+}
+
 /// `DefaultAccrual(trade, edd, effective, maturity, coupon, notional,
 ///                 interval, stub, dcc, bdc, holidays)`
 ///
@@ -863,18 +1387,70 @@ Expected<XlValue> dispatch_default_accrual(std::span<const XlValue> args, CallCo
     return unexpected(conventions.error());
   }
 
-  const Cds cds = make_cds(TradeTerms{*effective, *maturity, *coupon}, *conventions);
-  const Expected<DefaultAccrual> accrual =
-      default_accrual(cds, *trade, *edd, *notional, conventions->holidays);
-  if (!accrual) {
-    return unexpected(accrual.error());
-  }
+  return default_accrual_from(*trade, *edd, TradeTerms{*effective, *maturity, *coupon}, *notional,
+                              *conventions);
+}
 
+/// `CDS.DefaultAccrual(dates, trade, notional, conventions)` -- the grouped
+/// form. `dates` carries Trade Date and EDD Date; `trade` is the shared Trade
+/// block; the five conventions have pay-accrual forced on, as the legacy form
+/// does.
+Expected<XlValue> dispatch_cds_default_accrual_grouped(std::span<const XlValue> args,
+                                                       CallContext &ctx) {
+  if (args.size() != 4) {
+    return fail(ErrorKind::bad_argument,
+                "CDS.DefaultAccrual takes 4 arguments, got " + detail::num(args.size()));
+  }
+  static constexpr std::array<LabelSpec, 2> kDates{{{"Trade Date", true}, {"EDD Date", true}}};
+  const Expected<std::array<XlValue, 2>> dates = labelled_cells(args[0], kDates, "the dates block");
+  if (!dates) {
+    return unexpected(dates.error());
+  }
+  const Expected<Date> trade = read_single_date((*dates)[0], "Trade Date");
+  if (!trade) {
+    return unexpected(trade.error());
+  }
+  const Expected<Date> edd = read_single_date((*dates)[1], "EDD Date");
+  if (!edd) {
+    return unexpected(edd.error());
+  }
+  const Expected<TradeTerms> terms = TradeTerms::read_block(args[1]);
+  if (!terms) {
+    return unexpected(terms.error());
+  }
+  const Expected<double> notional = args[2].as_double();
+  if (!notional) {
+    return fail(ErrorKind::bad_argument, "Notional: expected a number, got " + args[2].describe());
+  }
+  const Expected<Conventions> conventions = read_conventions_no_payacc(args[3], ctx);
+  if (!conventions) {
+    return unexpected(conventions.error());
+  }
+  return default_accrual_from(*trade, *edd, *terms, *notional, *conventions);
+}
+
+/// The shared tail of both FeeLegFlows forms: build the CDS, generate the fee
+/// leg's flows, render them as a two-column grid.
+[[nodiscard]] Expected<XlValue> fee_leg_flows_from(const TradeTerms &terms, double notional,
+                                                   const Conventions &c) {
+  const Cds cds = make_cds(terms, c);
+  const Expected<std::vector<CashFlow>> flows = cds_fee_leg_flows(cds, notional, c.holidays);
+  if (!flows) {
+    return unexpected(flows.error());
+  }
   XlGrid out;
-  out.rows = 1;
+  out.rows = flows->empty() ? 1 : flows->size();
   out.columns = 2;
-  out.cells.emplace_back(static_cast<double>(accrual->days));
-  out.cells.emplace_back(accrual->amount);
+  out.cells.reserve(out.rows * 2);
+  if (flows->empty()) {
+    out.cells.emplace_back(std::string("the fee leg has no payments"));
+    out.cells.emplace_back(XlValue{});
+    return XlValue{out};
+  }
+  for (const CashFlow &f : *flows) {
+    out.cells.emplace_back(to_excel_serial(f.date));
+    out.cells.emplace_back(f.amount);
+  }
   return XlValue{out};
 }
 
@@ -912,27 +1488,31 @@ Expected<XlValue> dispatch_fee_leg_flows(std::span<const XlValue> args, CallCont
     return unexpected(conventions.error());
   }
 
-  const Cds cds = make_cds(TradeTerms{*start, *end, *coupon}, *conventions);
-  const Expected<std::vector<CashFlow>> flows =
-      cds_fee_leg_flows(cds, *notional, conventions->holidays);
-  if (!flows) {
-    return unexpected(flows.error());
-  }
+  return fee_leg_flows_from(TradeTerms{*start, *end, *coupon}, *notional, *conventions);
+}
 
-  XlGrid out;
-  out.rows = flows->empty() ? 1 : flows->size();
-  out.columns = 2;
-  out.cells.reserve(out.rows * 2);
-  if (flows->empty()) {
-    out.cells.emplace_back(std::string("the fee leg has no payments"));
-    out.cells.emplace_back(XlValue{});
-    return XlValue{out};
+/// `CDS.FeeLegFlows(trade, notional, conventions)` -- the grouped form. Three
+/// arguments against nine: the shared Trade block, a notional, and the five
+/// conventions with pay-accrual forced on.
+Expected<XlValue> dispatch_cds_fee_leg_flows_grouped(std::span<const XlValue> args,
+                                                     CallContext &ctx) {
+  if (args.size() != 3) {
+    return fail(ErrorKind::bad_argument,
+                "CDS.FeeLegFlows takes 3 arguments, got " + detail::num(args.size()));
   }
-  for (const CashFlow &f : *flows) {
-    out.cells.emplace_back(to_excel_serial(f.date));
-    out.cells.emplace_back(f.amount);
+  const Expected<TradeTerms> terms = TradeTerms::read_block(args[0]);
+  if (!terms) {
+    return unexpected(terms.error());
   }
-  return XlValue{out};
+  const Expected<double> notional = args[1].as_double();
+  if (!notional) {
+    return fail(ErrorKind::bad_argument, "Notional: expected a number, got " + args[1].describe());
+  }
+  const Expected<Conventions> conventions = read_conventions_no_payacc(args[2], ctx);
+  if (!conventions) {
+    return unexpected(conventions.error());
+  }
+  return fee_leg_flows_from(*terms, *notional, *conventions);
 }
 
 // ------------------------------------------------------------ the table
@@ -997,6 +1577,14 @@ constexpr std::array<ParamSpec, 12> kIRZeroCurveBuildParams{
      {"Holidays", "A calendar handle, or NONE for weekends only"},
      {"Name", "Name to reference this curve by"}}};
 
+constexpr std::array<ParamSpec, 5> kCdsIrZeroCurveGroupedParams{
+    {{"Value Date", "Today; the curve is built forward from here"},
+     {"Instruments", "Table with columns Type (M or S), End Date and Rate"},
+     {"Conventions", "Two-column range: MM DCC, Fixed IVL, Float IVL, Fixed DCC, "
+                     "Float DCC, Swap BDC"},
+     {"Holidays", "A calendar handle, or NONE for weekends only"},
+     {"Name", "Name to reference this curve by"}}};
+
 constexpr std::array<ParamSpec, 16> kCleanSpreadCurveBuildParams{
     {{"Today", "Risk starts at the end of today"},
      {"Start Date", "When protection begins on the benchmarks"},
@@ -1015,6 +1603,15 @@ constexpr std::array<ParamSpec, 16> kCleanSpreadCurveBuildParams{
      {"Recovery Rate", "Assumed recovery, 0 to 1"},
      {"Name", "Name to reference this curve by"}}};
 
+constexpr std::array<ParamSpec, 6> kCdsSpreadCurveGroupedParams{
+    {{"Valuation", "Two-column range: Today, Start Date, Step In Date, Cash Settle Date"},
+     {"Benchmarks", "Table with columns End Date, Coupon Rate and optional Include"},
+     {"Conventions", "Two-column range: Pay Accrual On Default, Coupon Interval, "
+                     "Stub Type, Payment DCC, Bad Day Convention, Holidays"},
+     {"Discount Curve", "Handle from IRZeroCurveBuild or IRZeroCurveMake"},
+     {"Recovery Rate", "Assumed recovery, 0 to 1"},
+     {"Name", "Name to reference this curve by"}}};
+
 constexpr std::array<ParamSpec, 13> kParSpreadsParams{
     {{"Today", "Risk starts at the end of today"},
      {"StepIn Date", "Date when step-in begins"},
@@ -1029,6 +1626,13 @@ constexpr std::array<ParamSpec, 13> kParSpreadsParams{
      {"Discount Curve", "Handle from IRZeroCurveBuild or IRZeroCurveMake"},
      {"Spread Curve", "Handle from CleanSpreadCurveBuild"},
      {"Recovery Rate", "Assumed recovery, 0 to 1"}}};
+
+constexpr std::array<ParamSpec, 4> kCdsParSpreadsGroupedParams{
+    {{"Valuation", "Two-column range: Today, Step In Date, Start Date"},
+     {"End Dates", "A range of maturities; one par spread comes back per row"},
+     {"Conventions", "Two-column range: Pay Accrual On Default, Coupon Interval, "
+                     "Stub Type, Payment DCC, Bad Day Convention, Holidays"},
+     {"Market", "Two-column range: Discount Curve, Spread Curve, Recovery Rate"}}};
 
 constexpr std::array<ParamSpec, 17> kUpfrontFlatParams{
     {{"Today", "Risk starts at the end of today"},
@@ -1068,6 +1672,26 @@ constexpr std::array<ParamSpec, 17> kParSpreadFlatParams{
      {"Recovery Rate", "Assumed recovery, 0 to 1"},
      {"Clean Price", "TRUE for clean, FALSE for dirty"}}};
 
+constexpr std::array<ParamSpec, 7> kCdsUpfrontGroupedParams{
+    {{"Valuation", "Two-column range: Today, Cash Settle Date, Benchmark St Date, Step In Date"},
+     {"Trade", "Two-column range: Start Date, End Date, Coupon Rate"},
+     {"Conventions", "Two-column range: Pay Accrual On Default, Coupon Interval, "
+                     "Stub Type, Payment DCC, Bad Day Convention, Holidays"},
+     {"Discount Curve", "Handle from IRZeroCurveBuild or IRZeroCurveMake"},
+     {"Market Par Spread", "Quoted par spread to imply the charge from"},
+     {"Recovery Rate", "Assumed recovery, 0 to 1"},
+     {"Clean Price", "TRUE for clean, FALSE for dirty"}}};
+
+constexpr std::array<ParamSpec, 7> kCdsParSpreadFlatGroupedParams{
+    {{"Valuation", "Two-column range: Today, Cash Settle Date, Benchmark St Date, Step In Date"},
+     {"Trade", "Two-column range: Start Date, End Date, Coupon Rate"},
+     {"Conventions", "Two-column range: Pay Accrual On Default, Coupon Interval, "
+                     "Stub Type, Payment DCC, Bad Day Convention, Holidays"},
+     {"Discount Curve", "Handle from IRZeroCurveBuild or IRZeroCurveMake"},
+     {"Upfront Charge", "Present value of the CDS to imply the spread from"},
+     {"Recovery Rate", "Assumed recovery, 0 to 1"},
+     {"Clean Price", "TRUE for clean, FALSE for dirty"}}};
+
 constexpr std::array<ParamSpec, 11> kDefaultAccrualParams{{
     {"Trade Date", "When the trade was struck"},
     {"EDD Date", "Event determination date"},
@@ -1094,12 +1718,25 @@ constexpr std::array<ParamSpec, 9> kFeeLegFlowsParams{{
     {"Holidays", "A calendar handle, or NONE for weekends only"},
 }};
 
+constexpr std::array<ParamSpec, 4> kCdsDefaultAccrualGroupedParams{
+    {{"Dates", "Two-column range: Trade Date, EDD Date"},
+     {"Trade", "Two-column range: Start Date, End Date, Coupon Rate"},
+     {"Notional", "Trade notional"},
+     {"Conventions", "Two-column range: Coupon Interval, Stub Type, Payment DCC, "
+                     "Bad Day Convention, Holidays"}}};
+
+constexpr std::array<ParamSpec, 3> kCdsFeeLegFlowsGroupedParams{
+    {{"Trade", "Two-column range: Start Date, End Date, Coupon Rate"},
+     {"Notional", "Trade notional"},
+     {"Conventions", "Two-column range: Coupon Interval, Stub Type, Payment DCC, "
+                     "Bad Day Convention, Holidays"}}};
+
 constexpr std::array<ParamSpec, 2> kDiscountFactorParams{
     {{"Curve", "A curve handle"}, {"Date", "The date to discount to"}}};
 
 constexpr std::array<ParamSpec, 1> kDatesAndRatesParams{{{"Curve", "A curve handle"}}};
 
-constexpr std::array<FunctionSpec, 16> kFunctions{
+constexpr std::array<FunctionSpec, 23> kFunctions{
     {{"CdsPrice", "UUUUUUUUUUUUUUUUU", kCdsPriceLegacyParams,
       "Prices a CDS. The original 16-argument form, kept so existing "
       "workbooks keep working; CDS.Price is the same calculation with the "
@@ -1132,30 +1769,58 @@ constexpr std::array<FunctionSpec, 16> kFunctions{
       "Bootstraps an interest-rate curve from money-market and swap quotes, "
       "and returns a handle.",
       kCategory, &dispatch_ir_zero_curve_build},
+     {"CDS.IRZeroCurve", "UUUUUU", kCdsIrZeroCurveGroupedParams,
+      "Bootstraps an interest-rate curve from money-market and swap quotes, "
+      "arguments grouped. Same calculation as IRZeroCurveBuild.",
+      kCategory, &dispatch_cds_ir_zero_curve_grouped},
      {"DiscountFactor", "UUU", kDiscountFactorParams, "The discount factor from a curve to a date.",
       kCategory, &dispatch_discount_factor},
      {"CleanSpreadCurveBuild", "UUUUUUUUUUUUUUUUU", kCleanSpreadCurveBuildParams,
       "Bootstraps a clean spread (credit) curve from benchmark CDS quotes, "
       "and returns a handle.",
       kCategory, &dispatch_clean_spread_curve_build},
+     {"CDS.SpreadCurve", "UUUUUUU", kCdsSpreadCurveGroupedParams,
+      "Bootstraps a clean spread (credit) curve from benchmark CDS quotes, "
+      "arguments grouped. Same calculation as CleanSpreadCurveBuild.",
+      kCategory, &dispatch_cds_spread_curve_grouped},
      {"ParSpreads", "UUUUUUUUUUUUUU", kParSpreadsParams,
       "The par spread of a CDS at each of several maturities, as a column.", kCategory,
       &dispatch_par_spreads},
+     {"CDS.ParSpreads", "UUUUU", kCdsParSpreadsGroupedParams,
+      "The par spread at each of several maturities, arguments grouped. Same "
+      "calculation as ParSpreads.",
+      kCategory, &dispatch_cds_par_spreads_grouped},
      {"UpfrontFlat", "UUUUUUUUUUUUUUUUUU", kUpfrontFlatParams,
       "The upfront charge implied by a quoted par spread, through a flat "
       "credit curve.",
       kCategory, &dispatch_upfront_flat},
+     {"CDS.Upfront", "UUUUUUUU", kCdsUpfrontGroupedParams,
+      "The upfront charge implied by a quoted par spread, arguments grouped. "
+      "Same calculation as UpfrontFlat.",
+      kCategory, &dispatch_cds_upfront_grouped},
      {"ParSpreadFlat", "UUUUUUUUUUUUUUUUUU", kParSpreadFlatParams,
       "The flat par spread implied by an upfront charge. The inverse of "
       "UpfrontFlat.",
       kCategory, &dispatch_par_spread_flat},
+     {"CDS.ParSpreadFlat", "UUUUUUUU", kCdsParSpreadFlatGroupedParams,
+      "The flat par spread implied by an upfront charge, arguments grouped. "
+      "Same calculation as ParSpreadFlat.",
+      kCategory, &dispatch_cds_par_spread_flat_grouped},
      {"DefaultAccrual", "UUUUUUUUUUUU", kDefaultAccrualParams,
       "Accrued interest owed on a defaulted CDS: the day count and the "
       "amount, as two columns.",
       kCategory, &dispatch_default_accrual},
+     {"CDS.DefaultAccrual", "UUUUU", kCdsDefaultAccrualGroupedParams,
+      "Accrued interest owed on a defaulted CDS, arguments grouped. Same "
+      "calculation as DefaultAccrual.",
+      kCategory, &dispatch_cds_default_accrual_grouped},
      {"FeeLegFlows", "UUUUUUUUUU", kFeeLegFlowsParams,
       "The fee leg's cash flows: pay date and amount, one row each.", kCategory,
       &dispatch_fee_leg_flows},
+     {"CDS.FeeLegFlows", "UUUU", kCdsFeeLegFlowsGroupedParams,
+      "The fee leg's cash flows, arguments grouped. Same calculation as "
+      "FeeLegFlows.",
+      kCategory, &dispatch_cds_fee_leg_flows_grouped},
      {"DatesAndRates", "UU", kDatesAndRatesParams,
       "A curve's points, as two columns: dates then rates.", kCategory,
       &dispatch_dates_and_rates}}};

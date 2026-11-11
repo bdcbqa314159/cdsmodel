@@ -120,11 +120,10 @@ endif()
 # =========================================================================
 add_subdirectory(xl/core)
 
-if(CDSMODEL_XLL_AVAILABLE)
-  add_subdirectory(xl/sdk)
-  add_subdirectory(xl/interface)
-  message(STATUS "cdsmodel: building cdsmodel.xll")
-endif()
+# xl/sdk and xl/interface are added AFTER the SDK probe further down -- that
+# probe is what sets CDSMODEL_XLL_AVAILABLE and the source/include variables
+# those two subdirectories consume. Adding them here (before the probe ran)
+# silently skipped the add-in on every Windows build.
 
 # =========================================================================
 # Tests
@@ -198,6 +197,7 @@ if(CDSMODEL_BUILD_TESTS)
                  xl/core/tests/xl_core_test.cpp
                  xl/core/tests/dispatch_test.cpp
                  xl/core/tests/error_paths_test.cpp
+                 xl/core/tests/dispatch_error_paths_test.cpp
                  xl/core/tests/calendars_test.cpp
                  xl/core/tests/curves_test.cpp
                  xl/core/tests/pricing_test.cpp
@@ -369,6 +369,46 @@ else()
     foreach(f ${CDSMODEL_XLSDK_FOUND})
       message(STATUS "  ${f}")
     endforeach()
+
+    # FOUND is in NEEDS order, so [0] is xlcall.h and [1] is xlcall.cpp. The
+    # header directory goes on the include path; the sources are every .c/.cpp
+    # beside xlcall.cpp -- not just the canonical four, because framework.c
+    # pulls in MemoryManager and MemoryPool, which must be compiled too. The
+    # canonical four above only PROVE this is a real SDK; they do not bound what
+    # it takes to build.
+    list(GET CDSMODEL_XLSDK_FOUND 0 _xlsdk_xlcall_h)
+    list(GET CDSMODEL_XLSDK_FOUND 1 _xlsdk_xlcall_cpp)
+    get_filename_component(CDSMODEL_XLSDK_INCLUDE "${_xlsdk_xlcall_h}" DIRECTORY)
+    get_filename_component(_xlsdk_srcdir "${_xlsdk_xlcall_cpp}" DIRECTORY)
+    file(GLOB CDSMODEL_XLSDK_SOURCES
+         "${_xlsdk_srcdir}/*.c" "${_xlsdk_srcdir}/*.cpp")
+
+    # The PRISTINE sample framework.c compiles xlcall.cpp by #including it inline
+    # (`#include <xlcall.cpp>`); copies that un-inline it leave xlcall.cpp a
+    # standalone source. Compiling it BOTH ways double-defines every Excel
+    # callback. So if framework.c inlines it, drop xlcall.cpp from the separate
+    # compile list -- which is what lets a pristine, unedited SDK build, with the
+    # licence-unmodifiable xlcall.cpp left exactly as Microsoft shipped it.
+    foreach(_src ${CDSMODEL_XLSDK_SOURCES})
+      get_filename_component(_name "${_src}" NAME)
+      string(TOLOWER "${_name}" _name)
+      if(_name STREQUAL "framework.c" OR _name STREQUAL "framewrk.c")
+        file(READ "${_src}" _xlsdk_framework_text)
+      endif()
+    endforeach()
+    if(_xlsdk_framework_text MATCHES "include[ \t]*<xlcall\\.cpp>")
+      set(_xlsdk_kept "")
+      foreach(_src ${CDSMODEL_XLSDK_SOURCES})
+        get_filename_component(_name "${_src}" NAME)
+        string(TOLOWER "${_name}" _name)
+        if(NOT _name STREQUAL "xlcall.cpp")
+          list(APPEND _xlsdk_kept "${_src}")
+        endif()
+      endforeach()
+      set(CDSMODEL_XLSDK_SOURCES "${_xlsdk_kept}")
+      message(STATUS "cdsmodel: framework.c inlines xlcall.cpp; compiling it once")
+    endif()
+    message(STATUS "cdsmodel: XLL SDK sources: ${CDSMODEL_XLSDK_SOURCES}")
   endif()
 endif()
 
@@ -379,6 +419,14 @@ elseif(CDSMODEL_XLSDK_USABLE)
   message(STATUS "cdsmodel: SDK is usable but this is not Windows, so no XLL")
 else()
   message(STATUS "cdsmodel: XLL skipped")
+endif()
+
+# Now that the probe has run, add the two Windows-only layers. They consume
+# CDSMODEL_XLSDK_SOURCES and CDSMODEL_XLSDK_INCLUDE, both set just above.
+if(CDSMODEL_XLL_AVAILABLE)
+  add_subdirectory(xl/sdk)
+  add_subdirectory(xl/interface)
+  message(STATUS "cdsmodel: building cdsmodel.xll")
 endif()
 
 # =========================================================================

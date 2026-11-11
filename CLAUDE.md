@@ -113,40 +113,47 @@ precisely because that is where the testable logic must live.
 
 ### Getting the SDK
 
-The SDK is Microsoft's and `framework.h` carries *"Copyright (c) 1997 - 2010
-Microsoft Corporation. All rights reserved."*, so it is gitignored and never
-committed -- this repo is public. Each machine supplies its own copy;
-`python verify.py sdk-absent` enforces that nothing leaks in.
+The SDK is Microsoft's -- `xlcall.h` carries *"Copyright (c) 1997 - 2010
+Microsoft Corporation"* -- and its licence (the Excel 2013 XLL SDK terms)
+**forbids redistributing any of its files** (clause 2.b). So it is gitignored
+and never committed; this repo is public. Each machine supplies its own copy,
+and `python verify.py sdk-absent` enforces that nothing leaks in. Same rule, and
+same reason, as the ISDA oracle.
 
-**The layout does not matter.** CMake searches `CDSMODEL_XLSDK_DIR`
-recursively for four files by name, trying lower case then upper case, so the
-extracted bundle works as-is. All of these are equivalent:
+Two further licence points shape how we use it:
 
-    xlsdk/                              xlsdk/
-      xlcall.h                            Excel2013XLLSDK/
-      xlcall.cpp                            INCLUDE/
-      framework.h                             xlcall.h
-      framework.c                             framework.h
-                                            SRC/
-                                              xlcall.cpp
-                                              framework.c
-                                            LIB/      <- ignored
-                                            SAMPLES/  <- ignored
+- `xlcall.h` and `src/xlcall.cpp` **may not be modified** (clause 2.a.i) -- they
+  are staged **byte-for-byte**.
+- The **sample** framework (`framewrk.*`, `MemoryManager.*`, `MemoryPool.*`)
+  **may** be modified (clause 2.a.ii), but its *executable code* is left exactly
+  as Microsoft ships it. The only touch to `framework.c` is its `#include`
+  lines: un-inline `xlcall.cpp` (the pristine sample `#include`s it, which would
+  double-define every callback) and repoint the framework / memory-manager
+  includes at the names we stage them under. The 8-bit `Excel4` helpers, which a
+  64-bit link cannot resolve, are **not** compiled out -- they are left intact
+  and `xl/sdk/src/excel4_stub.cpp` (ours) defines the two symbols they reference,
+  so the workaround sits on our side of the seam, not in Microsoft's file.
 
-Only these four are read. Everything else in the bundle -- `LIB/`,
-`SAMPLES/`, the HTML docs -- is unused: there is no import library to link,
-because `xlcall.cpp` resolves `MdCallBack12` from the running Excel process.
+**Eight files** are compiled, not four -- `framework.c` pulls in the memory
+manager:
 
-    xlsdk/                     the default
-    CDSMODEL_XLSDK_DIR=...     or point it anywhere, e.g. C:/sdk/Excel2013XLLSDK
+    xlcall.h  xlcall.cpp  framework.h  framework.c
+    MemoryManager.h  MemoryManager.cpp  MemoryPool.h  MemoryPool.cpp
 
-Configure prints what it found, or names each missing file:
+The easiest way to stage them from your own download:
+
+    python tools/setup_xlsdk.py  /path/to/extracted/Excel2013XLLSDK
+
+It copies `xlcall.*` and the memory manager pristine, repoints `framework.c`'s
+`#include` lines (its code untouched), and writes all eight into `xlsdk/`
+(gitignored). Then `cmake --preset release` configures and builds the add-in.
+
+You can also populate `xlsdk/` (or `CDSMODEL_XLSDK_DIR`) by hand; CMake searches
+recursively for `xlcall.h/.cpp` and `framework.h/.c` by name, and if it finds a
+`framework.c` that still `#include`s `xlcall.cpp` inline it compiles `xlcall.cpp`
+once rather than twice. Configure prints what it found:
 
     -- cdsmodel: Excel XLL SDK found
-    --   .../INCLUDE/xlcall.h
-    --   .../SRC/xlcall.cpp
-    --   .../INCLUDE/framework.h
-    --   .../SRC/framework.c
     -- cdsmodel: building cdsmodel.xll
 
 ### What this repo builds, and where
@@ -163,8 +170,10 @@ Four targets, in dependency order. Nothing below depends on anything above it.
 
     xl/sdk/                  cdsmodel_xl_sdk       Windows + SDK
       include/cdsmodel/xl/oper.hpp                 XLOPER12 <-> XlValue, and
-      src/oper.cpp                                 the SDK's own four files
-                                                   compiled in
+      src/oper.cpp                                 the SDK's own files compiled
+      src/excel4_stub.cpp                          in; the stub (ours) defines
+                                                   Excel4/Excel4v so the pristine
+                                                   sample links unedited
 
     xl/interface/            cdsmodel_xll          Windows + SDK
       src/exports.cpp                              the five entry points plus
@@ -191,6 +200,11 @@ before trusting them:**
 That compiles both against the REAL `xlcall.h` using a ten-typedef shim in
 `tools/winshim` standing in for `<windows.h>`. It needs the SDK in `xlsdk/`
 and nothing else. Run it after touching either file.
+
+On Windows, `tools/typecheck_xl.ps1` is the native counterpart: it syntax-checks
+the same two files with `clang++` against the **real** `<windows.h>`, so no shim
+is involved and it catches strictly more. The full `cmake --preset release`
+build is still authoritative; the script is the quick inner-loop gate.
 
 It found four bugs the first time it ran, each of which would have failed a
 Windows build: a missing `<windows.h>` include before `xlcall.h`;
@@ -239,26 +253,33 @@ existing workbooks keep working, and as `CDS.Price`, taking five labelled
 two-column ranges. Both read into the same four structs and then run one code
 path, so they cannot disagree -- and a test compares them bitwise.
 
-**Seven wide functions still have only their flat form**, and this is
-outstanding work rather than a decision against it: `UpfrontFlat` and
-`ParSpreadFlat` at seventeen arguments, `CleanSpreadCurveBuild` at sixteen,
-`ParSpreads` at thirteen, `IRZeroCurveBuild` at twelve, `DefaultAccrual` at
-eleven, `FeeLegFlows` at nine. The four reader structs already expose
-`read_block`, so the machinery each one needs exists.
+**Every wide upstream function now has a grouped form too.** The seven that were
+once flat-only -- `UpfrontFlat` and `ParSpreadFlat` at seventeen arguments,
+`CleanSpreadCurveBuild` at sixteen, `ParSpreads` at thirteen, `IRZeroCurveBuild`
+at twelve, `DefaultAccrual` at eleven, `FeeLegFlows` at nine -- each gained a
+`CDS.`-prefixed twin taking labelled ranges, reading through the same
+`read_block` the four reader structs expose. The flat forms stay registered so
+existing workbooks keep working.
 
-**Sixteen functions are registered**, covering all twelve upstream exposed:
+**Twenty-four functions are registered**, covering all twelve upstream exposed:
 
     pricing     CdsPrice (16 args)   CDS.Price (5 args, grouped)
-                ParSpreads   UpfrontFlat   ParSpreadFlat
-    cash flows  DefaultAccrual   FeeLegFlows
-    curves      IRZeroCurveMake   IRZeroCurveBuild   CleanSpreadCurveBuild
+                ParSpreads   CDS.ParSpreads
+                UpfrontFlat   CDS.Upfront
+                ParSpreadFlat   CDS.ParSpreadFlat
+    cash flows  DefaultAccrual   CDS.DefaultAccrual
+                FeeLegFlows   CDS.FeeLegFlows
+    curves      IRZeroCurveMake   IRZeroCurveBuild   CDS.IRZeroCurve
+                CleanSpreadCurveBuild   CDS.SpreadCurve
                 DiscountFactor   DatesAndRates
     calendars   LoadHolidays   CDS.Calendar   CDS.CalendarFromFile
                 CDS.CalendarDates
     other       CdsModelVersion
 
-Five of those return a **grid** rather than a number, which is the newest and
-least-tested part of the Windows side.
+Eight of those return a **grid** rather than a number -- `ParSpreads`,
+`DatesAndRates`, `FeeLegFlows`, `DefaultAccrual`, `CDS.CalendarDates` and the
+grouped twins `CDS.ParSpreads`, `CDS.FeeLegFlows`, `CDS.DefaultAccrual` -- the
+newest and least-tested part of the Windows side.
 
 **A failed call returns the library's own message as text in the cell.** Not
 `#VALUE!`, and not a log entry a user has to go and read -- upstream needed six

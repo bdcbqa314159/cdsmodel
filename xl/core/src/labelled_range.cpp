@@ -121,4 +121,93 @@ Expected<XlValue> LabelledRange::value_of(std::string_view label) const {
               "\"" + std::string(label) + "\" was not supplied in the conventions block");
 }
 
+Expected<LabelledTable> LabelledTable::read(const XlGrid &grid,
+                                            std::span<const LabelSpec> columns) {
+  if (grid.rows == 0) {
+    return fail(ErrorKind::bad_argument, "the table is empty -- expected a header row");
+  }
+
+  std::vector<std::string> known;
+  known.reserve(columns.size());
+  for (const LabelSpec &spec : columns) {
+    known.push_back(normalise_label(spec.label));
+  }
+
+  LabelledTable out;
+  out.rows_ = grid.rows - 1; // the header row is not data
+  for (std::size_t col = 0; col < grid.columns; ++col) {
+    const XlValue &header = grid.at(0, col);
+    // An unlabelled column is ignored -- a spacer between tables, say -- exactly
+    // as LabelledRange skips a blank label row.
+    if (header.is_missing()) {
+      continue;
+    }
+    const Expected<std::string> raw = header.as_string();
+    if (!raw) {
+      return fail(ErrorKind::bad_argument, "column " + detail::num(col + 1) +
+                                               " of the table: the header is " + header.describe());
+    }
+    const std::string label = normalise_label(*raw);
+    if (label.empty()) {
+      continue;
+    }
+
+    // C10, column-wise: an unknown header is reported, never ignored.
+    if (std::find(known.begin(), known.end(), label) == known.end()) {
+      std::string allowed;
+      for (const LabelSpec &spec : columns) {
+        allowed += (allowed.empty() ? "" : ", ");
+        allowed += std::string(spec.label);
+      }
+      return fail(ErrorKind::bad_argument,
+                  "\"" + *raw + "\" is not a recognised column. Expected one of: " + allowed);
+    }
+
+    // C10: a duplicated header is reported too, for the same reason a duplicated
+    // label is -- two columns disagree and the sheet still computes.
+    const bool already = std::any_of(out.columns_.begin(), out.columns_.end(),
+                                     [&](const Column &c) { return c.label == label; });
+    if (already) {
+      return fail(ErrorKind::bad_argument,
+                  "\"" + *raw + "\" appears more than once as a column header");
+    }
+
+    Column resolved;
+    resolved.label = label;
+    resolved.cells.reserve(out.rows_);
+    for (std::size_t row = 1; row < grid.rows; ++row) {
+      resolved.cells.push_back(grid.at(row, col));
+    }
+    out.columns_.push_back(std::move(resolved));
+  }
+
+  for (const LabelSpec &spec : columns) {
+    if (!spec.required) {
+      continue;
+    }
+    if (!out.has(spec.label)) {
+      return fail(ErrorKind::bad_argument,
+                  "the table is missing the \"" + std::string(spec.label) + "\" column");
+    }
+  }
+  return out;
+}
+
+bool LabelledTable::has(std::string_view label) const {
+  const std::string want = normalise_label(label);
+  return std::any_of(columns_.begin(), columns_.end(),
+                     [&](const Column &c) { return c.label == want; });
+}
+
+Expected<std::vector<XlValue>> LabelledTable::column(std::string_view label) const {
+  const std::string want = normalise_label(label);
+  for (const Column &c : columns_) {
+    if (c.label == want) {
+      return c.cells;
+    }
+  }
+  return fail(ErrorKind::bad_argument,
+              "the \"" + std::string(label) + "\" column was not supplied in the table");
+}
+
 } // namespace cdsmodel::xl

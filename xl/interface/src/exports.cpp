@@ -174,6 +174,11 @@ __declspec(dllexport) LPXLOPER12 ParSpreads(LPXLOPER12 a1, LPXLOPER12 a2, LPXLOP
   return run("ParSpreads", {a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13});
 }
 
+__declspec(dllexport) LPXLOPER12 CDSParSpreads(LPXLOPER12 valuation, LPXLOPER12 end_dates,
+                                               LPXLOPER12 conventions, LPXLOPER12 market) noexcept {
+  return run("CDS.ParSpreads", {valuation, end_dates, conventions, market});
+}
+
 __declspec(dllexport) LPXLOPER12 UpfrontFlat(LPXLOPER12 a1, LPXLOPER12 a2, LPXLOPER12 a3,
                                              LPXLOPER12 a4, LPXLOPER12 a5, LPXLOPER12 a6,
                                              LPXLOPER12 a7, LPXLOPER12 a8, LPXLOPER12 a9,
@@ -182,6 +187,14 @@ __declspec(dllexport) LPXLOPER12 UpfrontFlat(LPXLOPER12 a1, LPXLOPER12 a2, LPXLO
                                              LPXLOPER12 a16, LPXLOPER12 a17) noexcept {
   return run("UpfrontFlat",
              {a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17});
+}
+
+__declspec(dllexport) LPXLOPER12 CDSUpfront(LPXLOPER12 valuation, LPXLOPER12 trade,
+                                            LPXLOPER12 conventions, LPXLOPER12 discount,
+                                            LPXLOPER12 market_spread, LPXLOPER12 recovery,
+                                            LPXLOPER12 clean) noexcept {
+  return run("CDS.Upfront",
+             {valuation, trade, conventions, discount, market_spread, recovery, clean});
 }
 
 __declspec(dllexport) LPXLOPER12 ParSpreadFlat(LPXLOPER12 a1, LPXLOPER12 a2, LPXLOPER12 a3,
@@ -194,6 +207,14 @@ __declspec(dllexport) LPXLOPER12 ParSpreadFlat(LPXLOPER12 a1, LPXLOPER12 a2, LPX
              {a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17});
 }
 
+__declspec(dllexport) LPXLOPER12 CDSParSpreadFlat(LPXLOPER12 valuation, LPXLOPER12 trade,
+                                                  LPXLOPER12 conventions, LPXLOPER12 discount,
+                                                  LPXLOPER12 upfront, LPXLOPER12 recovery,
+                                                  LPXLOPER12 clean) noexcept {
+  return run("CDS.ParSpreadFlat",
+             {valuation, trade, conventions, discount, upfront, recovery, clean});
+}
+
 __declspec(dllexport) LPXLOPER12 DefaultAccrual(LPXLOPER12 a1, LPXLOPER12 a2, LPXLOPER12 a3,
                                                 LPXLOPER12 a4, LPXLOPER12 a5, LPXLOPER12 a6,
                                                 LPXLOPER12 a7, LPXLOPER12 a8, LPXLOPER12 a9,
@@ -201,10 +222,21 @@ __declspec(dllexport) LPXLOPER12 DefaultAccrual(LPXLOPER12 a1, LPXLOPER12 a2, LP
   return run("DefaultAccrual", {a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11});
 }
 
+__declspec(dllexport) LPXLOPER12 CDSDefaultAccrual(LPXLOPER12 dates, LPXLOPER12 trade,
+                                                   LPXLOPER12 notional,
+                                                   LPXLOPER12 conventions) noexcept {
+  return run("CDS.DefaultAccrual", {dates, trade, notional, conventions});
+}
+
 __declspec(dllexport) LPXLOPER12 FeeLegFlows(LPXLOPER12 a1, LPXLOPER12 a2, LPXLOPER12 a3,
                                              LPXLOPER12 a4, LPXLOPER12 a5, LPXLOPER12 a6,
                                              LPXLOPER12 a7, LPXLOPER12 a8, LPXLOPER12 a9) noexcept {
   return run("FeeLegFlows", {a1, a2, a3, a4, a5, a6, a7, a8, a9});
+}
+
+__declspec(dllexport) LPXLOPER12 CDSFeeLegFlows(LPXLOPER12 trade, LPXLOPER12 notional,
+                                                LPXLOPER12 conventions) noexcept {
+  return run("CDS.FeeLegFlows", {trade, notional, conventions});
 }
 
 __declspec(dllexport) LPXLOPER12 IRZeroCurveMake(LPXLOPER12 a1, LPXLOPER12 a2, LPXLOPER12 a3,
@@ -221,12 +253,24 @@ __declspec(dllexport) LPXLOPER12 IRZeroCurveBuild(LPXLOPER12 a1, LPXLOPER12 a2, 
   return run("IRZeroCurveBuild", {a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12});
 }
 
+__declspec(dllexport) LPXLOPER12 CDSIRZeroCurve(LPXLOPER12 value_date, LPXLOPER12 instruments,
+                                                LPXLOPER12 conventions, LPXLOPER12 holidays,
+                                                LPXLOPER12 name) noexcept {
+  return run("CDS.IRZeroCurve", {value_date, instruments, conventions, holidays, name});
+}
+
 __declspec(dllexport) LPXLOPER12 CleanSpreadCurveBuild(
     LPXLOPER12 a1, LPXLOPER12 a2, LPXLOPER12 a3, LPXLOPER12 a4, LPXLOPER12 a5, LPXLOPER12 a6,
     LPXLOPER12 a7, LPXLOPER12 a8, LPXLOPER12 a9, LPXLOPER12 a10, LPXLOPER12 a11, LPXLOPER12 a12,
     LPXLOPER12 a13, LPXLOPER12 a14, LPXLOPER12 a15, LPXLOPER12 a16) noexcept {
   return run("CleanSpreadCurveBuild",
              {a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16});
+}
+
+__declspec(dllexport) LPXLOPER12 CDSSpreadCurve(LPXLOPER12 valuation, LPXLOPER12 benchmarks,
+                                                LPXLOPER12 conventions, LPXLOPER12 discount,
+                                                LPXLOPER12 recovery, LPXLOPER12 name) noexcept {
+  return run("CDS.SpreadCurve", {valuation, benchmarks, conventions, discount, recovery, name});
 }
 
 __declspec(dllexport) LPXLOPER12 DiscountFactor(LPXLOPER12 curve, LPXLOPER12 date) noexcept {
@@ -269,6 +313,15 @@ __declspec(dllexport) short xlAutoOpen(void) noexcept try {
   Excel12(xlGetName, &dll_name, 0);
   for (const cdsmodel::xl::FunctionSpec &spec : cdsmodel::xl::all_functions()) {
     register_one(&dll_name, spec);
+    // The SDK's temp-memory pool is a fixed 10 KB per thread (MemoryPool.cpp).
+    // xlfRegister copies its string arguments during the call, so once
+    // register_one returns they are free to release. Doing so here -- instead
+    // of letting two dozen registrations accumulate -- is what stops the pool
+    // overflowing partway through and handing every later registration a
+    // nullptr procedure name, which Excel reports as #NAME? on the worksheet.
+    // dll_name is Excel's own memory (from xlGetName), not temp, so it survives
+    // the free and stays valid for the next iteration.
+    FreeAllTempMemory();
   }
   // Registered by hand: it takes no arguments, so it is not in the table.
   std::array<LPXLOPER12, 11> version_argv{
@@ -285,6 +338,7 @@ __declspec(dllexport) short xlAutoOpen(void) noexcept try {
       cdsmodel::xl::temp_string(""),
   };
   Excel12v(xlfRegister, nullptr, static_cast<int>(version_argv.size()), version_argv.data());
+  FreeAllTempMemory();
 
   Excel12(xlFree, nullptr, 1, &dll_name);
   return 1;

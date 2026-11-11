@@ -101,16 +101,31 @@ using namespace cdsmodel;
 int main() {
   const std::vector<Calendar> cals{Calendar::none()};
   const RatePoint disc_pts[]{{*make_date(2007, 1, 1), 0.04}, {*make_date(2030, 1, 1), 0.04}};
-  const RatePoint sprd_pts[]{{*make_date(2007, 1, 1), 0.01}, {*make_date(2030, 1, 1), 0.01}};
   // One curve base date for every case, so a case's valuation date does not
   // silently change the curves it prices against.
   const Date curve_base = *make_date(2006, 10, 9);
   const Expected<ZeroCurve> discount =
       ZeroCurve::create(curve_base, disc_pts, kContinuousBasis, DayCount::Act365Fixed);
+  if (!discount) {
+    std::fprintf(stderr, "discount failed\n");
+    return 1;
+  }
+
+  // The spread curve is BOOTSTRAPPED from one 5y/100bp benchmark -- exactly what
+  // the workbook's CleanSpreadCurveBuild does, with the same conventions. Built
+  // as a flat zero curve instead (which an earlier generator did) the expected
+  // values disagree with Excel: a curve bootstrapped from the 100bp quote
+  // reprices that contract to ~0, a flat 1% curve does not.
+  Cds conventions;
+  conventions.start = curve_base;
+  conventions.end = *make_date(2011, 10, 9);
+  conventions.day_count = DayCount::Act360;
+  const Benchmark benchmarks[]{{*make_date(2011, 10, 9), 0.01, true}};
   const Expected<ZeroCurve> spread =
-      ZeroCurve::create(curve_base, sprd_pts, kContinuousBasis, DayCount::Act365Fixed);
-  if (!discount || !spread) {
-    std::fprintf(stderr, "curves failed\n");
+      clean_spread_curve(curve_base, *discount, curve_base, curve_base, curve_base,
+                         benchmarks, 0.4, conventions, cals);
+  if (!spread) {
+    std::fprintf(stderr, "spread bootstrap failed\n");
     return 1;
   }
 
@@ -151,14 +166,19 @@ def expected_values() -> list[str]:
     compiler = shutil.which("c++") or shutil.which("cl")
     if compiler is None:
         sys.exit("no C++ compiler on PATH; cannot compute expected values")
+    is_msvc = Path(compiler).stem.lower() == "cl"
     with tempfile.TemporaryDirectory() as tmp:
         src = Path(tmp) / "expected.cpp"
         src.write_text(EXPECTED_SOURCE, encoding="utf-8")
-        exe = Path(tmp) / "expected"
-        build = subprocess.run(
-            [compiler, "-std=c++20", f"-I{ROOT / 'include'}", str(src), "-o", str(exe)],
-            capture_output=True, text=True,
-        )
+        exe = Path(tmp) / ("expected.exe" if is_msvc else "expected")
+        if is_msvc:
+            # cl takes /-flags and emits the .obj into cwd, so build inside tmp.
+            cmd = [compiler, "/nologo", "/std:c++20", "/EHsc",
+                   f"/I{ROOT / 'include'}", str(src), f"/Fe:{exe}"]
+        else:
+            cmd = [compiler, "-std=c++20", f"-I{ROOT / 'include'}",
+                   str(src), "-o", str(exe)]
+        build = subprocess.run(cmd, capture_output=True, text=True, cwd=tmp)
         if build.returncode != 0:
             sys.exit("could not build the expected-value generator:\n" + build.stderr[-1500:])
         run = subprocess.run([str(exe)], capture_output=True, text=True)

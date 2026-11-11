@@ -27,6 +27,7 @@ using cdsmodel::xl::CurveRegistry;
 using cdsmodel::xl::find_function;
 using cdsmodel::xl::invoke;
 using cdsmodel::xl::LabelledRange;
+using cdsmodel::xl::LabelledTable;
 using cdsmodel::xl::LabelSpec;
 using cdsmodel::xl::MarketData;
 using cdsmodel::xl::TradeTerms;
@@ -333,6 +334,72 @@ TEST(XlErrorPaths, AnEmptyBlockAndANonTextLabelAreBothReported) {
   const auto r2 = LabelledRange::read(numeric_label, labels);
   ASSERT_FALSE(r2.has_value());
   EXPECT_NE(r2.error().message.find("row 1"), std::string::npos) << r2.error().message;
+}
+
+// ------------------------------------------- LabelledTable's C10 rules
+
+namespace {
+// A header-row grid: `headers` then one row of `cells` per inner list.
+XlGrid table_grid(std::initializer_list<const char *> headers,
+                  std::initializer_list<std::initializer_list<XlValue>> rows) {
+  XlGrid g;
+  g.columns = headers.size();
+  g.rows = rows.size() + 1;
+  for (const char *h : headers) {
+    g.cells.emplace_back(std::string(h));
+  }
+  for (const auto &row : rows) {
+    for (const XlValue &c : row) {
+      g.cells.push_back(c);
+    }
+  }
+  return g;
+}
+} // namespace
+
+TEST(XlErrorPaths, ATableReportsUnknownDuplicateAndMissingColumns) {
+  constexpr std::array<LabelSpec, 3> columns{
+      {{"End Date", true}, {"Coupon Rate", true}, {"Include", false}}};
+
+  // An unknown header is named, never ignored.
+  const auto unknown = LabelledTable::read(
+      table_grid({"End Date", "Spread"}, {{XlValue{1.0}, XlValue{0.01}}}), columns);
+  ASSERT_FALSE(unknown.has_value());
+  EXPECT_NE(unknown.error().message.find("Spread"), std::string::npos) << unknown.error().message;
+
+  // A duplicated header is refused -- two columns would disagree.
+  const auto duplicate = LabelledTable::read(
+      table_grid({"End Date", "End Date"}, {{XlValue{1.0}, XlValue{2.0}}}), columns);
+  ASSERT_FALSE(duplicate.has_value());
+  EXPECT_NE(duplicate.error().message.find("more than once"), std::string::npos)
+      << duplicate.error().message;
+
+  // A missing REQUIRED column is reported; a missing optional one is not.
+  const auto missing =
+      LabelledTable::read(table_grid({"End Date"}, {{XlValue{1.0}}}), columns);
+  ASSERT_FALSE(missing.has_value());
+  EXPECT_NE(missing.error().message.find("Coupon Rate"), std::string::npos)
+      << missing.error().message;
+}
+
+TEST(XlErrorPaths, ATableReadsColumnsInAnyOrderAndSkipsOptionalAbsent) {
+  constexpr std::array<LabelSpec, 3> columns{
+      {{"End Date", true}, {"Coupon Rate", true}, {"Include", false}}};
+  // Reversed order, optional Include absent, two data rows.
+  const auto ok = LabelledTable::read(
+      table_grid({"Coupon Rate", "End Date"}, {{XlValue{0.01}, XlValue{1.0}},
+                                               {XlValue{0.02}, XlValue{2.0}}}),
+      columns);
+  ASSERT_TRUE(ok.has_value()) << (ok.has_value() ? "" : ok.error().message);
+  EXPECT_EQ(ok->rows(), 2u);
+  EXPECT_FALSE(ok->has("Include"));
+  const auto ends = ok->column("End Date");
+  ASSERT_TRUE(ends.has_value());
+  ASSERT_EQ(ends->size(), 2u);
+  EXPECT_EQ((*ends)[1].as_double(), 2.0);
+  // Asking for an absent optional column is an error that names it.
+  const auto absent = ok->column("Include");
+  EXPECT_FALSE(absent.has_value());
 }
 
 } // namespace
