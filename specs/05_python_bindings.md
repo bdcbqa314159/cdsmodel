@@ -150,6 +150,7 @@ prefer one over the other, and switching would buy a worse one.
 | D17 | **Enum values are emitted UPPER_CASE, because two of them are Python keywords** | transliterate the C++ names directly | Measured: `Weekend::None` and `BadDayConv::None` would be `Weekend.None`, which does not parse. A blanket UPPER_CASE rule fixes both without a special case per name, and `NONE` reads correctly beside `SATURDAY`. P16 checks every emitted name is a valid identifier and not a keyword, so a future enum value called `class` or `lambda` fails a test rather than the import | — |
 | D18 | **Binding functions take `std::vector`; `std::span` never crosses the boundary** | write a `span` caster | A span is a borrowed view, and a caster for one would have to keep the owner alive across the call — exactly the lifetime bug class P6 exists to prevent. Taking a vector by value at the boundary and passing a span inward costs one copy on a call that is about to do far more work | a profile shows the copy mattering |
 | D19 | **`ZeroCurve.from_points` takes parallel date and rate lists, not `RatePoint`s** | expose `RatePoint` | It keeps one type off the public surface for no loss: a caller building a curve has two columns, not a list of pairs. `DatesAndRates` in the XLL already returns exactly those two columns, so the shapes match | a caller wants to round-trip `points()` back in |
+| D22 | **`build-dir = "build/wheel/{wheel_tag}"`, not `build/{wheel_tag}"`** | scikit-build-core's documented default | CMakePresets already own `build/debug` and `build/release`. A wheel tree beside them interleaves with the project's own, and cleaning one takes out the other — which happened once during P1 and made `verify.py tests` report that no tests ran at all | the presets move |
 | D14 | **The sdist ships only what builds the extension, and builds with `CDSMODEL_BUILD_TESTS=OFF`** | ship the repo as-is | Nothing gitignored is needed, and the library is *already proven* to build with no oracle — CI does it on every commit with `-DCDSMODEL_UPSTREAM_DIR=/nonexistent`, which is what the two-tier contract was for. Beyond that, `CDSMODEL_BUILD_TESTS` defaults to `PROJECT_IS_TOP_LEVEL`, which is true under scikit-build-core, so an untouched build would FetchContent GoogleTest and need network — `pip install` from the sdist would fail behind a firewall. With tests off, `tests/` (6.6M of 8.9M) is not needed either | a user wants to run the tier-1 vectors from an installed sdist |
 | D12 | **`__version__` single-sourced from `CMakeLists.txt`** | a literal in `__init__.py` | `version.hpp` already exposes `version()` and `upstream_version()`, and CMake already carries `project(cdsmodel VERSION …)`. A literal in `__init__.py` would be a fourth copy and the one most likely to drift. scikit-build-core reads the version out of CMakeLists as dynamic metadata | — |
 | D8 | Trusted Publishing, no API token | a `PYPI_API_TOKEN` secret | A long-lived token in repository secrets is a credential that can leak and does not expire. OIDC issues one scoped to the workflow run. P10 asserts no `password:` appears | PyPI changes the mechanism |
@@ -171,7 +172,7 @@ prefer one over the other, and switching would buy a worse one.
 
 | ID | Status | Oracle result | Note |
 |----|--------|---------------|------|
-| P1 | todo | | a proof wheel already built locally |
+| P1 | **pass** (macOS; 3-OS pending CI) | `cdsmodel-0.1.0-cp312-abi3-macosx_26_0_arm64.whl` builds, installs into a clean venv and imports. Wheel holds 8 entries — the package only | two bugs caught by the *import* half of the oracle: a missing `nanobind/stl/string.h` (`ImportError: std::bad_cast`) and the library's own install rules staging `include/`, `lib/libcdsmodel.a` and `lib/cmake/` into the wheel, which would have landed in site-packages |
 | P2 | todo | | D2's caster |
 | P3 | todo | | the binding criterion |
 | P4 | todo | | |
@@ -182,7 +183,7 @@ prefer one over the other, and switching would buy a worse one.
 | P9 | todo | | |
 | P10 | todo | | |
 | P11 | todo | | the licence criterion |
-| P12 | todo | | |
+| P12 | **pass** | `cdsmodel.__version__` is `0.1.0`, read out of `CMakeLists.txt` by scikit-build-core and out of the C++ `version()` by the module; the test compares all three | `__upstream_version__` reports `1.8.3` |
 | P13 | todo | | |
 | P14 | todo | | the firewall case |
 | P15 | todo | | the cap, machine-checked |
