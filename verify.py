@@ -606,9 +606,19 @@ def gate_coverage() -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         build = Path(tmp) / "b"
+        # The instrumentation flags are Clang's. macOS/Linux default to a
+        # compiler that understands them; Windows defaults to MSVC, which
+        # silently ignores -f* and produces an uninstrumented binary (no
+        # .profraw). Since this gate *requires* llvm-cov anyway, pin the
+        # coverage build to Clang+Ninja on Windows.
+        toolchain = (
+            ["-G", "Ninja", "-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++"]
+            if os.name == "nt" else []
+        )
         configure = subprocess.run(
             [
                 "cmake", "-S", str(ROOT), "-B", str(build),
+                *toolchain,
                 "-DCMAKE_BUILD_TYPE=Debug",
                 "-DCMAKE_CXX_FLAGS=-fprofile-instr-generate -fcoverage-mapping",
                 "-DCMAKE_EXE_LINKER_FLAGS=-fprofile-instr-generate",
@@ -624,9 +634,17 @@ def gate_coverage() -> None:
         if built.returncode != 0:
             fail("coverage build failed:\n" + (built.stderr or built.stdout)[-1200:])
 
+        # The bare name is POSIX; Windows adds .exe and a multi-config generator
+        # (Visual Studio) drops it under build/Debug/. Find whatever got built.
+        hits = list(build.glob("cdsmodel_tests")) + list(build.glob("cdsmodel_tests.exe"))
+        hits += list(build.glob("*/cdsmodel_tests.exe"))
+        if not hits:
+            fail("coverage built cdsmodel_tests but the binary was not found under " + str(build))
+        test_bin = hits[0]
+
         raw = build / "cov.profraw"
         run = subprocess.run(
-            [str(build / "cdsmodel_tests")],
+            [str(test_bin)],
             capture_output=True, text=True,
             env={**os.environ, "LLVM_PROFILE_FILE": str(raw)},
         )
@@ -636,14 +654,17 @@ def gate_coverage() -> None:
         merged = build / "cov.profdata"
         subprocess.run([profdata, "merge", "-sparse", str(raw), "-o", str(merged)], check=True)
         report = subprocess.run(
-            [cov, "report", str(build / "cdsmodel_tests"), f"-instr-profile={merged}"],
+            [cov, "report", str(test_bin), f"-instr-profile={merged}"],
             capture_output=True, text=True,
         ).stdout
 
     problems: list[str] = []
     for area, floors in COVERAGE_FLOORS.items():
         lines_total = lines_missed = branches_total = branches_missed = 0
-        for row in report.split("\n"):
+        for raw_row in report.split("\n"):
+            # llvm-cov prints native paths; on Windows that is backslashes,
+            # but the area keys and the /tests/ exclusion use forward slashes.
+            row = raw_row.replace("\\", "/")
             if area not in row or "/tests/" in row:
                 continue
             parts = row.split()
