@@ -201,6 +201,11 @@ That compiles both against the REAL `xlcall.h` using a ten-typedef shim in
 `tools/winshim` standing in for `<windows.h>`. It needs the SDK in `xlsdk/`
 and nothing else. Run it after touching either file.
 
+On Windows, `tools/typecheck_xl.ps1` is the native counterpart: it syntax-checks
+the same two files with `clang++` against the **real** `<windows.h>`, so no shim
+is involved and it catches strictly more. The full `cmake --preset release`
+build is still authoritative; the script is the quick inner-loop gate.
+
 It found four bugs the first time it ran, each of which would have failed a
 Windows build: a missing `<windows.h>` include before `xlcall.h`;
 `static_cast` where `GetTempMemory`'s `LPSTR` return needs `reinterpret_cast`;
