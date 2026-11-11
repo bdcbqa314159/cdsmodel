@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(CDSMODEL_BUILD_TESTS "Build tests" ${PROJECT_IS_TOP_LEVEL})
+option(CDSMODEL_BUILD_PYTHON "Build the nanobind extension" OFF)
 
 # UndefinedBehaviorSanitizer PRINTS and CONTINUES by default, exiting 0. A
 # sanitizer job that only fails on AddressSanitizer errors therefore ignores
@@ -476,3 +477,7 @@ configure_package_config_file(
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/cdsmodelConfig.cmake"
               "${CMAKE_CURRENT_BINARY_DIR}/cdsmodelConfigVersion.cmake"
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cdsmodel)
+
+if(CDSMODEL_BUILD_PYTHON)
+  add_subdirectory(python)
+endif()
