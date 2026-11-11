@@ -125,4 +125,55 @@ jobs:
       - run: |
           clang-format --dry-run -Werror \
             $(git ls-files 'include/**/*.hpp' 'src/*.cpp' 'tests/*.cpp' 'tools/*.cpp' \
+              'python/src/*.cpp' 'python/src/*.hpp' \
               | grep -v '^tests/golden/')
+
+  # The Python package. Separate from `verify` because it needs no oracle and
+  # no C++ test build -- it builds the wheel the way a user's `pip install`
+  # would, installs it, and runs the suite against the INSTALLED package
+  # rather than the source tree. A test that passes only from the repo root
+  # would not catch a packaging mistake, which is most of what can go wrong
+  # here (P1 shipped `include/` and `lib/libcdsmodel.a` into the wheel before
+  # this job existed).
+  python:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # D1: cp312-abi3. One wheel per platform covers 3.12 and later, so
+          # the build needs exactly one interpreter.
+          python-version: "3.12"
+      - uses: lukka/get-cmake@latest
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+
+      - name: Build the wheel
+        run: |
+          python -m pip install --upgrade pip build pytest
+          python -m build --wheel -o dist .
+
+      # P1: the tag is asserted, not eyeballed. A wheel that quietly built as
+      # cp312-cp312 instead of cp312-abi3 would install and import fine here
+      # and then fail for every user on 3.13.
+      - name: Assert the wheel is cp312-abi3
+        shell: python
+        run: |
+          from pathlib import Path
+          names = [p.name for p in Path("dist").glob("*.whl")]
+          assert len(names) == 1, names
+          assert "cp312-abi3" in names[0], f"not an abi3 wheel: {names[0]}"
+          print("ok:", names[0])
+
+      # Installed, not in-tree: `pip install` from a clean environment is the
+      # thing a user actually does.
+      - name: Install and run the suite
+        run: |
+          python -m pip install --find-links dist cdsmodel
+          python -m pytest tests/python -q

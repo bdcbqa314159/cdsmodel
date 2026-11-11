@@ -7,6 +7,8 @@
 
 #include "date_caster.hpp"
 
+void bind_types(nanobind::module_ &);
+
 namespace nb = nanobind;
 
 NB_MODULE(_core, m) {
@@ -16,4 +18,6 @@ NB_MODULE(_core, m) {
   // retyped here. `pyproject.toml` reads the same line for the wheel metadata.
   m.attr("__version__") = std::string{cdsmodel::version()};
   m.attr("__upstream_version__") = std::string{cdsmodel::upstream_version()};
+
+  bind_types(m);
 }

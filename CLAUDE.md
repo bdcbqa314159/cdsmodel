@@ -295,5 +295,8 @@ assert the arity the type codes declare equals the documented parameter count.
 
 ## Formatting
 
-`clang-format` covers `include/`, `src/` and `tests/` only. Upstream C is never
-reformatted — it is not ours, and a reformatted oracle is a modified oracle.
+`clang-format` covers our own C++ only: `include/`, `src/`, `tests/`, `tools/`
+and `python/src/`. Upstream C is never reformatted — it is not ours, and a
+reformatted oracle is a modified oracle. The Excel SDK is excluded for the same
+reason, and `xl/` is excluded because it was not in scope when the gate was
+written.

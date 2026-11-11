@@ -11,7 +11,8 @@ find_package(nanobind CONFIG REQUIRED)
 # STABLE_ABI: one cp312-abi3 wheel per platform (D1).
 # NB_STATIC:  nanobind linked in, so the wheel carries no second shared object.
 nanobind_add_module(_core STABLE_ABI NB_STATIC
-  src/module.cpp)
+  src/module.cpp
+  src/types.cpp)
 
 target_link_libraries(_core PRIVATE cdsmodel)
 target_compile_features(_core PRIVATE cxx_std_20)
