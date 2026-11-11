@@ -197,6 +197,7 @@ if(CDSMODEL_BUILD_TESTS)
                  xl/core/tests/xl_core_test.cpp
                  xl/core/tests/dispatch_test.cpp
                  xl/core/tests/error_paths_test.cpp
+                 xl/core/tests/dispatch_error_paths_test.cpp
                  xl/core/tests/calendars_test.cpp
                  xl/core/tests/curves_test.cpp
                  xl/core/tests/pricing_test.cpp
