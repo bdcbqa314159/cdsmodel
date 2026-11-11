@@ -1,6 +1,6 @@
 # Artifact #5 — the Python package (draft)
 
-**Status:** draft — all open questions closed, ready for ratification
+**Status:** ratified 2026-11-11 (Bernardo Cohen)
 **Licence position:** settled — MIT, per `NOTICE.md`; the ISDA licence permits
 derivative works under a licence of the author's choice. Not an open question.
 **Governing purpose:** Publish `cdsmodel` on PyPI as a typed, wheel-installed
@@ -18,6 +18,10 @@ is checking arithmetic, it is in the wrong file.
 
 | | |
 |---|---|
+| where nanobind constructs a `call_guard` | **inside** the lambda wrapping the user function (`nb_func.h:132`); argument conversion produces that lambda's arguments and `from_cpp` runs on its result, so **both conversions hold the GIL**. D2 and D10 compose |
+| throwing a plain C++ exception from inside the guard | converts correctly: the guard's destructor re-acquires the GIL during unwinding, then the translator runs. 200 alternating calls survived |
+| dual-inherited exception, built and raised | `except ValueError` caught it **and** `isinstance(e, BadArgument)` was True — D3 proven, not assumed |
+| `nb::exception<T>` | requires `T` to expose `what()`, so the carrier must derive from `std::exception` |
 | C8, the add-in in real Excel | **PASS 2026-11-11** — 24/24 registered, every row matched, both forms agreed (Excel 16.0 build 20527, x64) |
 | grouped XLL forms | **11**, all wide functions covered; 8 are within a five-argument cap, 3 are not |
 | nanobind | **3.1.0** |
@@ -105,6 +109,7 @@ prefer one over the other, and switching would buy a worse one.
 | P2 | WHEN a `datetime.date` goes in, THEN the same `datetime.date` comes out — same day, and never a `datetime` | round-trip over a swept date range **under `TZ` set to UTC, America/New_York, Europe/London and Pacific/Auckland**, asserting both the value and `type()`. The western zones are the positive control: the stock caster passes in UTC and London and fails in New York, so a UTC-only test would measure the fixture rather than the code | — |
 | P3 | Every price the package returns equals the C++ value **bit for bit** | a generated fixture of inputs and `%.17g` outputs, produced by a C++ program linking the same library; pytest compares exactly | 3 |
 | P4 | IF a call fails, THEN it raises the mapped exception with the library's own message | one test per `ErrorKind`, asserting both the class and that the message names the offending value | — |
+| P18 | Failure and date conversion remain correct under repeated calls with the GIL released | a loop alternating a failing call and a date-returning call several hundred times, asserting no crash and the right type each time. A single call proves nothing here: GIL misuse corrupts state rather than failing immediately | — |
 | P5 | `except ValueError` catches a bad argument, and `except CdsModelError` catches everything | two tests per exception class, on the base and on the builtin | — |
 | P6 | A curve outlives the Python name that built it, and cannot be mutated | hold a curve, rebind the source, price again; `setattr` raises | — |
 | P7 | `mypy --strict` passes over the test suite using only the shipped stubs | CI step; proves `py.typed` and `.pyi` are real, not decoration | — |
@@ -138,6 +143,8 @@ prefer one over the other, and switching would buy a worse one.
 | D11 | **A hard cap of five parameters per callable, met by reusing `xl/core`'s four blocks** | mirror the C++ positional signatures; invent a Python-specific grouping | `cds_price` takes nine. The four blocks `xl/core` already defines — `Valuation`, `TradeTerms`, `Conventions`, `MarketData` — plus `clean` is exactly five, which is also `CDS.Price`'s arity. So the grouped form built for Excel *is* the Python signature, and one design answers both callers rather than two that can drift. Keyword-only on top, because `today`, `cash_settle` and `step_in` are three adjacent same-typed dates where a positional swap is silent | the deferred `Cds` split lands, which would cut it further |
 | D11b | **Python groups the three loose market values that the XLL leaves flat** | copy each `CDS.` form's arity verbatim | Drift, found when the Windows session landed all eleven grouped forms on 2026-11-11. D11 claimed the Excel grouped form *is* the Python signature; that holds for `CDS.Price` at five and fails for three: `CDS.Upfront` and `CDS.ParSpreadFlat` at seven, `CDS.SpreadCurve` at six. The cause is structural rather than arbitrary — those take a flat par spread or an upfront charge instead of a spread *curve*, so `Discount Curve`, `Market Par Spread`/`Upfront Charge` and `Recovery Rate` sit loose where `CDS.Price` has one `MarketData` block. Grouping them the same way puts all three at exactly five. The blocks stay shared; Python simply applies the existing principle where the XLL stopped. The XLL keeps its arities — it has no cap, and it is now verified in Excel, so changing it would mean re-running C8 | the XLL adopts the same block, which would restore one arity per function |
 | D11a | **The cap counts what a caller must pass, not defaulted parameters. `Conventions` is the one named exemption** | count every parameter, splitting `Conventions` into nested `Schedule` and `Accrual` blocks | **Ratified 2026-11-11 (Bernardo Cohen)**, choosing the flat form over the strict split. All six fields are defaulted, so a caller writes `Conventions()` and overrides what they need — zero required arguments. It matches `xl/core`'s `Conventions` block field for field, so one mental model serves Excel and Python, which is the whole point of reusing the blocks. The strict split would have cost nesting at the call site for the commonest case — changing one day count — to satisfy a count no caller experiences. The exemption is **named individually in the gate, never granted by pattern**, exactly as the error channel names its two D7 exemptions | a seventh field is proposed, which is the signal that the concept really has split |
+| D20 | **The guarded body touches no Python API; failure leaves it as a plain C++ exception and a translator converts it** | throw `nb::python_error`, or set the error with `PyErr_SetString` at the failure site | D10 releases the GIL around the call, and calling any Python API without the GIL is undefined behaviour — a crash that would appear only under load, long after the code looked fine. Measured: a plain C++ exception thrown inside the guard unwinds past the guard's destructor, which re-acquires the GIL, and only then does the translator run. The obvious implementation is the unsafe one, which is why this is a decision rather than a note | D10 is withdrawn |
+| D21 | **Four exception types, one translator that switches on `ErrorKind`** | one `nb::exception<T>` per kind, each with its own auto-registered translator | `nb::exception<T>` is keyed on the *C++* type, and all four kinds share one carrier, so four of them cannot discriminate. Building the four Python types explicitly and switching inside a single translator keeps D5 intact — the kind and the message pass through together, unwrapped and unrenamed | a fifth kind appears |
 | D15 | **Bind the result types as readable objects, not tuples** | return tuples or dicts | `flow.date` survives a field being added; `flow[0]` does not. `CashFlow` and `DefaultAccrual` are the two the twelve functions return. `FeeLeg` and `ContingentLeg` stay NOT-NOW because `cds_fee_leg` is not among the XLL's twelve | a caller needs the legs themselves |
 | D16 | **Expose only the seven enums reachable from the bound surface** | expose all seventeen | The other ten are implementation — interpolation metrics, stub location, date-list keep policy. Exposing them would invite callers to depend on internals the port is free to change, and would make D4's twelve-function scope meaningless | a newly bound function needs one |
 | D17 | **Enum values are emitted UPPER_CASE, because two of them are Python keywords** | transliterate the C++ names directly | Measured: `Weekend::None` and `BadDayConv::None` would be `Weekend.None`, which does not parse. A blanket UPPER_CASE rule fixes both without a special case per name, and `NONE` reads correctly beside `SATURDAY`. P16 checks every emitted name is a valid identifier and not a keyword, so a future enum value called `class` or `lambda` fails a test rather than the import | — |
@@ -181,6 +188,7 @@ prefer one over the other, and switching would buy a worse one.
 | P15 | todo | | the cap, machine-checked |
 | P16 | todo | | the `None` collision |
 | P17 | todo | | REPL usability |
+| P18 | todo | | proven in `/tmp/nbgil` ahead of the spec |
 
 ## The interface
 
