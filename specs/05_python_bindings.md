@@ -76,6 +76,10 @@ prefer one over the other, and switching would buy a worse one.
 - `numpy` array overloads for curve construction and vectorised pricing.
 - Free-threaded (3.13t+) wheels; split mode; a 3.11 floor.
 - `conda-forge`; stub-completeness gating; async anything.
+- **Pickling the value objects.** It matters for `multiprocessing`, but D10's
+  GIL release makes threads the first answer for a book of trades, and pickling
+  adds a versioned format to maintain. Named here rather than left silent.
+- `FeeLeg` and `ContingentLeg` as bound types — see D15.
 
 ## NEVER — out of scope
 
@@ -110,6 +114,8 @@ prefer one over the other, and switching would buy a worse one.
 | P11 | THE sdist and the wheel SHALL contain no upstream ISDA source and no Excel SDK — **and SHALL contain our own sources** | both artifacts are built, unpacked, and grepped: upstream filenames and the ISDA licence string absent, `src/cds_price.cpp` present. The positive half is what stops an empty archive passing | 3 |
 | P12 | `cdsmodel.__version__`, the CMake project version and C++ `version()` agree | one test comparing all three | — |
 | P14 | `pip install` from the sdist succeeds **with no network access** | build the sdist, install it in a clean venv with the index and network blocked; no FetchContent may run | 3 |
+| P16 | Every emitted enum value is a valid, non-keyword Python identifier | a test importing the module and checking each enum member name with `str.isidentifier()` and `keyword.iskeyword()`. `Weekend.None` is the case that motivated it, and it fails at import, so the test must run on names rather than attribute access | — |
+| P17 | Every value object has a `__repr__` naming its type and fields | a test asserting `repr()` of each bound type contains the type name and every field name — so a Jupyter user sees `TradeTerms(start=..., end=...)` rather than `<cdsmodel._core.TradeTerms object at 0x...>` | — |
 | P15 | No public callable takes more than five parameters, with `Conventions` the single named exemption at six | a test walking every public signature with `inspect`, asserting arity ≤ 5 against an explicit one-entry exemption list. A *new* callable at six fails; widening `Conventions` to seven fails. Naming the exemption rather than raising the limit is what keeps the gate able to fail | — |
 | P13 | Pricing the same inputs from four threads gives results identical to serial | threaded test; the GIL is released around the C++ call. Speedup is deliberately **not** asserted — it would be flaky, and safety is the property that matters | — |
 
@@ -132,6 +138,11 @@ prefer one over the other, and switching would buy a worse one.
 | D11 | **A hard cap of five parameters per callable, met by reusing `xl/core`'s four blocks** | mirror the C++ positional signatures; invent a Python-specific grouping | `cds_price` takes nine. The four blocks `xl/core` already defines — `Valuation`, `TradeTerms`, `Conventions`, `MarketData` — plus `clean` is exactly five, which is also `CDS.Price`'s arity. So the grouped form built for Excel *is* the Python signature, and one design answers both callers rather than two that can drift. Keyword-only on top, because `today`, `cash_settle` and `step_in` are three adjacent same-typed dates where a positional swap is silent | the deferred `Cds` split lands, which would cut it further |
 | D11b | **Python groups the three loose market values that the XLL leaves flat** | copy each `CDS.` form's arity verbatim | Drift, found when the Windows session landed all eleven grouped forms on 2026-11-11. D11 claimed the Excel grouped form *is* the Python signature; that holds for `CDS.Price` at five and fails for three: `CDS.Upfront` and `CDS.ParSpreadFlat` at seven, `CDS.SpreadCurve` at six. The cause is structural rather than arbitrary — those take a flat par spread or an upfront charge instead of a spread *curve*, so `Discount Curve`, `Market Par Spread`/`Upfront Charge` and `Recovery Rate` sit loose where `CDS.Price` has one `MarketData` block. Grouping them the same way puts all three at exactly five. The blocks stay shared; Python simply applies the existing principle where the XLL stopped. The XLL keeps its arities — it has no cap, and it is now verified in Excel, so changing it would mean re-running C8 | the XLL adopts the same block, which would restore one arity per function |
 | D11a | **The cap counts what a caller must pass, not defaulted parameters. `Conventions` is the one named exemption** | count every parameter, splitting `Conventions` into nested `Schedule` and `Accrual` blocks | **Ratified 2026-11-11 (Bernardo Cohen)**, choosing the flat form over the strict split. All six fields are defaulted, so a caller writes `Conventions()` and overrides what they need — zero required arguments. It matches `xl/core`'s `Conventions` block field for field, so one mental model serves Excel and Python, which is the whole point of reusing the blocks. The strict split would have cost nesting at the call site for the commonest case — changing one day count — to satisfy a count no caller experiences. The exemption is **named individually in the gate, never granted by pattern**, exactly as the error channel names its two D7 exemptions | a seventh field is proposed, which is the signal that the concept really has split |
+| D15 | **Bind the result types as readable objects, not tuples** | return tuples or dicts | `flow.date` survives a field being added; `flow[0]` does not. `CashFlow` and `DefaultAccrual` are the two the twelve functions return. `FeeLeg` and `ContingentLeg` stay NOT-NOW because `cds_fee_leg` is not among the XLL's twelve | a caller needs the legs themselves |
+| D16 | **Expose only the seven enums reachable from the bound surface** | expose all seventeen | The other ten are implementation — interpolation metrics, stub location, date-list keep policy. Exposing them would invite callers to depend on internals the port is free to change, and would make D4's twelve-function scope meaningless | a newly bound function needs one |
+| D17 | **Enum values are emitted UPPER_CASE, because two of them are Python keywords** | transliterate the C++ names directly | Measured: `Weekend::None` and `BadDayConv::None` would be `Weekend.None`, which does not parse. A blanket UPPER_CASE rule fixes both without a special case per name, and `NONE` reads correctly beside `SATURDAY`. P16 checks every emitted name is a valid identifier and not a keyword, so a future enum value called `class` or `lambda` fails a test rather than the import | — |
+| D18 | **Binding functions take `std::vector`; `std::span` never crosses the boundary** | write a `span` caster | A span is a borrowed view, and a caster for one would have to keep the owner alive across the call — exactly the lifetime bug class P6 exists to prevent. Taking a vector by value at the boundary and passing a span inward costs one copy on a call that is about to do far more work | a profile shows the copy mattering |
+| D19 | **`ZeroCurve.from_points` takes parallel date and rate lists, not `RatePoint`s** | expose `RatePoint` | It keeps one type off the public surface for no loss: a caller building a curve has two columns, not a list of pairs. `DatesAndRates` in the XLL already returns exactly those two columns, so the shapes match | a caller wants to round-trip `points()` back in |
 | D14 | **The sdist ships only what builds the extension, and builds with `CDSMODEL_BUILD_TESTS=OFF`** | ship the repo as-is | Nothing gitignored is needed, and the library is *already proven* to build with no oracle — CI does it on every commit with `-DCDSMODEL_UPSTREAM_DIR=/nonexistent`, which is what the two-tier contract was for. Beyond that, `CDSMODEL_BUILD_TESTS` defaults to `PROJECT_IS_TOP_LEVEL`, which is true under scikit-build-core, so an untouched build would FetchContent GoogleTest and need network — `pip install` from the sdist would fail behind a firewall. With tests off, `tests/` (6.6M of 8.9M) is not needed either | a user wants to run the tier-1 vectors from an installed sdist |
 | D12 | **`__version__` single-sourced from `CMakeLists.txt`** | a literal in `__init__.py` | `version.hpp` already exposes `version()` and `upstream_version()`, and CMake already carries `project(cdsmodel VERSION …)`. A literal in `__init__.py` would be a fourth copy and the one most likely to drift. scikit-build-core reads the version out of CMakeLists as dynamic metadata | — |
 | D8 | Trusted Publishing, no API token | a `PYPI_API_TOKEN` secret | A long-lived token in repository secrets is a credential that can leak and does not expire. OIDC issues one scoped to the workflow run. P10 asserts no `password:` appears | PyPI changes the mechanism |
@@ -168,6 +179,8 @@ prefer one over the other, and switching would buy a worse one.
 | P13 | todo | | |
 | P14 | todo | | the firewall case |
 | P15 | todo | | the cap, machine-checked |
+| P16 | todo | | the `None` collision |
+| P17 | todo | | REPL usability |
 
 ## The interface
 
@@ -212,6 +225,35 @@ Curves and calendars are **classes, not handles**. The XLL needs a registry
 because a cell cannot hold a curve; Python holds the object directly, so the
 whole stale-handle problem does not exist here. `shared_ptr<const T>` already
 makes them immutable, which is what lets them be shared safely (P6).
+
+### Objects a caller receives
+
+    CashFlow      date, amount            returned by fee_leg_flows()
+    DefaultAccrual days, amount           returned by default_accrual()
+
+Both are readable value objects, not tuples -- `flow.date` rather than
+`flow[0]`. `CashFlow` already has a defaulted `operator==`, so Python equality
+comes free and correct rather than being written by hand.
+
+### Smaller value objects a caller constructs
+
+    DateInterval(periods, unit)                                         2
+    StubMethod(position, length)                                        2
+
+Both already carry a defaulted `operator==`. `StubMethod` exists precisely
+because upstream's `TStubMethod` was two bare booleans that could be swapped
+silently; keeping it a two-field object in Python preserves that protection.
+
+### Enums
+
+Seven of the library's seventeen are reachable from the bound surface and are
+exposed: `DayCount`, `BadDayConv`, `PeriodUnit`, `Weekend`, `StubPosition`,
+`StubLength`, `InstrumentKind`. The other ten are internal. `ErrorKind` is
+deliberately **not** exposed -- D3 turns it into exception classes.
+
+**`Weekend::None` and `BadDayConv::None` cannot keep their names**:
+`Weekend.None` is a syntax error in Python. Every enum value is emitted
+UPPER_CASE, so these become `Weekend.NONE` and `BadDayConv.NONE`.
 
 ### Errors
 
