@@ -567,6 +567,54 @@ COVERAGE_FLOORS = {
 }
 
 
+def gate_python_layer() -> None:
+    """Artifact #5, D23: the Python layer never depends on the Excel layer.
+
+    `python/` and `xl/core/` are peers -- both bind the same `cdsmodel`
+    functions, neither sits above the other. The temptation is real and
+    specific: `cdsmodel::xl` already defines the four argument blocks Python
+    mirrors, so including `<cdsmodel/xl/arguments.hpp>` would delete an
+    obvious duplication. It would also drag `XlValue` and the handle
+    registries into a wheel that has no use for either, and break the
+    layering `CLAUDE.md` states as law.
+
+    Comments naming `xl/` are fine -- `blocks.hpp` explains the duplication,
+    and a gate that forbade the word would forbid its own rationale. Only
+    `#include` lines and link targets count.
+    """
+    offenders = []
+    for path in sorted((ROOT / "python").rglob("*")):
+        if path.suffix not in {".cpp", ".hpp", ".h"}:
+            continue
+        for n, line in enumerate(path.read_text().splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("#include") and (
+                "cdsmodel/xl/" in stripped or '"xl/' in stripped
+            ):
+                offenders.append(f"{path.relative_to(ROOT)}:{n}: {stripped}")
+
+    cmake = (ROOT / "python" / "CMakeLists.txt").read_text()
+    for m in re.finditer(r"target_link_libraries\([^)]*\)", cmake):
+        if "cdsmodel_xl" in m.group(0):
+            offenders.append(f"python/CMakeLists.txt: links {m.group(0)}")
+
+    if offenders:
+        fail(
+            "the Python layer must not depend on the Excel layer (D23):\n  "
+            + "\n  ".join(offenders)
+        )
+
+    # A gate that can only say "nothing bad found" would pass an empty tree.
+    sources = [
+        p for p in (ROOT / "python").rglob("*") if p.suffix in {".cpp", ".hpp"}
+    ]
+    if not sources:
+        fail("no Python binding sources found -- the gate would pass vacuously")
+    print(
+        f"ok: {len(sources)} Python binding sources, none depending on xl/"
+    )
+
+
 def gate_coverage() -> None:
     """Measures line and branch coverage per area against COVERAGE_FLOORS.
 
@@ -738,6 +786,7 @@ GATES = {
     "error-channel": gate_error_channel,
     "umbrella": gate_umbrella,
     "sdk-absent": gate_sdk_absent,
+    "python-layer": gate_python_layer,
     "coverage": gate_coverage,
     "install-tree": lambda: gate_install_tree(_PRESET[0]),
     "golden": gate_golden_generated,
