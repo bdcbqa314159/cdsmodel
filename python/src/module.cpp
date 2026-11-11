@@ -8,6 +8,10 @@
 #include "date_caster.hpp"
 
 void bind_types(nanobind::module_ &);
+void bind_curves(nanobind::module_ &);
+namespace cdsmodel::py {
+void register_errors(nanobind::module_ &);
+}
 
 namespace nb = nanobind;
 
@@ -19,5 +23,8 @@ NB_MODULE(_core, m) {
   m.attr("__version__") = std::string{cdsmodel::version()};
   m.attr("__upstream_version__") = std::string{cdsmodel::upstream_version()};
 
+  // Errors first: everything else may raise during binding.
+  cdsmodel::py::register_errors(m);
   bind_types(m);
+  bind_curves(m);
 }
