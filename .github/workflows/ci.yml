@@ -251,6 +251,19 @@ jobs:
           assert 0.0 < value < 1.0, value
           print("sdist install ok:", cdsmodel.__version__, value)
 
+      # Keep what was built. Without this every run discards three wheels
+      # and an sdist that are already tested -- and internal distribution
+      # then has no source but a developer's laptop. Downloadable from the
+      # run's summary page; no index and no PyPI involved.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cdsmodel-${{ matrix.os }}
+          path: |
+            dist/*.whl
+            sdist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
       - name: The value fixtures are present
         shell: python
         run: |
