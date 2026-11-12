@@ -9,6 +9,7 @@
 
 void bind_types(nanobind::module_ &);
 void bind_curves(nanobind::module_ &);
+void bind_calendars(nanobind::module_ &);
 namespace cdsmodel::py {
 void register_errors(nanobind::module_ &);
 }
@@ -27,4 +28,5 @@ NB_MODULE(_core, m) {
   cdsmodel::py::register_errors(m);
   bind_types(m);
   bind_curves(m);
+  bind_calendars(m);
 }

@@ -26,13 +26,16 @@ ARITY_CAP = 5
 # deliberately, so nothing leaks onto the public surface by accident.
 EXPECTED_EXPORTS = {
     "BadArgument",
+    "Calendar",
     "CdsModelError",
     "DayCount",
     "NoConvergence",
     "NoRoot",
     "TradeTerms",
     "Unsupported",
+    "Weekend",
     "ZeroCurve",
+    "read_holiday_file",
     "__upstream_version__",
     "__version__",
 }
