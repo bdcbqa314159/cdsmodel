@@ -17,7 +17,8 @@ nanobind_add_module(_core STABLE_ABI NB_STATIC
   src/curves.cpp
   src/calendars.cpp
   src/instruments.cpp
-  src/pricing.cpp)
+  src/pricing.cpp
+  src/credit_curve.cpp)
 
 target_link_libraries(_core PRIVATE cdsmodel)
 

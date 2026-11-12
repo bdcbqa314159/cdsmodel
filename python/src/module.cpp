@@ -15,6 +15,7 @@ void bind_instruments(nanobind::module_ &);
 void bind_curve_builder(nanobind::module_ &);
 void bind_results(nanobind::module_ &);
 void bind_pricing(nanobind::module_ &);
+void bind_credit_curve(nanobind::module_ &);
 namespace cdsmodel::py {
 void register_errors(nanobind::module_ &);
 }
@@ -40,4 +41,5 @@ NB_MODULE(_core, m) {
   bind_curve_builder(m);
   bind_results(m);
   bind_pricing(m);
+  bind_credit_curve(m);
 }
