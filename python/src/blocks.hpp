@@ -10,8 +10,10 @@
 // surfaces. A field added to one must be added to the other by hand.
 
 #include <cdsmodel/bad_day.hpp>
+#include <cdsmodel/bootstrap.hpp>
 #include <cdsmodel/calendar.hpp>
 #include <cdsmodel/cds.hpp>
+#include <cdsmodel/cdsone.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_interval.hpp>
 #include <cdsmodel/day_count.hpp>
@@ -92,5 +94,18 @@ struct FlatMarket {
   cds.pay_accrual_on_default = conventions.pay_accrual_on_default;
   return cds;
 }
+
+/// A discount curve and a recovery rate, for building a credit curve.
+///
+/// `MarketData` cannot serve here: it carries a *spread* curve, and
+/// `clean_spread_curve` is the function that produces one. `FlatMarket`
+/// cannot either -- its `quote` is a single number, and here the coupons
+/// live on the benchmarks. Two fields rather than an optional third,
+/// because a field that is required in two uses out of three and ignored in
+/// the other is a runtime check where a type would do.
+struct CurveMarket {
+  ZeroCurve discount;
+  double recovery = 0.0;
+};
 
 } // namespace cdsmodel::py

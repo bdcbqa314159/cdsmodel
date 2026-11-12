@@ -474,3 +474,87 @@ def fee_leg_flows(trade: TradeTerms, conventions: Conventions, *, notional: floa
 
 def default_accrual(trade: TradeTerms, conventions: Conventions, *, trade_date: datetime.date, event_determination_date: datetime.date, notional: float = 1.0) -> DefaultAccrual:
     """Accrued interest owed on a CDS that has defaulted."""
+
+class Benchmark:
+    """One quoted CDS: when it matures and at what coupon."""
+
+    def __init__(self, *, end: datetime.date, coupon_rate: float, include: bool = True) -> None: ...
+
+    @property
+    def end(self) -> datetime.date: ...
+
+    @end.setter
+    def end(self, arg: datetime.date, /) -> None: ...
+
+    @property
+    def coupon_rate(self) -> float: ...
+
+    @coupon_rate.setter
+    def coupon_rate(self, arg: float, /) -> None: ...
+
+    @property
+    def include(self) -> bool: ...
+
+    @include.setter
+    def include(self, arg: bool, /) -> None: ...
+
+    def __repr__(self) -> str: ...
+
+class CurveMarket:
+    """A discount curve and a recovery rate."""
+
+    def __init__(self, *, discount: ZeroCurve, recovery: float) -> None: ...
+
+    @property
+    def discount(self) -> ZeroCurve: ...
+
+    @discount.setter
+    def discount(self, arg: ZeroCurve, /) -> None: ...
+
+    @property
+    def recovery(self) -> float: ...
+
+    @recovery.setter
+    def recovery(self, arg: float, /) -> None: ...
+
+    def __repr__(self) -> str: ...
+
+class UpfrontDates:
+    """The four dates an upfront calculation needs."""
+
+    def __init__(self, *, today: datetime.date, value: datetime.date, benchmark_start: datetime.date, stepin: datetime.date) -> None: ...
+
+    @property
+    def today(self) -> datetime.date: ...
+
+    @today.setter
+    def today(self, arg: datetime.date, /) -> None: ...
+
+    @property
+    def value(self) -> datetime.date: ...
+
+    @value.setter
+    def value(self, arg: datetime.date, /) -> None: ...
+
+    @property
+    def benchmark_start(self) -> datetime.date: ...
+
+    @benchmark_start.setter
+    def benchmark_start(self, arg: datetime.date, /) -> None: ...
+
+    @property
+    def stepin(self) -> datetime.date: ...
+
+    @stepin.setter
+    def stepin(self, arg: datetime.date, /) -> None: ...
+
+def clean_spread_curve(valuation: Valuation, benchmarks: Sequence[Benchmark], conventions: Conventions, market: CurveMarket, *, start: datetime.date) -> ZeroCurve:
+    """Bootstrap a clean spread curve from quoted CDS benchmarks."""
+
+def upfront(trade: TradeTerms, dates: UpfrontDates, conventions: Conventions, market: FlatMarket, *, pay_accrued_at_start: bool = False) -> float:
+    """The upfront charge implied by a quoted flat par spread (market.quote)."""
+
+def par_spread_flat(trade: TradeTerms, dates: UpfrontDates, conventions: Conventions, market: FlatMarket, *, pay_accrued_at_start: bool = False) -> float:
+    """
+    The flat par spread implied by an upfront charge (market.quote). The inverse of upfront.
+    """
