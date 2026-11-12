@@ -169,6 +169,12 @@ def test_a_directory_is_refused_rather_than_read_as_empty(tmp_path) -> None:
     and an empty holiday file is legitimate -- so a C++ reader without an
     is-regular-file check hands back a working calendar with no holidays, the
     same silent-wrong-calendar failure as UPSTREAM-41. Python raises instead.
+
+    `OSError` and not a subclass: POSIX raises `IsADirectoryError`, Windows
+    raises `PermissionError` (WinError 5). Both are `OSError`, and the
+    property under test is that it raises **at all** rather than handing back
+    an empty calendar -- which is what the assertion below states explicitly.
     """
-    with pytest.raises(IsADirectoryError):
+    with pytest.raises(OSError) as excinfo:
         cdsmodel.read_holiday_file(tmp_path)
+    assert isinstance(excinfo.value, (IsADirectoryError, PermissionError)), excinfo.value
