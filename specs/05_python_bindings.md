@@ -191,9 +191,9 @@ prefer one over the other, and switching would buy a worse one.
 | P12 | **pass** | `cdsmodel.__version__` is `0.1.0`, read out of `CMakeLists.txt` by scikit-build-core and out of the C++ `version()` by the module; the test compares all three | `__upstream_version__` reports `1.8.3` |
 | P13 | todo | | |
 | P14 | todo | | the firewall case |
-| P15 | **pass** | 7 bound signatures checked, max 5 (`ZeroCurve.from_points`). Verified to fail by lowering the cap to 4 | `inspect.signature` is useless on nanobind callables — see D24 |
+| P15 | **pass** | 21 bound signatures checked. Max 5 (`ZeroCurve.from_points`); `Conventions.__init__` at 6 is the single named exemption, and the gate reports it as exempt rather than ignoring it. Verified to fail by lowering the cap to 4 | `inspect.signature` is useless on nanobind callables — see D24 |
 | P16 | **pass** | `DayCount` and `Weekend` members all identifiers, non-keywords, UPPER_CASE. **`Weekend::None` is the real collision**, now reachable as `Weekend.NONE` | `None`, `class` and `Standard` all refused by the same check |
-| P17 | partial | `ZeroCurve`, `TradeTerms` and `Calendar` repr their contents; `Weekend` reprs as `Weekend.STANDARD` / `Weekend.FRIDAY|SATURDAY` | one more type bound; `TradeTerms` reprs as `TradeTerms(start=2024-03-20, end=2029-06-20, coupon_rate=0.01)` | one type bound so far; the criterion covers all of them |
+| P17 | partial | nine bound types repr their contents, and all six enums repr as `DayCount.ACT_360` rather than an int | the two result types (`CashFlow`, `DefaultAccrual`) are not bound yet; `ZeroCurve`, `TradeTerms`, `Calendar`, `Weekend` reprs | one more type bound; `TradeTerms` reprs as `TradeTerms(start=2024-03-20, end=2029-06-20, coupon_rate=0.01)` | one type bound so far; the criterion covers all of them |
 | P18 | **pass** | 300 interleaved failing and succeeding calls, discount factor identical throughout | GIL misuse corrupts rather than fails, so one call would prove nothing |
 
 ## The interface
