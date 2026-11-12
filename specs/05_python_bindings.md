@@ -150,6 +150,7 @@ prefer one over the other, and switching would buy a worse one.
 | D17 | **Enum values are emitted UPPER_CASE, because two of them are Python keywords** | transliterate the C++ names directly | Measured: `Weekend::None` and `BadDayConv::None` would be `Weekend.None`, which does not parse. A blanket UPPER_CASE rule fixes both without a special case per name, and `NONE` reads correctly beside `SATURDAY`. P16 checks every emitted name is a valid identifier and not a keyword, so a future enum value called `class` or `lambda` fails a test rather than the import | — |
 | D18 | **Binding functions take `std::vector`; `std::span` never crosses the boundary** | write a `span` caster | A span is a borrowed view, and a caster for one would have to keep the owner alive across the call — exactly the lifetime bug class P6 exists to prevent. Taking a vector by value at the boundary and passing a span inward costs one copy on a call that is about to do far more work | a profile shows the copy mattering |
 | D19 | **`ZeroCurve.from_points` takes parallel date and rate lists, not `RatePoint`s** | expose `RatePoint` | It keeps one type off the public surface for no loss: a caller building a curve has two columns, not a list of pairs. `DatesAndRates` in the XLL already returns exactly those two columns, so the shapes match | a caller wants to round-trip `points()` back in |
+| D27 | **A second named cap exemption, `SwapConventions`, and an exemption must now prove it requires nothing** | a single exemption; splitting `SwapConventions` into three | Seven fields, every one defaulted — the same shape as `Conventions`, so the same argument applies. But two exemptions start to look like a pattern, and `CLAUDE.md` says exemptions are named individually and never granted by pattern. So P15 gained a second test: **every exempt callable must have zero required parameters.** That is what D11a actually argued — six defaulted convention fields are not six things a caller juggles — and it stops the list becoming a way to smuggle a wide signature past the cap. Verified to fail both ways: naming a callable with required arguments, and naming one that does not exist | a third exemption appears, which would be the signal the cap is wrong rather than the signatures |
 | D25 | **`Weekend` is `nb::is_flag()` without `nb::is_arithmetic()`** | both; or a plain enum | A plain enum makes `SATURDAY | SUNDAY` a `TypeError` in Python where the same expression is idiomatic in C++, and the library's `Standard` *is* `Saturday|Sunday`. Adding `is_arithmetic` on top permits implicit int conversion, which collapses the repr to a bare `96` instead of `Weekend.STANDARD` — the unreadable-object problem P17 exists to prevent | a caller needs the integer value, which `int(...)` already gives |
 | D26 | **Reading a holiday file happens in Python, not C++** | mirror `xl/core`'s `read_calendar_file` | `parse_holiday_file` takes contents, not a path (artifact #4, D4), so the IO belongs to the caller either way. Doing it in Python is both less code and safer: `std::ifstream` *opens* a directory and reads zero bytes, and an empty holiday file is legitimate, so a C++ reader without an is-regular-file check hands back a working calendar with no holidays — the same silent-wrong-calendar failure as UPSTREAM-41, which `xl/core` guards against explicitly. `Path.read_text()` raises `IsADirectoryError`. A Python caller also expects `FileNotFoundError` rather than a library error type | the parser ever needs to stream a file too large to hold |
 | D24 | **P15's arity oracle parses the docstring, not `inspect.signature`** | `inspect` as the spec originally said | Drift: `inspect.signature` reports `(*args, **kwargs)` for a nanobind function and raises outright for a method, so the oracle as written could not fail. nanobind puts the real signature on the first line of `__doc__`, which is where its own stub generator reads it. The parser counts top-level commas only, so `Sequence[datetime.date]` is one parameter, and it reads **every** overload line rather than the first — nanobind lists them separately, and checking only line one let a wide second overload through | stubs land (P7), which would be a structured source |
@@ -159,6 +160,30 @@ prefer one over the other, and switching would buy a worse one.
 | D14 | **The sdist ships only what builds the extension, and builds with `CDSMODEL_BUILD_TESTS=OFF`** | ship the repo as-is | Nothing gitignored is needed, and the library is *already proven* to build with no oracle — CI does it on every commit with `-DCDSMODEL_UPSTREAM_DIR=/nonexistent`, which is what the two-tier contract was for. Beyond that, `CDSMODEL_BUILD_TESTS` defaults to `PROJECT_IS_TOP_LEVEL`, which is true under scikit-build-core, so an untouched build would FetchContent GoogleTest and need network — `pip install` from the sdist would fail behind a firewall. With tests off, `tests/` (6.6M of 8.9M) is not needed either | a user wants to run the tier-1 vectors from an installed sdist |
 | D12 | **`__version__` single-sourced from `CMakeLists.txt`** | a literal in `__init__.py` | `version.hpp` already exposes `version()` and `upstream_version()`, and CMake already carries `project(cdsmodel VERSION …)`. A literal in `__init__.py` would be a fourth copy and the one most likely to drift. scikit-build-core reads the version out of CMakeLists as dynamic metadata | — |
 | D8 | Trusted Publishing, no API token | a `PYPI_API_TOKEN` secret | A long-lived token in repository secrets is a credential that can leak and does not expire. OIDC issues one scoped to the workflow run. P10 asserts no `password:` appears | PyPI changes the mechanism |
+
+## Observation — the solver's reason is lost before the caller
+
+`build_ir_zero_curve` reports every failure as `bad_argument`, including the
+case where the swap bootstrap exhausts its solver:
+
+    absurd swap rate -> bad_argument: the swap benchmarks could not be
+                        bootstrapped onto the curve
+
+That is not D5 being broken by its caller. `add_swaps` returns **`bool`**, so
+the kind and the message are destroyed before any caller could forward them —
+there is nothing left to propagate, and the caller must invent a message to
+have one at all.
+
+It is worth naming because it is the same diagnostic loss artifact #01 was
+created to fix. That spec's decisive case was `root_find.hpp` conflating
+backwards-bounds, objective-failure and iterations-exhausted into one
+`nullopt`; here the conflation survives one layer up, in a `bool`-returning
+path the migration did not cover. The error-channel gate does not catch it
+because it bans `std::optional`, not `bool`.
+
+Not fixed here: it is a library change, not a binding one. Recorded so that
+P4's two remaining kinds are known to be unreachable through this path rather
+than assumed reachable and quietly missed.
 
 ## Open questions before ratification
 
@@ -180,7 +205,7 @@ prefer one over the other, and switching would buy a worse one.
 | P1 | **pass** (macOS; 3-OS pending CI) | `cdsmodel-0.1.0-cp312-abi3-macosx_26_0_arm64.whl` builds, installs into a clean venv and imports. Wheel holds 8 entries — the package only | two bugs caught by the *import* half of the oracle: a missing `nanobind/stl/string.h` (`ImportError: std::bad_cast`) and the library's own install rules staging `include/`, `lib/libcdsmodel.a` and `lib/cmake/` into the wheel, which would have landed in site-packages |
 | P2 | **pass** (macOS; 3-OS on CI) | 48 tests: ten dates x four zones, both directions. All zones agree. `type(x) is datetime.date` asserted rather than `isinstance`, since `datetime` is a *subclass* of `date` and would slip past | the TZ sweep is POSIX-only -- `time.tzset()` has no Windows equivalent, so the Windows leg checks value and type without varying the zone, and the test says so |
 | P3 | todo | | the binding criterion |
-| P4 | partial | `bad_argument` and `unsupported` both raised from `ZeroCurve.from_points`, each carrying the library's own message — `curve dates must strictly increase: point 1 is not after point 0` | `no_root` and `no_convergence` need a solver-backed function; neither is bound yet |
+| P4 | partial | `bad_argument` and `unsupported` raised from `ZeroCurve.from_points`; five distinct refusals from `ZeroCurve.build`, each naming its cause | `no_root` and `no_convergence` are still unreachable — **and bootstrapping does not reach them either**, see the note below. They surface from `cds_par_spread` and `clean_spread_curve`, so P4 closes with the pricing slice |
 | P5 | **pass** | all four classes subclass both `CdsModelError` and their builtin; a failure is caught either way, and `except Unsupported` does not catch a `bad_argument` | a taxonomy that cannot be branched on is not a taxonomy |
 | P6 | todo | | |
 | P7 | todo | | |
