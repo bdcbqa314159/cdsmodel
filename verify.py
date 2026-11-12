@@ -615,6 +615,77 @@ def gate_python_layer() -> None:
     )
 
 
+def gate_sdist() -> None:
+    """Artifact #5, P11: the source distribution leaks neither licensed tree.
+
+    PyPI is a redistribution channel, and a far more consequential one than
+    git: `pip download cdsmodel` would hand out whatever is in here. Rule 2
+    of CLAUDE.md therefore applies with more force, not less -- the ISDA
+    sources are gated behind accepting a licence on cdsmodel.com, and the
+    Excel SDK is Microsoft's.
+
+    Both are gitignored and scikit-build-core honours that, so the default is
+    already correct. This gate exists because "already correct" is a property
+    of one line of `.gitignore`, and because the exclusion is *ignore*-driven
+    rather than *tracked*-driven: an untracked file nobody thought to ignore
+    ships too.
+
+    The positive half is not decoration. A gate that only looks for forbidden
+    names passes an empty archive, which is how B3 and B7 false-passed
+    earlier in this project.
+    """
+    import tarfile
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        result = subprocess.run(
+            [sys.executable, "-m", "build", "--sdist", "--outdir", tmp, "."],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            fail("could not build the sdist:\n" + result.stdout[-2000:] + result.stderr[-2000:])
+
+        archives = list(pathlib.Path(tmp).glob("*.tar.gz"))
+        if len(archives) != 1:
+            fail(f"expected one sdist, found {[a.name for a in archives]}")
+
+        with tarfile.open(archives[0]) as tar:
+            names = [n.split("/", 1)[1] for n in tar.getnames() if "/" in n]
+
+    forbidden = {
+        "isda_cds_model": "the ISDA oracle",
+        "xlsdk/": "the Excel XLL SDK",
+        "xlcall": "the Excel XLL SDK",
+        "framework.h": "the Excel XLL SDK",
+    }
+    leaks = [
+        f"{n}  ({why})"
+        for n in names
+        for pat, why in forbidden.items()
+        if pat in n.lower()
+    ]
+    if leaks:
+        fail("the sdist must not redistribute licensed sources:\n  " + "\n  ".join(leaks))
+
+    required = [
+        "CMakeLists.txt", "pyproject.toml", "LICENSE", "NOTICE.md",
+        "src/holiday_file.cpp", "python/src/pricing.cpp",
+        "python/cdsmodel/__init__.py", "python/cdsmodel/py.typed",
+        "python/cdsmodel/_core.pyi", "include/cdsmodel/cds.hpp",
+    ]
+    missing = [r for r in required if r not in names]
+    if missing:
+        fail(
+            "the sdist is incomplete -- without these the absence check above "
+            "would pass on an empty archive:\n  " + "\n  ".join(missing)
+        )
+
+    print(
+        f"ok: sdist holds {len(names)} files, no licensed sources, "
+        f"all {len(required)} required entries present"
+    )
+
+
 def gate_coverage() -> None:
     """Measures line and branch coverage per area against COVERAGE_FLOORS.
 
@@ -787,6 +858,7 @@ GATES = {
     "umbrella": gate_umbrella,
     "sdk-absent": gate_sdk_absent,
     "python-layer": gate_python_layer,
+    "sdist": gate_sdist,
     "coverage": gate_coverage,
     "install-tree": lambda: gate_install_tree(_PRESET[0]),
     "golden": gate_golden_generated,
