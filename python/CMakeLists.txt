@@ -20,6 +20,12 @@ nanobind_add_module(_core STABLE_ABI NB_STATIC
   src/pricing.cpp)
 
 target_link_libraries(_core PRIVATE cdsmodel)
+
+# Must match gen_python_fixtures exactly -- see cdsmodel_pin_fp_contract in
+# the top-level CMakeLists. Without it the extension and the generator are
+# two differently-optimised builds of the same inline code, and on GCC they
+# fuse multiply-adds differently: one ULP apart, which P3 compares exactly.
+cdsmodel_pin_fp_contract(_core)
 target_compile_features(_core PRIVATE cxx_std_20)
 
 # COMPONENT python, with `install.components = ["python"]` in pyproject.toml:
