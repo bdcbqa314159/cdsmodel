@@ -19,7 +19,7 @@ import cdsmodel
 # defaulted, so a caller passes none of them. Named individually, never
 # granted by pattern -- the same discipline as the error channel's D7
 # exemptions. A *new* callable at six fails; widening this one to seven fails.
-ARITY_EXEMPTIONS = {"Conventions.__init__"}
+ARITY_EXEMPTIONS = {"Conventions.__init__", "SwapConventions.__init__"}
 ARITY_CAP = 5
 
 # P8: everything the package exposes, listed. A new export must be added here
@@ -33,13 +33,18 @@ EXPECTED_EXPORTS = {
     "CdsModelError",
     "DayCount",
     "FlatMarket",
+    "InstrumentKind",
+    "InstrumentQuote",
+    "InterpType",
     "MarketData",
     "NoConvergence",
     "NoRoot",
     "PeriodUnit",
     "StubLength",
+    "StubPosDefault",
     "StubMethod",
     "StubPosition",
+    "SwapConventions",
     "TradeTerms",
     "Unsupported",
     "Valuation",
@@ -55,6 +60,50 @@ def test_the_package_exports_exactly_what_is_listed() -> None:
     assert set(cdsmodel.__all__) == EXPECTED_EXPORTS
     for name in EXPECTED_EXPORTS:
         assert hasattr(cdsmodel, name), f"{name} is in __all__ but not importable"
+
+
+def _required_params(signature: str) -> int:
+    """Parameters with no default -- what a caller must actually pass.
+
+    This is what makes the exemption list safe. Naming a callable exempt
+    would otherwise be a way to smuggle any signature past the cap; requiring
+    that an exempt callable take *nothing* keeps the exemption to what D11a
+    actually argued, which is that six defaulted convention fields are not
+    six things a caller juggles.
+    """
+    inner = signature[signature.index("(") + 1 : signature.rindex(")")]
+    depth = 0
+    current = ""
+    parts = []
+    for ch in inner:
+        if ch in "[({":
+            depth += 1
+        elif ch in "])}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append(current)
+            current = ""
+        else:
+            current += ch
+    parts.append(current)
+    required = 0
+    for part in parts:
+        part = part.strip()
+        if not part or part in ("*", "/") or part.startswith("self"):
+            continue
+        # A default is an `=` outside any bracket.
+        d, has_default = 0, False
+        for ch in part:
+            if ch in "[({":
+                d += 1
+            elif ch in "])}":
+                d -= 1
+            elif ch == "=" and d == 0:
+                has_default = True
+                break
+        if not has_default:
+            required += 1
+    return required
 
 
 def _count_params(signature: str) -> int:
@@ -132,6 +181,24 @@ def test_no_callable_exceeds_the_five_parameter_cap() -> None:
             offenders.append(f"{label}: {n} params -- {sig}")
     assert checked > 0, "found no callables -- the test would pass vacuously"
     assert not offenders, "over the five-parameter cap:\n  " + "\n  ".join(offenders)
+
+
+def test_every_exemption_requires_nothing_of_the_caller() -> None:
+    """The exemption list is not a loophole.
+
+    D11a exempts a block because all its fields are defaulted, so a caller
+    passes none of them -- not because wide signatures are acceptable when
+    named. Each exemption has to keep earning that.
+    """
+    seen = set()
+    for label, sig in _callables():
+        if label not in ARITY_EXEMPTIONS:
+            continue
+        seen.add(label)
+        n = _required_params(sig)
+        assert n == 0, f"{label} is exempt but requires {n} arguments -- {sig}"
+    missing = ARITY_EXEMPTIONS - seen
+    assert not missing, f"exemptions named for callables that do not exist: {missing}"
 
 
 def test_every_enum_value_is_a_usable_python_name() -> None:

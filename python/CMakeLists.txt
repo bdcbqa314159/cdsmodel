@@ -15,7 +15,8 @@ nanobind_add_module(_core STABLE_ABI NB_STATIC
   src/types.cpp
   src/errors.cpp
   src/curves.cpp
-  src/calendars.cpp)
+  src/calendars.cpp
+  src/instruments.cpp)
 
 target_link_libraries(_core PRIVATE cdsmodel)
 target_compile_features(_core PRIVATE cxx_std_20)
