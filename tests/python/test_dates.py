@@ -13,9 +13,10 @@ control: without them this measures the fixture, not the code.
 from __future__ import annotations
 
 import datetime
-from collections.abc import Iterator
 import os
 import sys
+import time
+from collections.abc import Iterator
 
 import pytest
 
@@ -26,7 +27,13 @@ import cdsmodel
 # which is platform-independent, so catching it on Linux and macOS is enough --
 # but the Windows leg genuinely does not sweep, and says so rather than
 # pretending otherwise.
-_CAN_SWEEP_TZ = hasattr(__import__("time"), "tzset")
+#
+# The guard is `sys.platform`, not `hasattr(time, "tzset")`. Both are correct
+# at runtime; only the first is understood by a type checker, which treats
+# the guarded branch as unreachable on Windows. `hasattr` left `time.tzset`
+# looking like an attribute error there -- caught by `mypy --strict` on the
+# Windows runner, which is exactly what P7 is for.
+_CAN_SWEEP_TZ = sys.platform != "win32"
 
 ZONES = ["UTC", "America/New_York", "Europe/London", "Pacific/Auckland"]
 
@@ -47,8 +54,8 @@ DATES = [
 
 
 def _set_zone(zone: str) -> None:
-    import time
-
+    if sys.platform == "win32":  # pragma: no cover -- never reached there
+        return
     os.environ["TZ"] = zone
     time.tzset()
 
@@ -57,9 +64,7 @@ def _set_zone(zone: str) -> None:
 def _restore_tz() -> Iterator[None]:
     before = os.environ.get("TZ")
     yield
-    if _CAN_SWEEP_TZ:
-        import time
-
+    if sys.platform != "win32":
         if before is None:
             os.environ.pop("TZ", None)
         else:
