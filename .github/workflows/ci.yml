@@ -179,3 +179,16 @@ jobs:
         run: |
           python -m pip install --find-links dist cdsmodel
           python -m pytest tests/python -q
+
+      # P3's fixtures are committed, not regenerated here -- CI has no oracle
+      # and needs none for this, but it also must not silently run against an
+      # empty or truncated file. The suite asserts the case count itself; this
+      # is a cheap second check that the file is present in the sdist-shaped
+      # tree at all.
+      - name: The value fixtures are present
+        shell: python
+        run: |
+          import json, pathlib
+          d = json.loads(pathlib.Path("tests/python/fixtures/pricing.json").read_text())
+          assert len(d["cases"]) > 100, len(d["cases"])
+          print("ok:", len(d["cases"]), "recorded cases")
