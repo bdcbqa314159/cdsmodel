@@ -129,7 +129,35 @@ add_subdirectory(xl/core)
 # =========================================================================
 # Tests
 # =========================================================================
+# P3 requires the extension and the fixture generator to agree bit for bit.
+# They are two different builds of the same inline C++, and GCC defaults to
+# `-ffp-contract=fast`: it may fuse `a*b+c` into a single FMA, and whether it
+# does depends on inlining and optimisation -- which differ between a plain
+# Release build and the extension, where nanobind applies its own size and
+# LTO settings. Measured on CI: 0.03395947378321875 against
+# ...744, one ULP apart, same machine and same libm.
+#
+# Pinning contraction off makes both builds produce the same arithmetic. It
+# is applied HERE rather than on `cdsmodel` itself so the library's install
+# interface and the recorded golden vectors are untouched; on Clang and MSVC
+# it changes nothing (measured: identical output at -O0, -O3, contract off
+# and contract fast).
+function(cdsmodel_pin_fp_contract target)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(${target} PRIVATE -ffp-contract=off)
+  endif()
+endfunction()
+
 if(CDSMODEL_BUILD_TESTS)
+  # P3: the Python package's fixtures. Links `cdsmodel` ONLY -- never
+  # `cds_reference`. It records what the PORT computes, so the package can be
+  # checked against the library it wraps; whether the port matches upstream is
+  # tier 2's question, answered by 49 differential suites. Keeping them apart
+  # is also what lets this build where no oracle can exist.
+  add_executable(gen_python_fixtures tools/gen_python_fixtures.cpp)
+  target_link_libraries(gen_python_fixtures PRIVATE cdsmodel)
+  cdsmodel_pin_fp_contract(gen_python_fixtures)
+
   enable_testing()
 
   include(FetchContent)

@@ -13,6 +13,8 @@ void bind_calendars(nanobind::module_ &);
 void bind_blocks(nanobind::module_ &);
 void bind_instruments(nanobind::module_ &);
 void bind_curve_builder(nanobind::module_ &);
+void bind_results(nanobind::module_ &);
+void bind_pricing(nanobind::module_ &);
 namespace cdsmodel::py {
 void register_errors(nanobind::module_ &);
 }
@@ -36,4 +38,6 @@ NB_MODULE(_core, m) {
   bind_instruments(m);
   // After bind_curves: it attaches a static to the ZeroCurve type.
   bind_curve_builder(m);
+  bind_results(m);
+  bind_pricing(m);
 }

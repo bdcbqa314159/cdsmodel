@@ -11,6 +11,7 @@
 
 #include <cdsmodel/bad_day.hpp>
 #include <cdsmodel/calendar.hpp>
+#include <cdsmodel/cds.hpp>
 #include <cdsmodel/date.hpp>
 #include <cdsmodel/date_interval.hpp>
 #include <cdsmodel/day_count.hpp>
@@ -72,5 +73,24 @@ struct FlatMarket {
   double quote = 0.0;
   double recovery = 0.0;
 };
+
+/// Fold a trade and its conventions into the library's `Cds`.
+///
+/// The same assembly `cdsmodel::xl::make_cds` does, for the same reason: both
+/// surfaces present the arguments grouped, and the library takes one struct.
+/// `protect_start` is left at its default -- upstream's pricing entry points
+/// hardcode it TRUE and never expose it.
+[[nodiscard]] inline Cds make_cds(const TradeTerms &trade, const Conventions &conventions) {
+  Cds cds;
+  cds.start = trade.start;
+  cds.end = trade.end;
+  cds.coupon_rate = trade.coupon_rate;
+  cds.coupon_interval = conventions.coupon_interval;
+  cds.stub = conventions.stub;
+  cds.day_count = conventions.day_count;
+  cds.bad_day = conventions.bad_day;
+  cds.pay_accrual_on_default = conventions.pay_accrual_on_default;
+  return cds;
+}
 
 } // namespace cdsmodel::py

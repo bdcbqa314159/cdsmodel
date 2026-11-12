@@ -175,7 +175,42 @@ jobs:
 
       # Installed, not in-tree: `pip install` from a clean environment is the
       # thing a user actually does.
+      # P3 is an EXACT comparison, and that only holds within a platform:
+      # exp/log/pow are not correctly rounded, the library calls them 24
+      # times, and glibc and macOS libm differ in the last bit. Measured
+      # here: 0.08687005698251757 on Linux against ...758 on macOS.
+      #
+      # So the fixtures are regenerated on each runner. Without this the
+      # suite still passes, but falls back to a 1e-12 tolerance -- which
+      # would quietly stop testing the thing P3 exists for.
+      - name: Regenerate the value fixtures on this platform (P3)
+        run: |
+          cmake -S . -B build/fixtures -G Ninja -DCMAKE_BUILD_TYPE=Release \
+                -DCDSMODEL_UPSTREAM_DIR=/nonexistent
+          cmake --build build/fixtures --target gen_python_fixtures
+          ./build/fixtures/gen_python_fixtures > tests/python/fixtures/pricing.json
+        shell: bash
+
       - name: Install and run the suite
         run: |
           python -m pip install --find-links dist cdsmodel
           python -m pytest tests/python -q
+
+      # P3's fixtures are committed, not regenerated here -- CI has no oracle
+      # and needs none for this, but it also must not silently run against an
+      # empty or truncated file. The suite asserts the case count itself; this
+      # is a cheap second check that the file is present in the sdist-shaped
+      # tree at all.
+      - name: The value fixtures are present
+        shell: python
+        run: |
+          import json, pathlib
+          import sys
+          d = json.loads(pathlib.Path("tests/python/fixtures/pricing.json").read_text())
+          assert len(d["cases"]) > 100, len(d["cases"])
+          here = ("win32" if sys.platform.startswith("win")
+                  else "darwin" if sys.platform == "darwin" else "linux")
+          # The regeneration step above must actually have run: a fixture
+          # from another platform would make every comparison tolerant.
+          assert d["platform"] == here, f"fixture is {d['platform']}, runner is {here}"
+          print("ok:", len(d["cases"]), "cases, exact comparison on", here)
