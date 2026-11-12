@@ -158,7 +158,7 @@ jobs:
 
       - name: Build the wheel
         run: |
-          python -m pip install --upgrade pip build pytest
+          python -m pip install --upgrade pip build pytest mypy nanobind
           python -m build --wheel -o dist .
 
       # P1: the tag is asserted, not eyeballed. A wheel that quietly built as
@@ -201,6 +201,24 @@ jobs:
       # empty or truncated file. The suite asserts the case count itself; this
       # is a cheap second check that the file is present in the sdist-shaped
       # tree at all.
+      # P7: the stubs must be real, not decoration. `mypy --strict` over the
+      # suite resolves every cdsmodel symbol through the SHIPPED `_core.pyi`
+      # and `py.typed` -- remove either and this step fails, which is how it
+      # was checked. It also catches API drift: the suite is written against
+      # the types, so a changed signature breaks here before it breaks a user.
+      - name: Type-check the suite against the shipped stubs (P7)
+        run: python -m mypy --strict tests/python
+
+      # The committed stub has to match what the extension actually exposes.
+      # Generating it at build time and NOT comparing would let the two drift
+      # silently, which is worse than having no stub at all.
+      - name: The committed stubs match the built extension
+        shell: bash
+        run: |
+          python -m nanobind.stubgen -m cdsmodel._core -o /tmp/_core.pyi -q
+          diff -u python/cdsmodel/_core.pyi /tmp/_core.pyi \
+            || { echo "::error::_core.pyi is stale -- regenerate it"; exit 1; }
+
       - name: The value fixtures are present
         shell: python
         run: |

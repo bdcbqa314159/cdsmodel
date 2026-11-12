@@ -13,7 +13,7 @@ VALUE = D(2024, 1, 2)
 MM, SW = cds.InstrumentKind.MONEY_MARKET, cds.InstrumentKind.SWAP
 
 
-def q(kind, date, rate):
+def q(kind: cds.InstrumentKind, date: datetime.date, rate: float) -> cds.InstrumentQuote:
     return cds.InstrumentQuote(kind=kind, date=date, rate=rate)
 
 
@@ -68,7 +68,9 @@ def test_conventions_change_the_answer() -> None:
          "money-market"),
     ],
 )
-def test_bad_input_is_refused_with_a_message_that_says_why(label, instruments, fragment) -> None:
+def test_bad_input_is_refused_with_a_message_that_says_why(
+    label: str, instruments: list[cds.InstrumentQuote], fragment: str
+) -> None:
     with pytest.raises(cds.BadArgument) as e:
         cds.ZeroCurve.build(value_date=VALUE, instruments=instruments)
     assert fragment in str(e.value), str(e.value)

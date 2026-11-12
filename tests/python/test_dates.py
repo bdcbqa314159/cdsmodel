@@ -13,6 +13,7 @@ control: without them this measures the fixture, not the code.
 from __future__ import annotations
 
 import datetime
+from collections.abc import Iterator
 import os
 import sys
 
@@ -53,7 +54,7 @@ def _set_zone(zone: str) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _restore_tz():
+def _restore_tz() -> Iterator[None]:
     before = os.environ.get("TZ")
     yield
     if _CAN_SWEEP_TZ:
@@ -114,4 +115,8 @@ def test_repr_names_its_fields() -> None:
 def test_dates_must_be_passed_by_keyword() -> None:
     """D11 -- `start` and `end` are adjacent same-typed dates."""
     with pytest.raises(TypeError):
-        cdsmodel.TradeTerms(datetime.date(2024, 3, 20), datetime.date(2029, 6, 20))
+        # The suppression below is the point of the test, not a concession:
+        # the stub says keyword-only, so mypy rejects this line and the
+        # runtime rejects the call. Both halves are checked here.
+        cdsmodel.TradeTerms(  # type: ignore[call-arg]
+            datetime.date(2024, 3, 20), datetime.date(2029, 6, 20))

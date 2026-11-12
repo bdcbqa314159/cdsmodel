@@ -9,6 +9,7 @@ generator reads it from. These tests parse that.
 from __future__ import annotations
 
 import keyword
+from collections.abc import Iterator
 import re
 
 import pytest
@@ -147,7 +148,7 @@ def _is_bound_from_cpp(obj: object) -> bool:
     return type(obj).__module__ == "nanobind"
 
 
-def _callables():
+def _callables() -> Iterator[tuple[str, str]]:
     """(label, first docstring line) for every nanobind-bound callable."""
     for name in cdsmodel.__all__:
         obj = getattr(cdsmodel, name)

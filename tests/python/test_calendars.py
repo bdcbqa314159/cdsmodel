@@ -7,6 +7,7 @@ lives in Python, which is both less code and safer -- see `read_holiday_file`.
 from __future__ import annotations
 
 import datetime
+import pathlib
 
 import pytest
 
@@ -139,7 +140,7 @@ def test_a_malformed_date_line_is_refused() -> None:
         cdsmodel.Calendar.parse("20241225\nnot-a-date\n")
 
 
-def test_reading_a_real_file(tmp_path) -> None:
+def test_reading_a_real_file(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "holidays.txt"
     path.write_text(GOOD_FILE, encoding="utf-8")
     cal = cdsmodel.read_holiday_file(path)
@@ -147,7 +148,7 @@ def test_reading_a_real_file(tmp_path) -> None:
     assert cdsmodel.read_holiday_file(str(path)).is_holiday(XMAS)
 
 
-def test_an_empty_file_is_legitimate(tmp_path) -> None:
+def test_an_empty_file_is_legitimate(tmp_path: pathlib.Path) -> None:
     """Upstream accepts one, producing weekends only -- which is why the
     directory case below cannot be distinguished by emptiness alone."""
     path = tmp_path / "empty.txt"
@@ -157,12 +158,12 @@ def test_an_empty_file_is_legitimate(tmp_path) -> None:
     assert not cal.is_business_day(SATURDAY)
 
 
-def test_a_missing_file_raises_the_python_error(tmp_path) -> None:
+def test_a_missing_file_raises_the_python_error(tmp_path: pathlib.Path) -> None:
     with pytest.raises(FileNotFoundError):
         cdsmodel.read_holiday_file(tmp_path / "nope.txt")
 
 
-def test_a_directory_is_refused_rather_than_read_as_empty(tmp_path) -> None:
+def test_a_directory_is_refused_rather_than_read_as_empty(tmp_path: pathlib.Path) -> None:
     """The trap `xl/core` has to guard against explicitly.
 
     `std::ifstream` opens a directory on some platforms and reads zero bytes,
