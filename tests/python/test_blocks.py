@@ -46,7 +46,9 @@ def test_valuation_requires_all_three_dates_by_keyword() -> None:
     assert v.today == D(2024, 3, 1) and v.step_in == D(2024, 3, 2)
     # Three adjacent same-typed dates: positionally, a swap would be silent.
     with pytest.raises(TypeError):
-        cds.Valuation(D(2024, 3, 1), D(2024, 3, 4), D(2024, 3, 2))
+        # See test_dates.py: mypy rejecting this line is the stub doing its
+        # job, so the suppression is evidence rather than debt.
+        cds.Valuation(D(2024, 3, 1), D(2024, 3, 4), D(2024, 3, 2))  # type: ignore[call-arg]
 
 
 def test_stub_method_keeps_two_fields_rather_than_two_booleans() -> None:

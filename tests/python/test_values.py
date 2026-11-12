@@ -35,6 +35,7 @@ which is everywhere except one laptop.
 from __future__ import annotations
 
 import datetime
+from typing import Any
 import json
 import pathlib
 import sys
@@ -46,10 +47,11 @@ import cdsmodel as cds
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "pricing.json"
 
 
-def _load():
+def _load() -> dict[str, Any]:
     if not FIXTURES.exists():  # pragma: no cover
         pytest.fail(f"missing {FIXTURES}; run tools/gen_python_fixtures.cpp")
-    return json.loads(FIXTURES.read_text(encoding="utf-8"))
+    loaded: dict[str, Any] = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    return loaded
 
 
 DATA = _load()
@@ -80,7 +82,7 @@ def _date(s: str) -> datetime.date:
     return datetime.date.fromisoformat(s)
 
 
-def _curve(spec) -> cds.ZeroCurve:
+def _curve(spec: dict[str, Any]) -> cds.ZeroCurve:
     return cds.ZeroCurve.from_points(
         base_date=_date(DATA["today"]),
         dates=[_date(d) for d in spec["dates"]],
@@ -99,7 +101,7 @@ VALUATION = cds.Valuation(
 )
 
 
-def _trade(case) -> cds.TradeTerms:
+def _trade(case: dict[str, Any]) -> cds.TradeTerms:
     today = _date(DATA["today"])
     return cds.TradeTerms(
         start=today,
@@ -126,7 +128,7 @@ def test_the_fixture_is_not_empty() -> None:
 @pytest.mark.parametrize("case", DATA["cases"], ids=lambda c: (
     f"{c['maturity_years']}y-{c['coupon']}-{c['recovery']}-{c['day_count']}"
     f"-{'clean' if c['clean'] else 'dirty'}"))
-def test_price_matches_the_cpp_value_exactly(case) -> None:
+def test_price_matches_the_cpp_value_exactly(case: dict[str, Any]) -> None:
     got = cds.price(
         _trade(case),
         VALUATION,
@@ -139,7 +141,7 @@ def test_price_matches_the_cpp_value_exactly(case) -> None:
 
 @pytest.mark.parametrize("case", DATA["cases"], ids=lambda c: (
     f"{c['maturity_years']}y-{c['coupon']}-{c['recovery']}-{c['day_count']}"))
-def test_par_spread_matches_the_cpp_value_exactly(case) -> None:
+def test_par_spread_matches_the_cpp_value_exactly(case: dict[str, Any]) -> None:
     got = cds.par_spread(
         _trade(case),
         VALUATION,
