@@ -12,6 +12,20 @@ to memory at a different precision. All of those move the last bits and none
 of them would survive an exact comparison -- and all of them would hide under
 `rel=1e-12`.
 
+The exact comparison holds only WITHIN a platform, which the fixture records.
+`exp`, `log` and `pow` are not correctly rounded in IEEE 754, the library
+calls them 24 times, and glibc and macOS libm differ in the last bit.
+Measured, on this project's own CI:
+
+    0.08687005698251757  (Linux)   vs  0.08687005698251758  (macOS)
+    delta = -1.39e-17, one ULP
+
+Neither is wrong, and no amount of care in the bindings would reconcile them.
+So CI regenerates the fixtures on each runner and compares exactly; a fixture
+carried across platforms falls back to a tolerance, which still catches a
+wrong formula or a unit error while tolerating libm. The fallback is stated
+in the failure message so a tolerant pass is never mistaken for an exact one.
+
 Whether the port matches *upstream* is a different question, answered by 49
 differential suites that compile upstream into the same binary. Conflating
 the two would make this file unrunnable anywhere the oracle cannot exist,
@@ -23,6 +37,7 @@ from __future__ import annotations
 import datetime
 import json
 import pathlib
+import sys
 
 import pytest
 
@@ -38,6 +53,27 @@ def _load():
 
 
 DATA = _load()
+
+# Exact when the fixture was produced here; tolerant when it was carried from
+# another platform. 1e-12 relative is the project's recorded-vector tier -- a
+# few ULPs of libm fit inside it, a wrong formula does not.
+_HERE = ("win32" if sys.platform.startswith("win")
+         else "darwin" if sys.platform == "darwin" else "linux")
+SAME_PLATFORM = DATA.get("platform") == _HERE
+CROSS_PLATFORM_TOLERANCE = 1e-12
+
+
+def _assert_matches(got: float, want: float, what: str) -> None:
+    if SAME_PLATFORM:
+        assert got == want, (
+            f"{what}: {got!r} != {want!r}  delta={got - want!r}\n"
+            f"Exact comparison: fixture was generated on this platform ({_HERE}).")
+    else:
+        assert got == pytest.approx(want, rel=CROSS_PLATFORM_TOLERANCE), (
+            f"{what}: {got!r} != {want!r}\n"
+            f"TOLERANT comparison (rel={CROSS_PLATFORM_TOLERANCE}): the fixture was "
+            f"generated on {DATA.get('platform')!r}, this is {_HERE!r}. "
+            f"Regenerate with tools/gen_python_fixtures.cpp for an exact check.")
 
 
 def _date(s: str) -> datetime.date:
@@ -72,6 +108,15 @@ def _trade(case) -> cds.TradeTerms:
     )
 
 
+def test_the_comparison_is_exact_here_or_says_why_not() -> None:
+    """A tolerant pass must never be mistaken for an exact one."""
+    assert DATA.get("platform"), "fixture carries no platform stamp"
+    if not SAME_PLATFORM:
+        pytest.skip(
+            f"fixture from {DATA['platform']!r}, running on {_HERE!r}: "
+            f"comparisons are tolerant (rel={CROSS_PLATFORM_TOLERANCE}), not exact")
+
+
 def test_the_fixture_is_not_empty() -> None:
     """A comparison over zero cases passes. This is what stops that."""
     assert len(DATA["cases"]) > 100, len(DATA["cases"])
@@ -89,7 +134,7 @@ def test_price_matches_the_cpp_value_exactly(case) -> None:
         cds.MarketData(discount=DISCOUNT, spread=SPREAD, recovery=case["recovery"]),
         clean=case["clean"],
     )
-    assert got == case["price"], f"{got!r} != {case['price']!r}  delta={got - case['price']!r}"
+    _assert_matches(got, case["price"], "price")
 
 
 @pytest.mark.parametrize("case", DATA["cases"], ids=lambda c: (
@@ -101,7 +146,7 @@ def test_par_spread_matches_the_cpp_value_exactly(case) -> None:
         cds.Conventions(day_count=getattr(cds.DayCount, case["day_count"])),
         cds.MarketData(discount=DISCOUNT, spread=SPREAD, recovery=case["recovery"]),
     )
-    assert got == case["par_spread"], f"{got!r} != {case['par_spread']!r}"
+    _assert_matches(got, case["par_spread"], "par_spread")
 
 
 def test_fee_leg_flows_match_date_and_amount_exactly() -> None:
@@ -117,7 +162,7 @@ def test_fee_leg_flows_match_date_and_amount_exactly() -> None:
     assert len(got) == len(spec["flows"])
     for flow, expected in zip(got, spec["flows"]):
         assert flow.date == _date(expected["date"])
-        assert flow.amount == expected["amount"], f"{flow.amount!r} != {expected['amount']!r}"
+        _assert_matches(flow.amount, expected["amount"], "flow amount")
 
 
 def test_default_accrual_matches_exactly() -> None:
@@ -131,4 +176,4 @@ def test_default_accrual_matches_exactly() -> None:
         event_determination_date=_date(spec["event_determination_date"]),
         notional=spec["notional"])
     assert got.days == spec["days"]
-    assert got.amount == spec["amount"], f"{got.amount!r} != {spec['amount']!r}"
+    _assert_matches(got.amount, spec["amount"], "accrual amount")
