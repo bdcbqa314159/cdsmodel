@@ -15,14 +15,14 @@ namespace nb = nanobind;
 void bind_types(nb::module_ &m) {
   nb::class_<cdsmodel::py::TradeTerms>(m, "TradeTerms",
                                        "What was traded: the dates and the coupon.")
-      .def(nb::init<>())
       // Keyword-only (D11): `start` and `end` are adjacent same-typed dates,
       // so a positional swap would be silent.
       .def(
           "__init__",
           [](cdsmodel::py::TradeTerms *self, cdsmodel::Date start, cdsmodel::Date end,
              double coupon_rate) { new (self) cdsmodel::py::TradeTerms{start, end, coupon_rate}; },
-          nb::kw_only(), nb::arg("start"), nb::arg("end"), nb::arg("coupon_rate") = 0.0)
+          nb::kw_only(), nb::arg("start"), nb::arg("end"), nb::arg("coupon_rate") = 0.0,
+          "A trade: when it starts, when it ends, and the coupon it pays.")
       .def_rw("start", &cdsmodel::py::TradeTerms::start)
       .def_rw("end", &cdsmodel::py::TradeTerms::end)
       .def_rw("coupon_rate", &cdsmodel::py::TradeTerms::coupon_rate)

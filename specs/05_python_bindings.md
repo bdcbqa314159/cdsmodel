@@ -150,6 +150,7 @@ prefer one over the other, and switching would buy a worse one.
 | D17 | **Enum values are emitted UPPER_CASE, because two of them are Python keywords** | transliterate the C++ names directly | Measured: `Weekend::None` and `BadDayConv::None` would be `Weekend.None`, which does not parse. A blanket UPPER_CASE rule fixes both without a special case per name, and `NONE` reads correctly beside `SATURDAY`. P16 checks every emitted name is a valid identifier and not a keyword, so a future enum value called `class` or `lambda` fails a test rather than the import | — |
 | D18 | **Binding functions take `std::vector`; `std::span` never crosses the boundary** | write a `span` caster | A span is a borrowed view, and a caster for one would have to keep the owner alive across the call — exactly the lifetime bug class P6 exists to prevent. Taking a vector by value at the boundary and passing a span inward costs one copy on a call that is about to do far more work | a profile shows the copy mattering |
 | D19 | **`ZeroCurve.from_points` takes parallel date and rate lists, not `RatePoint`s** | expose `RatePoint` | It keeps one type off the public surface for no loss: a caller building a curve has two columns, not a list of pairs. `DatesAndRates` in the XLL already returns exactly those two columns, so the shapes match | a caller wants to round-trip `points()` back in |
+| D24 | **P15's arity oracle parses the docstring, not `inspect.signature`** | `inspect` as the spec originally said | Drift: `inspect.signature` reports `(*args, **kwargs)` for a nanobind function and raises outright for a method, so the oracle as written could not fail. nanobind puts the real signature on the first line of `__doc__`, which is where its own stub generator reads it. The parser counts top-level commas only, so `Sequence[datetime.date]` is one parameter, and it reads **every** overload line rather than the first — nanobind lists them separately, and checking only line one let a wide second overload through | stubs land (P7), which would be a structured source |
 | D23 | **The Python layer mirrors `xl/core`'s blocks but defines its own types** | bind `cdsmodel::xl`'s structs directly | Drift against D11, found when binding the first one. `cdsmodel::xl::TradeTerms` includes `xl/value.hpp` and `xl/handles.hpp`, so binding it would make the Python layer depend on the Excel layer — which the layering in `CLAUDE.md` forbids, and would drag `XlValue` and the handle registries into a wheel that has no use for either. Python sits *beside* `xl/core`: both depend only on `cdsmodel`. The grouping stays identical so one mental model serves both, but a field added to one must be added to the other by hand | the blocks are promoted into `cdsmodel` proper, which is the real fix and a library change |
 | | | | → enforced by `python verify.py python-layer`, which refuses an `#include` of `cdsmodel/xl/` and a link against `cdsmodel_xl_*`, and refuses to pass on an empty tree |
 | D22 | **`build-dir = "build/wheel/{wheel_tag}"`, not `build/{wheel_tag}"`** | scikit-build-core's documented default | CMakePresets already own `build/debug` and `build/release`. A wheel tree beside them interleaves with the project's own, and cleaning one takes out the other — which happened once during P1 and made `verify.py tests` report that no tests ran at all | the presets move |
@@ -177,21 +178,21 @@ prefer one over the other, and switching would buy a worse one.
 | P1 | **pass** (macOS; 3-OS pending CI) | `cdsmodel-0.1.0-cp312-abi3-macosx_26_0_arm64.whl` builds, installs into a clean venv and imports. Wheel holds 8 entries — the package only | two bugs caught by the *import* half of the oracle: a missing `nanobind/stl/string.h` (`ImportError: std::bad_cast`) and the library's own install rules staging `include/`, `lib/libcdsmodel.a` and `lib/cmake/` into the wheel, which would have landed in site-packages |
 | P2 | **pass** (macOS; 3-OS on CI) | 48 tests: ten dates x four zones, both directions. All zones agree. `type(x) is datetime.date` asserted rather than `isinstance`, since `datetime` is a *subclass* of `date` and would slip past | the TZ sweep is POSIX-only -- `time.tzset()` has no Windows equivalent, so the Windows leg checks value and type without varying the zone, and the test says so |
 | P3 | todo | | the binding criterion |
-| P4 | todo | | |
-| P5 | todo | | |
+| P4 | partial | `bad_argument` and `unsupported` both raised from `ZeroCurve.from_points`, each carrying the library's own message — `curve dates must strictly increase: point 1 is not after point 0` | `no_root` and `no_convergence` need a solver-backed function; neither is bound yet |
+| P5 | **pass** | all four classes subclass both `CdsModelError` and their builtin; a failure is caught either way, and `except Unsupported` does not catch a `bad_argument` | a taxonomy that cannot be branched on is not a taxonomy |
 | P6 | todo | | |
 | P7 | todo | | |
-| P8 | todo | | |
+| P8 | **pass** | `__all__` compared against a committed manifest of ten names | a new export must be added deliberately |
 | P9 | todo | | |
 | P10 | todo | | |
 | P11 | todo | | the licence criterion |
 | P12 | **pass** | `cdsmodel.__version__` is `0.1.0`, read out of `CMakeLists.txt` by scikit-build-core and out of the C++ `version()` by the module; the test compares all three | `__upstream_version__` reports `1.8.3` |
 | P13 | todo | | |
 | P14 | todo | | the firewall case |
-| P15 | todo | | the cap, machine-checked |
-| P16 | todo | | the `None` collision |
-| P17 | partial | `TradeTerms` reprs as `TradeTerms(start=2024-03-20, end=2029-06-20, coupon_rate=0.01)` | one type bound so far; the criterion covers all of them |
-| P18 | todo | | proven in `/tmp/nbgil` ahead of the spec |
+| P15 | **pass** | 7 bound signatures checked, max 5 (`ZeroCurve.from_points`). Verified to fail by lowering the cap to 4 | `inspect.signature` is useless on nanobind callables — see D24 |
+| P16 | **pass** | every `DayCount` member is an identifier, not a keyword, and UPPER_CASE | `None`, `class` and `Standard` all refused by the same check |
+| P17 | partial | `ZeroCurve` and `TradeTerms` repr their contents | one more type bound; `TradeTerms` reprs as `TradeTerms(start=2024-03-20, end=2029-06-20, coupon_rate=0.01)` | one type bound so far; the criterion covers all of them |
+| P18 | **pass** | 300 interleaved failing and succeeding calls, discount factor identical throughout | GIL misuse corrupts rather than fails, so one call would prove nothing |
 
 ## The interface
 

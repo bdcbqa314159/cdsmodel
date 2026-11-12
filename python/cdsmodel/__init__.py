@@ -5,6 +5,28 @@ the upstream C implementation; see the project's README for how that works and
 what it does not cover.
 """
 
-from ._core import TradeTerms, __upstream_version__, __version__
+from ._core import (
+    BadArgument,
+    CdsModelError,
+    DayCount,
+    NoConvergence,
+    NoRoot,
+    TradeTerms,
+    Unsupported,
+    ZeroCurve,
+    __upstream_version__,
+    __version__,
+)
 
-__all__ = ["TradeTerms", "__version__", "__upstream_version__"]
+__all__ = [
+    "BadArgument",
+    "CdsModelError",
+    "DayCount",
+    "NoConvergence",
+    "NoRoot",
+    "TradeTerms",
+    "Unsupported",
+    "ZeroCurve",
+    "__upstream_version__",
+    "__version__",
+]
