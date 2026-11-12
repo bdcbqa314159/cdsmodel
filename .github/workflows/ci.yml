@@ -219,6 +219,38 @@ jobs:
           diff -u python/cdsmodel/_core.pyi /tmp/_core.pyi \
             || { echo "::error::_core.pyi is stale -- regenerate it"; exit 1; }
 
+      # P11: the licence gate. PyPI is a redistribution channel and a far
+      # more consequential one than git -- `pip download` hands out whatever
+      # is in the sdist. Checks both halves: no ISDA or Microsoft sources,
+      # AND our own sources present, because an absence check alone passes
+      # on an empty archive.
+      - name: The sdist redistributes nothing licensed (P11)
+        run: python verify.py sdist
+
+      # P9 and P14: a user with no wheel for their platform builds from the
+      # sdist. P14 is the one that matters on a trading desk -- `--no-index`
+      # with the build deps pre-staged proves the BUILD needs no network, so
+      # a firewall cannot turn `pip install` into a FetchContent timeout.
+      - name: Install from the sdist, offline (P9, P14)
+        shell: bash
+        run: |
+          python -m build --sdist -o sdist .
+          python -m pip install "scikit-build-core>=0.10" "nanobind>=3.0"
+          python -m pip install --no-index --no-build-isolation sdist/*.tar.gz
+
+      - name: The sdist-installed package computes
+        shell: python
+        run: |
+          import datetime as dt
+          import cdsmodel
+          curve = cdsmodel.ZeroCurve.from_points(
+              base_date=dt.date(2024, 1, 2), dates=[dt.date(2029, 1, 2)], rates=[0.03])
+          # Not just importable: a number has to come out of it. A wheel that
+          # imports and cannot compute would pass a smoke test and fail a user.
+          value = curve.discount_factor(dt.date(2027, 1, 2))
+          assert 0.0 < value < 1.0, value
+          print("sdist install ok:", cdsmodel.__version__, value)
+
       - name: The value fixtures are present
         shell: python
         run: |

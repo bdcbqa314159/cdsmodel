@@ -119,7 +119,16 @@ endif()
 # matrix tests the marshalling and the labelled-range reader. Only xl/sdk and
 # xl/interface need Windows and the SDK.
 # =========================================================================
-add_subdirectory(xl/core)
+# Guarded on presence, not on an option: the Python source distribution
+# deliberately omits `xl/` (D23 -- the two are peers, and a wheel has no use
+# for the Excel layer), so an unguarded add_subdirectory makes the sdist
+# impossible to configure. Found by P9, which installs from the sdist into a
+# clean venv; nothing before it had ever built this tree without `xl/`.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/xl/core/CMakeLists.txt")
+  add_subdirectory(xl/core)
+else()
+  message(STATUS "cdsmodel: no xl/ in this tree -- building the library alone")
+endif()
 
 # xl/sdk and xl/interface are added AFTER the SDK probe further down -- that
 # probe is what sets CDSMODEL_XLL_AVAILABLE and the source/include variables
