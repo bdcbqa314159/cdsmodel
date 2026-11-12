@@ -130,6 +130,14 @@ add_subdirectory(xl/core)
 # Tests
 # =========================================================================
 if(CDSMODEL_BUILD_TESTS)
+  # P3: the Python package's fixtures. Links `cdsmodel` ONLY -- never
+  # `cds_reference`. It records what the PORT computes, so the package can be
+  # checked against the library it wraps; whether the port matches upstream is
+  # tier 2's question, answered by 49 differential suites. Keeping them apart
+  # is also what lets this build where no oracle can exist.
+  add_executable(gen_python_fixtures tools/gen_python_fixtures.cpp)
+  target_link_libraries(gen_python_fixtures PRIVATE cdsmodel)
+
   enable_testing()
 
   include(FetchContent)

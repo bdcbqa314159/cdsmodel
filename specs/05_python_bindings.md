@@ -161,6 +161,24 @@ prefer one over the other, and switching would buy a worse one.
 | D12 | **`__version__` single-sourced from `CMakeLists.txt`** | a literal in `__init__.py` | `version.hpp` already exposes `version()` and `upstream_version()`, and CMake already carries `project(cdsmodel VERSION …)`. A literal in `__init__.py` would be a fourth copy and the one most likely to drift. scikit-build-core reads the version out of CMakeLists as dynamic metadata | — |
 | D8 | Trusted Publishing, no API token | a `PYPI_API_TOKEN` secret | A long-lived token in repository secrets is a credential that can leak and does not expire. OIDC issues one scoped to the workflow run. P10 asserts no `password:` appears | PyPI changes the mechanism |
 
+## Observation — two error kinds may be unobservable from Python
+
+`no_root` and `no_convergence` are not reachable from any of the twelve bound
+functions, on the evidence so far. One path provably destroys them (below).
+The others were probed and refused earlier, or returned a finite answer.
+
+That is worth stating rather than leaving as an unticked box, because it
+bears on whether a four-kind taxonomy earns its keep *at this boundary*. The
+taxonomy is justified in artifact #01 by the C++ call sites, and
+`A6EveryKindIsReachable` proves all four are reachable **in C++**. Reachable
+in C++ and reachable through twelve public functions are different claims,
+and only the first is established.
+
+The classes are still bound and still tested (P5), because the alternative —
+binding two of four and leaving a caller unable to write
+`except cdsmodel.NoRoot` — would be worse than binding four and having two
+rarely fire.
+
 ## Observation — the solver's reason is lost before the caller
 
 `build_ir_zero_curve` reports every failure as `bad_argument`, including the
@@ -204,8 +222,8 @@ than assumed reachable and quietly missed.
 |----|--------|---------------|------|
 | P1 | **pass** (macOS; 3-OS pending CI) | `cdsmodel-0.1.0-cp312-abi3-macosx_26_0_arm64.whl` builds, installs into a clean venv and imports. Wheel holds 8 entries — the package only | two bugs caught by the *import* half of the oracle: a missing `nanobind/stl/string.h` (`ImportError: std::bad_cast`) and the library's own install rules staging `include/`, `lib/libcdsmodel.a` and `lib/cmake/` into the wheel, which would have landed in site-packages |
 | P2 | **pass** (macOS; 3-OS on CI) | 48 tests: ten dates x four zones, both directions. All zones agree. `type(x) is datetime.date` asserted rather than `isinstance`, since `datetime` is a *subclass* of `date` and would slip past | the TZ sweep is POSIX-only -- `time.tzset()` has no Windows equivalent, so the Windows leg checks value and type without varying the zone, and the test says so |
-| P3 | todo | | the binding criterion |
-| P4 | partial | `bad_argument` and `unsupported` raised from `ZeroCurve.from_points`; five distinct refusals from `ZeroCurve.build`, each naming its cause | `no_root` and `no_convergence` are still unreachable — **and bootstrapping does not reach them either**, see the note below. They surface from `cds_par_spread` and `clean_spread_curve`, so P4 closes with the pricing slice |
+| P3 | **pass** | **216 prices and 216 par spreads, bitwise equal to the C++ values**, plus 20 fee-leg flows and a returned struct. Fixtures from `tools/gen_python_fixtures.cpp`, `%.17g`, compared with `==`. Verified by perturbing one fixture by a **single ULP** (relative 1.4e-16) and watching the suite fail — a tolerance of 1e-12 would have passed it | links `cdsmodel` only, never the oracle: this asks whether the binding is transparent, not whether the port matches upstream |
+| P4 | partial | `bad_argument` and `unsupported` raised and distinguished across `from_points`, `build` and the pricing functions | **`no_root` and `no_convergence` appear unreachable through the bound surface.** Tried: a zero-length trade (refused earlier as `bad_argument`), recovery of 1.0 (returns 0.0), and hazard rates to 5000 (returns a finite spread). Either the inputs that reach them are more exotic than a user would write, or the two kinds are genuinely unobservable here — see the note below, since one path provably destroys them |
 | P5 | **pass** | all four classes subclass both `CdsModelError` and their builtin; a failure is caught either way, and `except Unsupported` does not catch a `bad_argument` | a taxonomy that cannot be branched on is not a taxonomy |
 | P6 | todo | | |
 | P7 | todo | | |
@@ -218,7 +236,7 @@ than assumed reachable and quietly missed.
 | P14 | todo | | the firewall case |
 | P15 | **pass** | 21 bound signatures checked. Max 5 (`ZeroCurve.from_points`); `Conventions.__init__` at 6 is the single named exemption, and the gate reports it as exempt rather than ignoring it. Verified to fail by lowering the cap to 4 | `inspect.signature` is useless on nanobind callables — see D24 |
 | P16 | **pass** | `DayCount` and `Weekend` members all identifiers, non-keywords, UPPER_CASE. **`Weekend::None` is the real collision**, now reachable as `Weekend.NONE` | `None`, `class` and `Standard` all refused by the same check |
-| P17 | partial | nine bound types repr their contents, and all six enums repr as `DayCount.ACT_360` rather than an int | the two result types (`CashFlow`, `DefaultAccrual`) are not bound yet; `ZeroCurve`, `TradeTerms`, `Calendar`, `Weekend` reprs | one more type bound; `TradeTerms` reprs as `TradeTerms(start=2024-03-20, end=2029-06-20, coupon_rate=0.01)` | one type bound so far; the criterion covers all of them |
+| P17 | **pass** | all eleven bound types repr their contents, and all nine enums repr as `DayCount.ACT_360` rather than an int | was partial while `ZeroCurve`, `TradeTerms`, `Calendar`, `Weekend` reprs | one more type bound; `TradeTerms` reprs as `TradeTerms(start=2024-03-20, end=2029-06-20, coupon_rate=0.01)` | one type bound so far; the criterion covers all of them |
 | P18 | **pass** | 300 interleaved failing and succeeding calls, discount factor identical throughout | GIL misuse corrupts rather than fails, so one call would prove nothing |
 
 ## The interface

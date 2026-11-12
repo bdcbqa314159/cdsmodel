@@ -28,10 +28,12 @@ EXPECTED_EXPORTS = {
     "BadArgument",
     "BadDayConv",
     "Calendar",
+    "CashFlow",
+    "CdsModelError",
     "Conventions",
     "DateInterval",
-    "CdsModelError",
     "DayCount",
+    "DefaultAccrual",
     "FlatMarket",
     "InstrumentKind",
     "InstrumentQuote",
@@ -41,8 +43,8 @@ EXPECTED_EXPORTS = {
     "NoRoot",
     "PeriodUnit",
     "StubLength",
-    "StubPosDefault",
     "StubMethod",
+    "StubPosDefault",
     "StubPosition",
     "SwapConventions",
     "TradeTerms",
@@ -50,6 +52,10 @@ EXPECTED_EXPORTS = {
     "Valuation",
     "Weekend",
     "ZeroCurve",
+    "default_accrual",
+    "fee_leg_flows",
+    "par_spread",
+    "price",
     "read_holiday_file",
     "__upstream_version__",
     "__version__",
@@ -216,7 +222,9 @@ def test_every_enum_value_is_a_usable_python_name() -> None:
             assert member == member.upper(), f"{enum.__name__}.{member} is not UPPER_CASE (D17)"
 
 
-@pytest.mark.parametrize("name", ["TradeTerms", "ZeroCurve"])
+@pytest.mark.parametrize("name", ["TradeTerms", "ZeroCurve", "Calendar", "Valuation",
+                                  "Conventions", "MarketData", "FlatMarket", "CashFlow",
+                                  "DefaultAccrual", "InstrumentQuote", "SwapConventions"])
 def test_bound_types_repr_their_contents(name: str) -> None:
     """P17 -- never `<cdsmodel._core.X object at 0x...>`."""
     cls = getattr(cdsmodel, name)
