@@ -1,0 +1,137 @@
+# Publishing, by PyPI Trusted Publishing (artifact #5, P10).
+#
+# There is no API token anywhere in this file, and that is the point. A
+# long-lived token in repository secrets is a credential that can leak and
+# does not expire; OIDC has GitHub prove this workflow's identity to PyPI per
+# run, scoped to this repository, this filename and this environment.
+# `verify.py publishing` fails if a `password:` ever appears here.
+#
+# A release goes to TestPyPI first and stops. The PyPI job waits on the
+# `pypi` environment, so it uploads only after a human approves it -- which
+# matters because **a version number on PyPI is permanent**. It can be
+# deleted and never re-uploaded, so a botched 0.1.0 becomes 0.1.1 rather than
+# a second attempt.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  # The tag and the source must agree before anything is built. Publishing
+  # 0.1.0 from a tag that says v0.2.0 is the kind of mistake that cannot be
+  # taken back, so it is caught here rather than discovered on the index.
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag matches the version in CMakeLists.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_version=$(grep -m1 'project(cdsmodel VERSION' CMakeLists.txt \
+                           | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            if [ "$tag_version" != "$source_version" ]; then
+              echo "::error::tag is ${GITHUB_REF_NAME} but CMakeLists.txt says ${source_version}"
+              exit 1
+            fi
+            echo "ok: tag ${GITHUB_REF_NAME} matches ${source_version}"
+          else
+            echo "manual run; would publish ${source_version}"
+          fi
+
+  wheels:
+    needs: check-version
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip cibuildwheel
+      - run: python -m cibuildwheel --output-dir wheelhouse
+
+      # The same check CI runs. A wheel tagged `linux_x86_64` is refused by
+      # PyPI at upload -- after the other platforms have already succeeded
+      # and burned the version.
+      - name: The wheel is publishable
+        shell: bash
+        run: python tools/check_wheel_tag.py wheelhouse/*.whl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  sdist:
+    needs: check-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip build
+      - run: python -m build --sdist --outdir dist .
+
+      # P11: the sdist is the one artefact that carries source, so it is the
+      # one that could redistribute the ISDA oracle or the Excel SDK. Checked
+      # here as well as in CI, because this is the copy that leaves the
+      # building.
+      - run: python verify.py sdist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  testpypi:
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/cdsmodel
+    permissions:
+      id-token: write          # OIDC. No token, no secret.
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: "{wheels-*,sdist}"
+          merge-multiple: true
+      - run: ls -l dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          # A rehearsal that cannot be repeated is not much of a rehearsal:
+          # re-running after a fix would otherwise fail on the version that
+          # already uploaded.
+          skip-existing: true
+
+  pypi:
+    needs: testpypi
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi             # add a required reviewer here to gate the upload
+      url: https://pypi.org/p/cdsmodel
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: "{wheels-*,sdist}"
+          merge-multiple: true
+      - run: ls -l dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
