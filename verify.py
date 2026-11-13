@@ -686,6 +686,61 @@ def gate_sdist() -> None:
     )
 
 
+
+def gate_publishing() -> None:
+    """Artifact #5, P10: publishing uses OIDC, never a stored credential.
+
+    A long-lived API token in repository secrets can leak, does not expire,
+    and grants upload rights to whoever holds it. Trusted Publishing has
+    GitHub prove the workflow's identity per run, scoped to this repository,
+    this filename and this environment.
+
+    The check is mechanical because the alternative is a promise in a comment:
+    `password:` is how a token would be passed to the publish action, and
+    `id-token: write` is what OIDC requires. Both are asserted, so removing
+    the permission is as loud as adding a secret.
+    """
+    workflows = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+    if not workflows:
+        fail("no workflows found -- this gate would pass vacuously")
+
+    release = ROOT / ".github" / "workflows" / "release.yml"
+    if not release.exists():
+        fail("no release.yml -- P10 cannot be satisfied without a publish workflow")
+
+    offenders = []
+    for path in workflows:
+        for n, line in enumerate(path.read_text().splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if "password:" in stripped or "PYPI_API_TOKEN" in stripped:
+                offenders.append(f"{path.name}:{n}: {stripped}")
+    if offenders:
+        fail(
+            "publishing must not use a stored credential (P10):\n  "
+            + "\n  ".join(offenders)
+        )
+
+    text = release.read_text()
+    if "id-token: write" not in text:
+        fail("release.yml has no `id-token: write` -- OIDC cannot work without it")
+
+    # The publish jobs must be gated on an environment, which is what lets a
+    # human stand between a tag and an irreversible upload.
+    import re as _re
+
+    environments = set(_re.findall(r"name:\s*(pypi|testpypi)\b", text))
+    missing = {"pypi", "testpypi"} - environments
+    if missing:
+        fail(f"release.yml is missing the {sorted(missing)} environment(s)")
+
+    print(
+        f"ok: {len(workflows)} workflows, no stored credential; "
+        "release.yml publishes by OIDC through the pypi and testpypi environments"
+    )
+
+
 def gate_coverage() -> None:
     """Measures line and branch coverage per area against COVERAGE_FLOORS.
 
@@ -859,6 +914,7 @@ GATES = {
     "sdk-absent": gate_sdk_absent,
     "python-layer": gate_python_layer,
     "sdist": gate_sdist,
+    "publishing": gate_publishing,
     "coverage": gate_coverage,
     "install-tree": lambda: gate_install_tree(_PRESET[0]),
     "golden": gate_golden_generated,
