@@ -56,8 +56,22 @@ TEST(DayCountCodes, ActActIsAnAliasNotASeparateConvention) {
 }
 
 TEST(DayCountFraction, KnownValuesAtCompileTime) {
-  constexpr cdsmodel::Date y2000 = *cdsmodel::make_date(2000, 1, 1);
-  constexpr cdsmodel::Date y2001 = *cdsmodel::make_date(2001, 1, 1);
+  // Built directly rather than through `make_date`, which returns
+  // `Expected<Date>`. GCC 16 cannot constant-evaluate a constexpr function
+  // returning a variant whose other alternative is non-trivially
+  // destructible when the active one is a class type -- bisected:
+  //
+  //     constexpr fn -> variant<Date, {int, std::string}> -> get<0>   fails
+  //     constexpr fn -> variant<Date, int>                -> get<0>   passes
+  //
+  // Clang and older GCC accept both, so it is a GCC 16 regression rather
+  // than a defect here. `Expected<double>` below is unaffected, because a
+  // `double` is not a class type -- which is why every assertion in this
+  // test still runs on both compilers rather than being guarded away.
+  constexpr cdsmodel::Date y2000{std::chrono::year{2000} / std::chrono::January /
+                                 std::chrono::day{1}};
+  constexpr cdsmodel::Date y2001{std::chrono::year{2001} / std::chrono::January /
+                                 std::chrono::day{1}};
 
   // 2000 is a leap year: 366 actual days.
   static_assert(*cdsmodel::year_fraction(y2000, y2001, cdsmodel::DayCount::Act365Fixed) ==
