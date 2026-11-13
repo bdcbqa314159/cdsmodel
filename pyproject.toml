@@ -50,6 +50,15 @@ install.components = ["python"]
 [tool.scikit-build.cmake.define]
 CDSMODEL_BUILD_TESTS = "OFF"
 CDSMODEL_BUILD_PYTHON = "ON"
+# D23: python/ is a peer of xl/core, not a consumer. See CMakeLists.
+CDSMODEL_BUILD_XL = "OFF"
+# The extension is a shared object, and `libcdsmodel.a` is linked into it.
+# On x86-64 Linux a non-PIC static library cannot go into a .so:
+#   relocation R_X86_64_32 against `.rodata' can not be used when making a
+#   shared object; recompile with -fPIC
+# macOS compiles PIC unconditionally and Windows has no equivalent
+# relocation, which is why only the manylinux build failed.
+CMAKE_POSITION_INDEPENDENT_CODE = "ON"
 
 # D9a: the oracle and the Excel SDK are already gitignored, and that alone
 # keeps them out. Naming them is defence in depth: the licence rule must not
@@ -65,3 +74,31 @@ exclude = [
   ".github",
   "xl",
 ]
+
+# ---------------------------------------------------------------------------
+# cibuildwheel: the release wheels.
+#
+# `python -m build` tags a Linux wheel for the HOST glibc --
+# `cp312-abi3-linux_x86_64` -- and PyPI refuses that, because a bare `linux_`
+# tag says nothing about which glibc the binary needs. cibuildwheel builds
+# inside an old-glibc container and tags the result `manylinux`, which is the
+# only way a Linux wheel is publishable.
+#
+# macOS and Windows do not need it to be publishable; they are built the same
+# way for one artifact set and one code path.
+[tool.cibuildwheel]
+build = "cp312-*"
+skip = "*-musllinux_*"
+build-frontend = "build"
+
+# D1: one cp312-abi3 wheel per platform. Without this, cibuildwheel would
+# build a separate wheel for every CPython it finds.
+[tool.cibuildwheel.linux]
+archs = ["x86_64"]
+manylinux-x86_64-image = "manylinux_2_28"
+
+[tool.cibuildwheel.macos]
+archs = ["arm64"]
+
+[tool.cibuildwheel.windows]
+archs = ["AMD64"]

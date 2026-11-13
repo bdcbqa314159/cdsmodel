@@ -8,6 +8,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(CDSMODEL_BUILD_TESTS "Build tests" ${PROJECT_IS_TOP_LEVEL})
 option(CDSMODEL_BUILD_PYTHON "Build the nanobind extension" OFF)
+# The Excel layer. ON by default, but the Python wheel turns it OFF: D23
+# makes `python/` and `xl/core/` peers, so a wheel has no use for XlValue or
+# the handle registries. Building it anyway cost more than time -- under
+# cibuildwheel's macOS deployment target it broke the build outright, because
+# `xl/core` uses `std::from_chars` on a float and Apple's libc++ only gained
+# that in a later OS than the wheel targets.
+option(CDSMODEL_BUILD_XL "Build the Excel layer (xl/core and, on Windows, the add-in)" ON)
 
 # UndefinedBehaviorSanitizer PRINTS and CONTINUES by default, exiting 0. A
 # sanitizer job that only fails on AddressSanitizer errors therefore ignores
@@ -124,7 +131,9 @@ endif()
 # for the Excel layer), so an unguarded add_subdirectory makes the sdist
 # impossible to configure. Found by P9, which installs from the sdist into a
 # clean venv; nothing before it had ever built this tree without `xl/`.
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/xl/core/CMakeLists.txt")
+if(NOT CDSMODEL_BUILD_XL)
+  message(STATUS "cdsmodel: Excel layer disabled -- building the library alone")
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/xl/core/CMakeLists.txt")
   add_subdirectory(xl/core)
 else()
   message(STATUS "cdsmodel: no xl/ in this tree -- building the library alone")
