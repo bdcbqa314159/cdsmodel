@@ -244,14 +244,35 @@ verdict:
     cmake --build --preset release --target cdsmodel_xll
     python tools/gen_xll_workbook.py          # writes tests/xll/smoke.xlsx
 
-Then, by hand: load `cdsmodel.xll` in 64-bit Excel, open the workbook, let it
-recalculate. Every row carries the value the C++ library computed and a verdict
-column comparing it to what Excel got.
+Or drive it: `pwsh tools/run_c8.ps1` registers the add-in in 64-bit Excel over
+COM, sweeps every function name for `#NAME?`, recalculates the workbook and
+prints the Verdict and Forms columns, exiting non-zero if anything fails to
+register or any row is not PASS. That is the same Excel calculation engine and
+the same add-in; scripting it only makes the evidence reproducible.
+
+By hand works too: load `cdsmodel.xll` in 64-bit Excel, open the workbook, let
+it recalculate. Every row carries the value the C++ library computed and a
+verdict column comparing it to what Excel got.
 
 **Record the result in `specs/reasoning/C8.md`** with the date, the Excel
 version, and the verdict column's contents. That file is the only evidence
 tier 1 has for the add-in, so an empty or stale one means the add-in is
 unverified -- say so plainly rather than implying otherwise.
+
+### What is still outstanding on Windows
+
+A session starting here has no memory of the last one, so the open items live
+in the repository rather than in anyone's head. Each names how it is checked,
+and none of them block the Python package, which ships no Excel code.
+
+| | what | how |
+|---|---|---|
+| **C1** | `/WX` is set on **no** target. `/W4` is on all three `xl/` ones, under `if(MSVC)`. The criterion in `specs/03_xll.md` asks for both, so C1 stays `partial` until it is added and the x64 build is clean | add it, rebuild, fix what it surfaces |
+| **C2** | `XLOPER12` has no test for strings over 255 characters or non-ASCII -- the two cases that justified choosing it over `XLOPER`. There is no `xl/sdk/tests/`, and there should not be: CI cannot compile `xl/sdk`, so the tests belong in `xl/core` | add to `xl/core/tests/` |
+| **C8** | Recorded **once**, 2026-11-11, on one machine. One run is evidence, not a habit | `pwsh tools/run_c8.ps1`, then append to `specs/reasoning/C8.md` |
+
+Do not mark any of these passing without the oracle result pasted into the
+spec's Progress table. "It built" is not a result.
 
 ### What the add-in exposes
 
