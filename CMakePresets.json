@@ -33,6 +33,18 @@
         "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
         "CDSMODEL_FATAL_UBSAN": "ON"
       }
+    },
+    {
+      "name": "gcc",
+      "displayName": "GCC (second compiler, same oracle)",
+      "description": "The differential suite under a compiler that is not Clang. Everything this project claims about matching upstream bit for bit has only ever been measured with Apple Clang, because tier 2 needs the oracle and the oracle lives on one laptop. GCC exercises different codegen -- notably fused multiply-add contraction, which is what silently broke the Python wheel on Linux. Builds everything including the Excel layer: GCC uses libstdc++, whose std::from_chars handles floats, so the deployment-target problem that affects Apple's libc++ does not arise here. Install with `brew install gcc`.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/gcc",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "gcc-16",
+        "CMAKE_CXX_COMPILER": "g++-16"
+      }
     }
   ],
   "buildPresets": [
@@ -50,6 +62,10 @@
       "name": "asan",
       "configurePreset": "asan",
       "configuration": "Debug"
+    },
+    {
+      "name": "gcc",
+      "configurePreset": "gcc"
     }
   ],
   "testPresets": [
@@ -73,6 +89,13 @@
       "name": "asan",
       "configurePreset": "asan",
       "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "gcc",
+      "configurePreset": "gcc",
       "output": {
         "outputOnFailure": true
       }
