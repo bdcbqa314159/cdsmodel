@@ -283,23 +283,40 @@ block serve both.
 ### Pricing
 
     price(trade, valuation, conventions, market, clean=True)            5
-    par_spreads(trade, valuation, conventions, market)                  4
-    upfront(trade, valuation, conventions, flat_market, clean=True)     5
-    par_spread_flat(trade, valuation, conventions, flat_market,
-                    clean=True)                                         5
-    fee_leg_flows(trade, valuation, conventions)                        3
-    default_accrual(trade, valuation, conventions, market)              4
+    par_spread(trade, valuation, conventions, market)                   4
+    upfront(trade, dates, conventions, flat_market,
+            pay_accrued_at_start=False)                                 5
+    par_spread_flat(trade, dates, conventions, flat_market,
+                    pay_accrued_at_start=False)                         5
+    fee_leg_flows(trade, conventions, notional=1.0)                     3
+    default_accrual(trade, conventions, trade_date,
+                    event_determination_date, notional=1.0)             5
+
+`par_spreads` is **not** bound -- see D32. `upfront` and `par_spread_flat`
+take `UpfrontDates` rather than `Valuation`: upstream keeps four dates for
+them, and the fourth (`benchmark_start`) has no counterpart in `Valuation`.
 
 ### Curves and calendars
 
-    ZeroCurve.from_points(dates, rates, basis, day_count)               4
-    ZeroCurve.build(valuation, instruments, conventions, basis)         4
+    ZeroCurve.from_points(base_date, dates, rates, basis, day_count)    5
+    ZeroCurve.build(value_date, instruments, money_market_day_count,
+                    conventions, calendar)                              5
     ZeroCurve.discount_factor(date)                                     1
-    ZeroCurve.points()        -> list[tuple[date, float]]               0
-    clean_spread_curve(valuation, benchmarks, conventions, market)      4
-    Calendar.from_dates(dates, weekends)                                2
-    Calendar.from_file(path)                                            1
-    Calendar.dates(start, end)                                          2
+    ZeroCurve.forward_discount_factor(start, maturity)                  2
+    ZeroCurve.dates() / .rates()                                        0
+    clean_spread_curve(valuation, benchmarks, conventions, market,
+                       start)                                           5
+    Calendar.from_dates(holidays, weekends)                             2
+    Calendar.parse(contents)                                            1
+    Calendar.holidays()                                                 0
+    read_holiday_file(path)                                             1
+
+Two renames against the first draft, each from a decision taken while
+building: the curve exposes `dates()` and `rates()` rather than a `points()`
+list of pairs (D19 -- parallel columns are the shape a caller has), and
+reading a holiday file is `read_holiday_file`, a module-level Python function
+rather than a `Calendar` classmethod (D26 -- the IO belongs in Python, where
+a directory raises instead of reading as empty).
 
 Curves and calendars are **classes, not handles**. The XLL needs a registry
 because a cell cannot hold a curve; Python holds the object directly, so the
