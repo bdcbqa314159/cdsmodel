@@ -113,6 +113,46 @@ def test_flat_market_quote_means_different_things_to_the_two_functions() -> None
     assert cds.par_spread_flat(trade, DATES, CONV, as_charge) == pytest.approx(0.02, abs=1e-9)
 
 
+def test_an_inverted_curve_reports_no_root() -> None:
+    """P4 -- the third of the four error kinds, and the one that took three
+    wrong guesses to find.
+
+    A steeply inverted spread curve (8%, 2%, 0.5%) implies a forward hazard
+    rate below zero, so no rate solves the later segment. That is `no_root`,
+    distinct from `bad_argument`: the input is well-formed and the answer
+    does not exist, which is exactly the distinction artifact #01's taxonomy
+    was created to draw.
+
+    It is a realistic quote, not a contrived one -- a distressed name trades
+    with a downward-sloping curve.
+    """
+    far = cds.ZeroCurve.from_points(base_date=TODAY, dates=[D(2035, 1, 2)], rates=[0.04])
+    quotes = [cds.Benchmark(end=D(2027, 1, 2), coupon_rate=0.080),
+              cds.Benchmark(end=D(2029, 1, 2), coupon_rate=0.020),
+              cds.Benchmark(end=D(2031, 1, 2), coupon_rate=0.005)]
+    with pytest.raises(cds.NoRoot) as e:
+        cds.clean_spread_curve(VALUATION, quotes, CONV,
+                               cds.CurveMarket(discount=far, recovery=0.4), start=TODAY)
+    assert "negative forward rate" in str(e.value), str(e.value)
+
+
+def test_no_root_is_not_caught_as_bad_argument() -> None:
+    """A taxonomy nothing branches on is decoration. These two kinds derive
+    from different builtins, so catching one must not catch the other."""
+    assert not issubclass(cds.NoRoot, cds.BadArgument)
+    assert issubclass(cds.NoRoot, ArithmeticError)
+    assert issubclass(cds.BadArgument, ValueError)
+
+
+def test_a_mildly_inverted_curve_still_builds() -> None:
+    """The positive control: inversion alone is not an error, so the test
+    above is detecting a real condition rather than any downward slope."""
+    curve = _curve([cds.Benchmark(end=D(2027, 1, 2), coupon_rate=0.020),
+                    cds.Benchmark(end=D(2029, 1, 2), coupon_rate=0.015),
+                    cds.Benchmark(end=D(2031, 1, 2), coupon_rate=0.012)])
+    assert len(curve) == 3
+
+
 def test_an_unreachable_upfront_is_refused_not_silently_wrong() -> None:
     trade = cds.TradeTerms(start=TODAY, end=D(2029, 1, 2), coupon_rate=0.01)
     with pytest.raises(cds.CdsModelError):

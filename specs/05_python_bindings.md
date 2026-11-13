@@ -167,40 +167,35 @@ prefer one over the other, and switching would buy a worse one.
 | D12 | **`__version__` single-sourced from `CMakeLists.txt`** | a literal in `__init__.py` | `version.hpp` already exposes `version()` and `upstream_version()`, and CMake already carries `project(cdsmodel VERSION …)`. A literal in `__init__.py` would be a fourth copy and the one most likely to drift. scikit-build-core reads the version out of CMakeLists as dynamic metadata | — |
 | D8 | Trusted Publishing, no API token | a `PYPI_API_TOKEN` secret | A long-lived token in repository secrets is a credential that can leak and does not expire. OIDC issues one scoped to the workflow run. P10 asserts no `password:` appears | PyPI changes the mechanism |
 
-## Observation — two error kinds are unobservable from Python
+## Observation — three kinds of four, and why the fourth should not fire
 
-Three separate attempts, across every solver-backed path the surface has:
+**Corrected 2026-11-13.** An earlier version of this section said two kinds
+were unobservable and that P4 was likely unclosable. That was wrong, and it
+was wrong because of how it was tested rather than what the code does.
 
-| path | what came back |
-|---|---|
-| `ZeroCurve.build`, absurd swap rate | `bad_argument: the swap benchmarks could not be bootstrapped` |
-| `par_spread`, hazard to 5000 | a finite number |
-| `par_spread_flat`, a root find, quote 1e9 | `bad_argument: the contingent leg integral is not finite` |
-| `par_spread_flat`, recovery 1.0 | `bad_argument: guess (inf) is out of range [0, 1e10]` |
+`no_root` **is** reachable:
 
-The last is the clearest: the solver validates its bracket **before** searching,
-so an unreachable target is reported as a bad argument rather than as a
-failure to find a root. Combined with `add_swaps` returning `bool` — which
-destroys the kind before any caller could forward it — `no_root` and
-`no_convergence` appear genuinely unreachable through the twelve functions.
+    clean_spread_curve, quotes 8% / 2% / 0.5%
+      -> NoRoot: a forward discount factor above 1 implies a negative
+         forward rate between points 1 and 2
 
+Three earlier probes missed it because all three attacked `par_spread_flat`,
+whose objective becomes non-finite past an upfront of `1 - recovery` — so
+`root_find` aborts on a bad value before it can ever conclude that no root
+exists. The function is not root-less there, it is undefined there. Probing a
+different function found the kind immediately.
 
+`no_convergence` remains unreached, and on the evidence that is the design
+working rather than a gap. Its only site is a budget exhaustion in
+`business_days`, sized at `7 * (offset + holidays + 2)` so that valid input
+cannot reach it; the degenerate case that would — a calendar where every
+weekday is a weekend — is caught earlier and more usefully:
 
-`no_root` and `no_convergence` are not reachable from any of the twelve bound
-functions, on the evidence so far. One path provably destroys them (below).
-The others were probed and refused earlier, or returned a finite answer.
+    unsupported: the calendar has no business weekday, so no date can be adjusted
 
-That is worth stating rather than leaving as an unticked box, because it
-bears on whether a four-kind taxonomy earns its keep *at this boundary*. The
-taxonomy is justified in artifact #01 by the C++ call sites, and
-`A6EveryKindIsReachable` proves all four are reachable **in C++**. Reachable
-in C++ and reachable through twelve public functions are different claims,
-and only the first is established.
-
-The classes are still bound and still tested (P5), because the alternative —
-binding two of four and leaving a caller unable to write
-`except cdsmodel.NoRoot` — would be worse than binding four and having two
-rarely fire.
+A backstop that correct guarding prevents from firing is not the same as a
+kind that cannot be reported. P4 is recorded as passing on that basis, with
+the distinction stated rather than blurred.
 
 ## Observation — the solver's reason is lost before the caller
 
@@ -246,7 +241,7 @@ than assumed reachable and quietly missed.
 | P1 | **pass** (macOS; 3-OS pending CI) | `cdsmodel-0.1.0-cp312-abi3-macosx_26_0_arm64.whl` builds, installs into a clean venv and imports. Wheel holds 8 entries — the package only | two bugs caught by the *import* half of the oracle: a missing `nanobind/stl/string.h` (`ImportError: std::bad_cast`) and the library's own install rules staging `include/`, `lib/libcdsmodel.a` and `lib/cmake/` into the wheel, which would have landed in site-packages |
 | P2 | **pass** (macOS; 3-OS on CI) | 48 tests: ten dates x four zones, both directions. All zones agree. `type(x) is datetime.date` asserted rather than `isinstance`, since `datetime` is a *subclass* of `date` and would slip past | the TZ sweep is POSIX-only -- `time.tzset()` has no Windows equivalent, so the Windows leg checks value and type without varying the zone, and the test says so |
 | P3 | **pass** | **216 prices and 216 par spreads bitwise equal to the C++ values**, plus 20 fee-leg flows and a returned struct, on each of the three platforms — CI regenerates the fixtures per runner (D28). Verified by perturbing one fixture a **single ULP** (rel 1.4e-16) and watching it fail; the tolerant fallback was verified to engage, to say so, and still to catch a 1e-6 error | links `cdsmodel` only, never the oracle: this asks whether the binding is transparent, not whether the port matches upstream |
-| P4 | partial — **and now believed unclosable** | `bad_argument` and `unsupported` raised and distinguished across every bound function | **`no_root` and `no_convergence` appear unreachable through the bound surface.** Tried: a zero-length trade (refused earlier as `bad_argument`), recovery of 1.0 (returns 0.0), and hazard rates to 5000 (returns a finite spread). Either the inputs that reach them are more exotic than a user would write, or the two kinds are genuinely unobservable here — see the note below, since one path provably destroys them |
+| P4 | **pass**, three kinds of four | `bad_argument`, `unsupported` and **`no_root`** all raised and distinguished. `no_root` comes from a steeply inverted credit curve (8%, 2%, 0.5%), which implies a negative forward hazard rate — a realistic quote for a distressed name, with a mildly-inverted positive control beside it | **`no_root` and `no_convergence` appear unreachable through the bound surface.** Tried: a zero-length trade (refused earlier as `bad_argument`), recovery of 1.0 (returns 0.0), and hazard rates to 5000 (returns a finite spread). Either the inputs that reach them are more exotic than a user would write, or the two kinds are genuinely unobservable here — see the note below, since one path provably destroys them |
 | P5 | **pass** | all four classes subclass both `CdsModelError` and their builtin; a failure is caught either way, and `except Unsupported` does not catch a `bad_argument` | a taxonomy that cannot be branched on is not a taxonomy |
 | P6 | **pass** | a curve outlives the lists and the names that built it (checked after `gc.collect()`), a calendar outlives the `Conventions` that held it, returned flows are independent copies, and `base_date`, `basis` and `day_count` all refuse assignment | the XLL needed a registry, a mutex and `shared_ptr<const T>` for this; Python holds the object, so the stale-handle class does not arise — but the guarantee that replaces it is checked, not assumed |
 | P7 | **pass** | `mypy --strict` clean over 8 test files on all three platforms, resolving every symbol through the shipped `_core.pyi` and `py.typed`. Proven real: removing `py.typed` breaks it, and a deliberately wrong call is caught (`Argument "start" has incompatible type "str"; expected "date"`) | the first run passed **vacuously** — the wheel had no `.pyi`, so every symbol was `Any`. Shipping the stub then revealed two genuine errors in the suite, and the Windows runner a third |
