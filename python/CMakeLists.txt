@@ -10,14 +10,7 @@ find_package(nanobind CONFIG REQUIRED)
 
 # STABLE_ABI: one cp312-abi3 wheel per platform (D1).
 # NB_STATIC:  nanobind linked in, so the wheel carries no second shared object.
-# NOSTRIP and NOMINSIZE: gcc-toolset-14's ld inside the manylinux_2_28 image
-# fails the link with "failed to set dynamic section sizes: bad value".
-# nanobind adds two size flags by default -- `-Wl,-s` (gated by NOSTRIP) and
-# `-Wl,--gc-sections` (gated by NOMINSIZE). Measured, not guessed: with
-# NOSTRIP alone the error persists, so `--gc-sections` is the one ld cannot
-# handle here. auditwheel strips the finished wheel regardless, so the size
-# these flags save is recovered anyway.
-nanobind_add_module(_core STABLE_ABI NB_STATIC NOSTRIP NOMINSIZE
+nanobind_add_module(_core STABLE_ABI NB_STATIC
   src/module.cpp
   src/types.cpp
   src/errors.cpp

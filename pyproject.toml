@@ -52,6 +52,13 @@ CDSMODEL_BUILD_TESTS = "OFF"
 CDSMODEL_BUILD_PYTHON = "ON"
 # D23: python/ is a peer of xl/core, not a consumer. See CMakeLists.
 CDSMODEL_BUILD_XL = "OFF"
+# The extension is a shared object, and `libcdsmodel.a` is linked into it.
+# On x86-64 Linux a non-PIC static library cannot go into a .so:
+#   relocation R_X86_64_32 against `.rodata' can not be used when making a
+#   shared object; recompile with -fPIC
+# macOS compiles PIC unconditionally and Windows has no equivalent
+# relocation, which is why only the manylinux build failed.
+CMAKE_POSITION_INDEPENDENT_CODE = "ON"
 
 # D9a: the oracle and the Excel SDK are already gitignored, and that alone
 # keeps them out. Naming them is defence in depth: the licence rule must not
