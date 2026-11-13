@@ -50,6 +50,8 @@ install.components = ["python"]
 [tool.scikit-build.cmake.define]
 CDSMODEL_BUILD_TESTS = "OFF"
 CDSMODEL_BUILD_PYTHON = "ON"
+# D23: python/ is a peer of xl/core, not a consumer. See CMakeLists.
+CDSMODEL_BUILD_XL = "OFF"
 
 # D9a: the oracle and the Excel SDK are already gitignored, and that alone
 # keeps them out. Naming them is defence in depth: the licence rule must not
