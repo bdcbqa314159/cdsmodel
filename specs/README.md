@@ -27,7 +27,7 @@ action and reasoning records of work already done.
 |---|---|---|---|
 | 01 | [`01_error_channel.md`](01_error_channel.md) | **current** | `std::optional` → `Expected<T>` in C++20; all 341 sites; the four-kind taxonomy |
 | 02 | [`02_consumability.md`](02_consumability.md) | **current** | install/export, package config, the umbrella header |
-| 03 | [`03_xll.md`](03_xll.md) | **current** (8/10; C8 passed in Excel 2026-11-11; C1 lacks `/WX`, C2 lacks an `xl/sdk` test) | the XLL foundation: SDK, x64, XLOPER12, one function end to end |
+| 03 | [`03_xll.md`](03_xll.md) | **current** (10/10; C8 run in Excel twice, 2026-11-11 and 2026-11-14) | the XLL foundation: SDK, x64, XLOPER12, one function end to end |
 | 04 | [`04_holiday_calendars.md`](04_holiday_calendars.md) | **ratified** | reading a holiday file; UPSTREAM-41 |
 | 05 | [`05_python_bindings.md`](05_python_bindings.md) | **ratified** | the PyPI package: nanobind, cp312-abi3, Trusted Publishing |
 
