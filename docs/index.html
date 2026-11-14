@@ -403,13 +403,49 @@
     .record { padding: 1.25rem 1.15rem; }
     .meta { padding: 1rem 1.1rem; }
   }
+
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.5rem;
+    margin: 0 0 2rem;
+    padding: 0;
+    list-style: none;
+  }
+  .chips li {
+    display: inline-flex;
+    align-items: stretch;
+    border: 1px solid var(--rule-strong);
+    border-radius: 3px;
+    overflow: hidden;
+    font-size: 0.78rem;
+    line-height: 1;
+  }
+  .chip-k {
+    padding: 0.35rem 0.5rem;
+    background: var(--surface-sunk);
+    color: var(--muted);
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    font-size: 0.68rem;
+    display: flex;
+    align-items: center;
+  }
+  .chip-v {
+    padding: 0.35rem 0.55rem;
+    background: var(--surface);
+    color: var(--ink-soft);
+    font-variant-numeric: tabular-nums;
+    display: flex;
+    align-items: center;
+  }
 </style>
 </head>
 <body>
 <div class="page">
 
   <header class="masthead">
-    <p class="eyebrow">Defect report · 2026-11-07</p>
+    <p class="eyebrow">Defect report · 2026-11-14</p>
     <h1>Forty-one defects in the ISDA CDS Standard Model</h1>
     <p class="standfirst">
       Found while porting the 2009 C library to C++20 &mdash; all 163 in-scope
@@ -419,6 +455,17 @@
       two are corrected, and that decision is argued below.
     </p>
   </header>
+
+  <ul class="chips" aria-label="Languages and versions">
+    <li><span class="chip-k">port</span><span class="chip-v">C++20</span></li>
+    <li><span class="chip-k">original</span><span class="chip-v">C, 2009</span></li>
+    <li><span class="chip-k">upstream</span><span class="chip-v">ISDA 1.8.3</span></li>
+    <li><span class="chip-k">build</span><span class="chip-v">CMake 3.28</span></li>
+    <li><span class="chip-k">compilers</span><span class="chip-v">Clang · GCC · MSVC</span></li>
+    <li><span class="chip-k">python</span><span class="chip-v">3.12+ · nanobind</span></li>
+    <li><span class="chip-k">add-in</span><span class="chip-v">Excel XLL, x64</span></li>
+    <li><span class="chip-k">licence</span><span class="chip-v">MIT</span></li>
+  </ul>
 
   <dl class="meta">
     <div>
@@ -435,7 +482,7 @@
     </div>
     <div>
       <dt>Coverage</dt>
-      <dd>~3,500 of 21,775 upstream lines: search, dates, day counts, intervals, calendars</dd>
+      <dd>All 163 in-scope functions, across 41 of the 49 files in <code>lib/src</code></dd>
     </div>
     <div>
       <dt>Reproduce</dt>

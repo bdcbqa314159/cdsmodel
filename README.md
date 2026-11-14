@@ -1,5 +1,13 @@
 # cdsmodel
 
+[![CI](https://github.com/bdcbqa314159/cdsmodel/actions/workflows/ci.yml/badge.svg)](https://github.com/bdcbqa314159/cdsmodel/actions/workflows/ci.yml)
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white)](CMakeLists.txt)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![CMake](https://img.shields.io/badge/CMake-3.28%2B-064F8C?logo=cmake&logoColor=white)](CMakePresets.json)
+[![Excel add-in](https://img.shields.io/badge/Excel-XLL%20x64-217346?logo=microsoftexcel&logoColor=white)](#building-the-excel-add-in)
+[![upstream ISDA 1.8.3](https://img.shields.io/badge/upstream-ISDA%201.8.3-6b7280)](https://www.cdsmodel.com/)
+[![licence MIT](https://img.shields.io/badge/licence-MIT-informational)](LICENSE)
+
 A C++20 port of the **ISDA CDS Standard Model** (version 1.8.3), with Python
 bindings and a cross-platform spreadsheet interface — replacing a 2009 C
 codebase that only ever shipped a Windows-only Excel XLL.
