@@ -15,6 +15,7 @@
 
 namespace {
 
+using cdsmodel::xl::ascii_from_utf16;
 using cdsmodel::xl::LabelledRange;
 using cdsmodel::xl::LabelSpec;
 using cdsmodel::xl::normalise_label;
@@ -103,6 +104,39 @@ TEST(XlValue, ASingleCellReadsAsAOneByOneRange) {
 TEST(XlValue, AnOutOfRangeCellIsAnErrorNotUndefinedBehaviour) {
   const XlGrid g = grid_of({{XlValue{"a"}, XlValue{1.0}}});
   EXPECT_TRUE(g.at(5, 5).is_error());
+}
+
+// ------------------------------------------------------- ascii_from_utf16
+//
+// C2: the two cases that justified XLOPER12 over XLOPER. The counted-string
+// walk is XCHAR-specific and stays in xl/sdk's oper.cpp, but the narrowing
+// rule it feeds lives here so CI exercises it with no Excel and no SDK.
+
+TEST(AsciiFromUtf16, PlainAsciiIsUnchanged) {
+  EXPECT_EQ(ascii_from_utf16(u"ACT/360"), "ACT/360");
+}
+
+TEST(AsciiFromUtf16, C2StringsOver255CharactersSurviveInFull) {
+  // XLOPER capped a string at 255 characters; XLOPER12 does not. A 300-unit
+  // string must come back at its full length, every character intact.
+  const std::u16string long_name(300, u'x');
+  const std::string out = ascii_from_utf16(long_name);
+  EXPECT_EQ(out.size(), 300u);
+  EXPECT_EQ(out, std::string(300, 'x'));
+}
+
+TEST(AsciiFromUtf16, C2NonAsciiNarrowsToQuestionMarkRatherThanTruncating) {
+  // Deliberately lossy (D10): every string this add-in reads is ASCII by
+  // construction, so a non-ASCII unit is a user mistake shown as '?', not data
+  // to preserve. The length is still kept -- nothing is dropped.
+  const std::u16string mixed = u"A" + std::u16string(1, u'\x00E9') // e-acute
+                               + u"B" + std::u16string(1, u'\x4E2D'); // CJK
+  EXPECT_EQ(ascii_from_utf16(mixed), "A?B?");
+}
+
+TEST(AsciiFromUtf16, TheBoundaryIsExactlyOneTwentyEight) {
+  EXPECT_EQ(ascii_from_utf16(std::u16string(1, u'\x007F')), std::string(1, '\x7F'));
+  EXPECT_EQ(ascii_from_utf16(std::u16string(1, u'\x0080')), "?");
 }
 
 // ---------------------------------------------------------- LabelledRange
