@@ -110,13 +110,16 @@ plainly whether the oracle was found.
 | component | state |
 |---|---|
 | CMake build, 3-OS CI, differential test harness | working |
-| **CDS pricing chain** | **complete** — prices a CDS and computes an upfront charge bit-identically to the original |
+| **the port** | **complete** — 168 upstream functions, verified against the original under **two** compilers |
 | ISDA's published example | **reproduced**, on three platforms, with no upstream copy present |
-| API completeness (fee-leg cash flows, IR curve bootstrap) | `defaulted.c` done; two entry points left |
-| Python bindings (nanobind) | not started |
+| **Excel add-in** (`cdsmodel.xll`) | **complete and run in Excel** — 24 functions, 64-bit, both signature forms agreeing bitwise |
+| **Python package** (`cdsmodel`, nanobind) | **complete** — 40 names, wheels for Linux, macOS and Windows |
 | Cross-platform spreadsheet interface | not started |
 
-325 tests pass with a local upstream copy as the oracle, 214 without one.
+**895 tests pass with a local upstream copy as the oracle, 572 without one**,
+plus 577 tests over the Python package. 41 defects in the original library are
+catalogued, each present at the site, in `docs/port-notes.md`, and in a test
+that asserts it from both sides.
 
 The three upfront charges printed by upstream's own example program are
 reproduced to the precision they are printed at — the only externally
@@ -124,12 +127,34 @@ published numbers in the distribution, and the only reference in this project
 that is not either upstream's observed behaviour or a property argued from
 first principles.
 
-What is left is API surface rather than capability. The remaining pieces are
-`defaulted.c` (95 lines, accrual on an already-defaulted name),
-`JpmcdsCdsFeeLegFlows` (reporting cash flows rather than pricing them, needs
-`cashflow.c`), and `JpmcdsBuildIRZeroCurve` — one function signature in front
-of a 5,126-line interest-rate stack, for callers who want upstream to build
-their discount curve as well. This port takes a discount curve as an input.
+### What verification means here, and where it stops
+
+The differential suites compile the original C into the same binary and
+compare the port against it with `EXPECT_EQ` on raw doubles — bit-exact, not
+approximate. That needs the upstream sources, which are licence-gated and
+never committed, so **those suites run locally and not in CI**. Every sweep is
+therefore recorded into vectors under `tests/golden/`, which CI replays with
+no oracle present; that is the 572.
+
+Two things are deliberately not claimed:
+
+- **The Excel add-in is evidenced by a recorded run, not by an assertion.** An
+  XLL only truly runs inside Excel, which is not an oracle. Two runs are
+  recorded in `specs/reasoning/C8.md` with dates, Excel version and verdicts.
+- **The Python package does not re-test the numerics.** The C++ suites own
+  that, against an oracle Python cannot see. What the Python suite proves is
+  that the numbers cross the boundary unchanged: 216 prices and 216 par
+  spreads compared **bit for bit** against values emitted by a C++ program
+  linking the same library.
+
+## Installing the Python package
+
+    pip install cdsmodel          # once published
+
+One `cp312-abi3` wheel per platform, covering Python 3.12 and later. Building
+from the source distribution needs no network and no Excel SDK:
+
+    pip install --no-index --no-build-isolation cdsmodel-*.tar.gz
 
 The migration plan, the measured legacy-pattern inventory, and every
 deliberate deviation from upstream behaviour are documented in

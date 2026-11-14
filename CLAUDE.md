@@ -259,24 +259,18 @@ version, and the verdict column's contents. That file is the only evidence
 tier 1 has for the add-in, so an empty or stale one means the add-in is
 unverified -- say so plainly rather than implying otherwise.
 
-### What is still outstanding on Windows
+### Recording a run
 
-A session starting here has no memory of the last one, so the open items live
-in the repository rather than in anyone's head. Each names how it is checked,
-and none of them block the Python package, which ships no Excel code.
+`specs/reasoning/C8.md` is the only evidence tier 1 has for the add-in, so
+**every run is appended, not overwritten.** Two are recorded: 2026-11-11 and
+2026-11-14. One run is evidence; a series is a habit, and the file is where
+the difference shows.
 
-| | what | how |
-|---|---|---|
-| **C8** | Recorded **once**, 2026-11-11, on one machine. One run is evidence, not a habit | `pwsh tools/run_c8.ps1`, then append to `specs/reasoning/C8.md` |
-
-C1 and C2 are closed (`specs/03_xll.md` Progress). C1: `/W4 /WX` on all three
-`xl/` targets, x64 build clean, the one latent `C4244` it caught fixed at root.
-C2: the counted-string->ASCII rule lifted into `xl/core` as `ascii_from_utf16`
-and tested in CI (>255 chars survive, non-ASCII narrows to `'?'`); the criterion
-was amended to say the narrowing is deliberate (D10), which the code already was.
-
-Do not mark C8 passing without the oracle result pasted into the spec's
-Progress table. "It built" is not a result.
+A session starting on Windows has no memory of the last one, so anything it
+discovers belongs in this file or in a spec rather than in a transcript. The
+rule that matters most on a cold start: **do not mark a criterion passing
+without the oracle result pasted into the spec's Progress table.** "It built"
+is not a result.
 
 ### What the add-in exposes
 
