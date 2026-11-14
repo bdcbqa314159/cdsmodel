@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(cdsmodel VERSION 0.1.0 LANGUAGES C CXX)
+project(cdsmodel VERSION 0.1.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -89,6 +89,10 @@ endif()
 add_library(cdsmodel STATIC src/version.cpp src/holiday_file.cpp)
 add_library(cdsmodel::cdsmodel ALIAS cdsmodel)
 target_compile_features(cdsmodel PUBLIC cxx_std_20)
+
+# D12: one version. `src/version.cpp` reports this, `pyproject.toml` reads the
+# same `project()` line for the wheel metadata, and a test asserts they match.
+target_compile_definitions(cdsmodel PRIVATE CDSMODEL_VERSION="${PROJECT_VERSION}")
 target_include_directories(cdsmodel PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
