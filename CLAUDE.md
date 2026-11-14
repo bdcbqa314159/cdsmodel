@@ -346,9 +346,17 @@ Order, every time:
    the placeholder — a changed error *kind* is a minor bump even pre-1.0,
    because `except cdsmodel.BadArgument` stops catching.
 2. Merge everything. Tag the commit that will be built: `git tag -a vX.Y.Z`.
-3. Push the tag. `release.yml` builds three wheels and an sdist, checks every
-   platform tag is publishable, runs `verify.py sdist`, uploads to **TestPyPI**
-   and stops.
+3. Push the tag, **and do not also trigger the workflow by hand.** `release.yml`
+   fires on `push: tags` *and* on `workflow_dispatch`, so doing both starts two
+   releases: 0.1.0 was published by a manual run and the tag push then queued a
+   second one, which had to be cancelled rather than approved — the `pypi` job
+   has no `skip-existing`, so approving it would have attempted to re-upload
+   files PyPI already had. The tag is the trigger; dispatch is for a rehearsal
+   on a branch.
+
+   `release.yml` then builds three wheels and an sdist, checks every platform
+   tag is publishable, runs `verify.py sdist`, uploads to **TestPyPI** and
+   stops.
 4. Approve the `pypi` environment. That step is the only irreversible one in
    this repository.
 5. Create the GitHub release on the tag. There are no C++ binaries to attach:
