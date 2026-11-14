@@ -326,3 +326,35 @@ and `python/src/`. Upstream C is never reformatted — it is not ours, and a
 reformatted oracle is a modified oracle. The Excel SDK is excluded for the same
 reason, and `xl/` is excluded because it was not in scope when the gate was
 written.
+
+## Releasing
+
+One version number, in `CMakeLists.txt`. The C++ library, the extension and
+the wheel metadata all read it from there, so they cannot disagree — and
+`release.yml` refuses to publish if the git tag does not match it.
+
+**A version on PyPI is permanent.** It can be deleted and never re-uploaded,
+so a botched `0.1.0` becomes `0.1.1` rather than a second attempt. The main
+branch therefore carries the **next** version, not the released one: after
+`0.1.0` shipped, `CMakeLists.txt` says `0.1.1`. A wheel built from main is
+labelled for a release that does not exist yet, which is correct and is the
+point — nothing from main can be mistaken for what is on the index.
+
+Order, every time:
+
+1. Decide the number. Bump `CMakeLists.txt` if the work turned out bigger than
+   the placeholder — a changed error *kind* is a minor bump even pre-1.0,
+   because `except cdsmodel.BadArgument` stops catching.
+2. Merge everything. Tag the commit that will be built: `git tag -a vX.Y.Z`.
+3. Push the tag. `release.yml` builds three wheels and an sdist, checks every
+   platform tag is publishable, runs `verify.py sdist`, uploads to **TestPyPI**
+   and stops.
+4. Approve the `pypi` environment. That step is the only irreversible one in
+   this repository.
+5. Create the GitHub release on the tag. There are no C++ binaries to attach:
+   the library is largely header-only and a prebuilt artefact would have to
+   match the consumer's toolchain.
+6. Bump `CMakeLists.txt` to the next placeholder.
+
+→ the tag/version agreement is enforced by `release.yml`'s `check-version`
+job, and the credential-free publishing path by `python verify.py publishing`.

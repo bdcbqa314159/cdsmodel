@@ -1,12 +1,22 @@
 cmake_minimum_required(VERSION 3.28)
-project(cdsmodel VERSION 0.1.0 LANGUAGES C CXX)
+project(cdsmodel VERSION 0.1.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-option(CDSMODEL_BUILD_TESTS "Build tests" ${PROJECT_IS_TOP_LEVEL})
+# Default ON only when the test sources are actually present. The consumer
+# source archive and the Python sdist both ship the library without `tests/`,
+# and both are top-level builds -- so keying this on PROJECT_IS_TOP_LEVEL
+# alone makes an archive that cannot configure. Same reasoning, and the same
+# fix, as the `xl/core` guard below.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/version_test.cpp")
+  set(CDSMODEL_TESTS_DEFAULT ${PROJECT_IS_TOP_LEVEL})
+else()
+  set(CDSMODEL_TESTS_DEFAULT OFF)
+endif()
+option(CDSMODEL_BUILD_TESTS "Build tests" ${CDSMODEL_TESTS_DEFAULT})
 option(CDSMODEL_BUILD_PYTHON "Build the nanobind extension" OFF)
 # The Excel layer. ON by default, but the Python wheel turns it OFF: D23
 # makes `python/` and `xl/core/` peers, so a wheel has no use for XlValue or
@@ -89,6 +99,10 @@ endif()
 add_library(cdsmodel STATIC src/version.cpp src/holiday_file.cpp)
 add_library(cdsmodel::cdsmodel ALIAS cdsmodel)
 target_compile_features(cdsmodel PUBLIC cxx_std_20)
+
+# D12: one version. `src/version.cpp` reports this, `pyproject.toml` reads the
+# same `project()` line for the wheel metadata, and a test asserts they match.
+target_compile_definitions(cdsmodel PRIVATE CDSMODEL_VERSION="${PROJECT_VERSION}")
 target_include_directories(cdsmodel PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
