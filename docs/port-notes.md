@@ -7,7 +7,7 @@ Everything here came from inspecting the upstream tree; nothing is assumed.
 
 | metric | value |
 |---|---|
-| upstream C | 21,377 lines, 54 `.c` + 1 `.cpp` |
+| upstream C | 21,377 lines, 48 `.c` + 1 `.cpp` in `lib/src` |
 | public headers | 49, flat in `lib/include/isda/` |
 | distinct `Jpmcds*` entry points | 126 |
 | functions returning `int` status | 98 |
