@@ -5934,3 +5934,308 @@ The honest summary of this milestone is **code-complete and product-unproven**,
 and the two halves of that sentence were earned differently: the library half
 by 863 tests against an oracle, and the add-in half by reading a header
 carefully in the absence of anything better.
+
+## Decision 56 — It ran in Excel, and the bug was found by reading
+
+The previous entry ended on a cliffhanger it did not choose: *code-complete and
+product-unproven*, with `specs/reasoning/C8.md` saying NOT YET RUN.
+
+It now says PASS. 2026-11-11, Excel 16.0 build 20527, 64-bit. All 24 functions
+registered, four priced rows matching the library's own values, and both
+signature forms agreeing **bitwise, inside Excel**.
+
+The run was driven over COM by `tools/run_c8.ps1` rather than clicked through
+by hand. That is not laziness: a human clicking produces evidence nobody can
+reproduce, and the script exits non-zero if any function fails to register or
+any row is not PASS. Same calculation engine, same add-in, repeatable verdict.
+
+### The bug only Excel could show, found without Excel
+
+`=CdsModelVersion()` returned `#NAME?` while every tested function worked.
+
+The cause was the SDK's fixed 10 KB per-thread temp pool. `xlAutoOpen` built
+all 24 registrations into it without freeing between them, so it overflowed
+partway through registration and every later `xlfRegister` received a `nullptr`
+procedure name. `CdsModelVersion` registers last, so it was the guaranteed
+casualty — and the late *table* functions were one wide help string from
+joining it.
+
+What is worth recording is how it was found: **by reasoning about a constant
+in Microsoft's source, not by watching it fail.** A guard now models each
+function's footprint from the registration table, so a future over-wide
+function fails a test rather than a worksheet cell. The `Registration` tests
+never touched a live pool, which is exactly why they could not have caught it.
+
+### The coverage gate caught a regression nobody was looking for
+
+Running `verify.py coverage` on Windows for the first time surfaced that
+`xl/core` was **below its floor on every platform**, not just there: 84.2%
+lines against a floor of 90. The CI job had been red and the cause was
+coverage, not measurement — `dispatch_test` exercised every happy path and
+`error_paths_test` only `CdsPrice`, leaving the error branches of 22
+dispatchers and seven shared readers untested. Exactly the lines a user hits
+on a typo.
+
+Seventeen new tests later: 91.7% lines, 86.7% branches, floors untouched.
+
+## Decision 57 — The caster that returned the wrong day
+
+The Python layer began with a question I expected to answer in a paragraph:
+does `nanobind` convert `std::chrono::sys_days` to a `datetime.date`?
+
+It does not. It returns a `datetime.datetime` at midnight. My first instinct
+was to record that as cosmetic — a time-of-day nobody asked for — and move on.
+
+Two measurements stopped that.
+
+### `date == datetime` is `False`, silently
+
+    date(2024,3,15) == datetime(2024,3,15,0,0)   ->  False
+    date < datetime                              ->  TypeError
+    {date} & {datetime}                          ->  set()
+
+A caller passes `date` objects in and gets `datetime` objects back, so
+`if maturity == my_maturity:` is never true and nothing raises. That is a
+correctness trap, not untidiness.
+
+### And the day itself was wrong
+
+The stock caster converts through `localtime_r` outbound and `mktime` inbound.
+A `sys_days` is midnight UTC, so anywhere west of UTC it is *yesterday*:
+
+    TZ=UTC, Europe/London      2024-03-15 00:00:00   right day, wrong type
+    TZ=America/New_York        2024-03-14            WRONG DAY
+    TZ=Pacific/Auckland        2024-03-14            WRONG DAY on a round trip
+
+Correct in UTC and London **only** — which is to say, correct on the machine
+this project is developed on and wrong for a user in New York.
+
+The fix converts through `std::chrono::year_month_day`: pure civil-calendar
+arithmetic, no `std::tm`, no time zone. Right in all four zones.
+
+The lesson is the test, not the caster. **A test pinned to one time zone would
+have passed against the broken implementation**, because UTC and London are
+exactly where it works. The western zones are the positive control; without
+them the suite measures the fixture.
+
+## Decision 58 — The floor was CPython's, and I would have blamed nanobind
+
+Choosing a Python version looked like a preference. It was a measurement.
+
+`nanobind` refuses a linked stable-ABI build below CPython 3.12. My first
+reading was that nanobind is less mature than pybind11 here — a reasonable
+inference, and wrong. Its own CMake gives the reason in a comment:
+
+> *Linked-mode stable ABI builds require CPython >= 3.12 (the backend itself
+> then compiles under `Py_LIMITED_API`)*
+
+And pybind11 has the identical floor: `Py_LIMITED_API >= 0x030C0000`, which
+*is* 3.12. It only gained stable-ABI support in its 3.0, where nanobind has had
+it longer and additionally offers a split mode reaching 3.10.
+
+So the constraint belongs to CPython, the two libraries are equal on it, and
+the one I was about to criticise has the extra escape hatch. **Had I answered
+from instinct I would have recommended switching libraries to fix a limitation
+that would have followed us across.**
+
+One `cp312-abi3` wheel per platform covers 3.12, 3.13, 3.14 and later — three
+wheels rather than twelve. 3.10 reached end of life last month and 3.11 follows
+within the year, so the floor costs no supported version.
+
+## Decision 59 — Bitwise, and the two reasons it was not
+
+The Python suite deliberately does not re-test the numerics: 891 C++ tests
+already do that against an oracle Python cannot see, and a `pytest` that
+recomputes a price is a weaker copy of a test that already exists.
+
+It does one numerical thing. A C++ program linking the same library emits 216
+cases at `%.17g` — enough to round-trip an IEEE double exactly — and `pytest`
+runs the **installed wheel** and compares with `==`. Not `approx`.
+
+A tolerance would defeat the purpose. What this looks for is corruption in the
+binding layer: a narrowing cast, a float in a caster, a long double spilling at
+a different precision. All move the last bits; none survive `==`; all hide
+under `rel=1e-12`. The check was verified by perturbing one fixture by a
+**single ULP** — relative 1.4e-16 — and watching the suite fail.
+
+Then CI failed it twice, for two different reasons, and I was wrong about the
+first one.
+
+### Wrong diagnosis: libm
+
+Linux produced `0.08687005698251757` against macOS's `...758`. I concluded
+glibc and macOS libm differ in the last bit for `exp`/`log`/`pow`, which the
+library calls 24 times. Plausible, and it is even true in general.
+
+It was not what happened. The fix I shipped for it — stamping the platform into
+the fixture so a cross-platform comparison falls back to a tolerance — then
+*disproved its own premise*, because the error persisted with the fixture
+generated on the same Linux machine:
+
+    price: 0.03395947378321875 != 0.033959473783218744
+    Exact comparison: fixture was generated on this platform (linux).
+
+Same machine, same libm, two builds of the same source disagreeing.
+
+### Right diagnosis: contraction
+
+GCC defaults to `-ffp-contract=fast` and may fuse `a*b+c` into a single FMA,
+and whether it does depends on inlining and optimisation. The generator is a
+plain Release build; the extension is built by nanobind with its own size and
+LTO settings. Two compilations of the same inline header code, fusing
+differently, one ULP apart. Clang showed nothing: all 216 prices identical at
+`-O0`, `-O3`, contract off and contract fast.
+
+Pinning contraction off on exactly the two targets that must agree fixed it,
+and left the library's install interface and the recorded golden vectors
+untouched.
+
+**The platform stamp is the part worth keeping.** It was built to support a
+wrong theory and its first act was to falsify it.
+
+## Decision 60 — A wheel PyPI would not take, and a gate that said it was fine
+
+The spec said `cibuildwheel`. We used `python -m build` on each runner, which
+works, and produced this on Linux:
+
+    cdsmodel-0.1.0-cp312-abi3-linux_x86_64.whl
+
+PyPI refuses `linux_x86_64`. A bare `linux_` tag says nothing about which glibc
+the binary needs, so only `manylinux*` and `musllinux*` are accepted.
+
+The check that passed it was mine:
+
+    assert "cp312-abi3" in names[0], f"not an abi3 wheel: {names[0]}"
+
+`cp312-abi3-linux_x86_64` contains `cp312-abi3`. **It verified the ABI tag and
+never looked at the platform tag** — green on a wheel that cannot be published.
+
+The timing is what makes this worth an entry. A release uploads every platform
+together, so macOS and Windows would have been accepted and Linux refused, with
+the version number already burned and unusable again. The failure would have
+landed on the far side of the only irreversible step in the process.
+
+### Then it failed for a reason I guessed at twice
+
+The manylinux build failed to link. I read the error, matched the line I
+expected, and fixed what I found there — twice, wrongly. The actual cause was
+one line *above* the one I kept grepping for:
+
+    ld: libcdsmodel.a(version.cpp.o): relocation R_X86_64_32 against `.rodata'
+        can not be used when making a shared object; recompile with -fPIC
+    ld: failed to set dynamic section sizes: bad value
+
+A non-PIC static library cannot go into a shared object on x86-64 Linux. macOS
+compiles PIC unconditionally and Windows has no equivalent relocation, which is
+why only manylinux failed. One line of CMake fixed it, and the two flags I had
+added on wrong diagnoses were reverted rather than left as cruft.
+
+**I searched the log for the error I expected instead of reading it.** That is
+the whole lesson, and it cost two wrong fixes and a container I should not have
+started.
+
+## Decision 61 — "Unclosable" was a statement about my testing
+
+The error taxonomy has four kinds. Two were reachable from Python and two were
+not, and after three probes I wrote into the spec that P4 was *believed
+unclosable* — and sketched the fix: convert `add_swaps` from `bool` to
+`Expected`, 27 `return false` sites across five functions, a breaking change
+worth a minor version.
+
+All three probes attacked the same function.
+
+`par_spread_flat`'s objective becomes non-finite past an upfront of
+`1 - recovery`, so the solver aborts on a bad value before it can conclude that
+no root exists. The function is not root-less there; it is *undefined* there.
+No amount of probing that one function would ever have produced `no_root`.
+
+One probe of a different function found it immediately:
+
+    clean_spread_curve, quotes 8% / 2% / 0.5%
+      -> NoRoot: a forward discount factor above 1 implies a negative
+         forward rate between points 1 and 2
+
+A steeply inverted spread curve implies a negative forward hazard rate. That is
+a distressed name's quote, not a contrived input.
+
+`no_convergence` stays unreached, and on the evidence that is the design
+working. Its only site is a budget sized so valid input cannot exhaust it, and
+the degenerate case that would — every weekday a weekend — is caught earlier
+and more usefully: *"the calendar has no business weekday, so no date can be
+adjusted"*. **A backstop that correct guarding prevents from firing is not the
+same as a kind that cannot be reported.**
+
+The breaking change was cancelled. The kind was always there; the test was not.
+
+## Decision 62 — A second compiler, and the bug that was not where I said
+
+Everything this project claims about matching upstream bit for bit had only
+ever been measured with one compiler. Tier 2 needs the oracle, the oracle lives
+on one laptop, and that laptop had Apple Clang.
+
+    Apple Clang 21   100% tests passed out of 891
+    GCC 16.2.0       100% tests passed out of 891
+
+All 49 differential suites pass under a compiler with different codegen —
+including different fused-multiply-add behaviour, which is precisely what had
+just broken the wheel on Linux. The claim survived its first second opinion.
+
+### Getting there cost three wrong diagnoses
+
+GCC rejected one test: `constexpr Date d = *make_date(2000, 1, 1)`.
+
+1. **"libstdc++ cannot do constexpr `time_point`."** No — a six-line
+   reproduction compiled fine.
+2. **"It is function scope versus namespace scope."** No — and worse, I
+   concluded that from a `grep` whose pattern did not match GCC's error format.
+   An empty result is not a passing result, and that is the second time in a
+   week I have read one as the other.
+3. **"`Error` holds a `std::string`, so the variant is not constexpr."** No —
+   `variant<int, {int, std::string}>` compiles on GCC 16.
+
+The bisection that worked took five minutes and should have been the first
+move:
+
+    constexpr fn -> variant<Date, {int, std::string}> -> get<0>   fails
+    constexpr fn -> variant<Date, int>                -> get<0>   passes
+
+The trigger is narrow: a constexpr function returning a variant whose *other*
+alternative is non-trivially destructible, when the active one is a class type.
+Swap `Date` for `int` and it compiles. Clang and CI's older GCC accept both, so
+it is a GCC 16 regression rather than a defect here.
+
+### The fix was two lines, and the first two diagnoses would not have found it
+
+    constexpr Date y2000{year{2000} / January / day{1}};   // not *make_date(...)
+
+Every `static_assert` survives and both compilers run the identical 891 tests.
+The assertions still go through `Expected<double>`, which GCC accepts, because
+a `double` is not a class type.
+
+The earlier diagnoses each pointed somewhere worse: the `std::string` theory at
+rewriting `Error`, and the scope theory at a compiler guard that would have
+silently dropped the test on GCC forever. **A wrong diagnosis is not neutral —
+it proposes a proportionate fix for a problem that does not exist.**
+
+## Where it stands
+
+| | |
+|---|---|
+| C++ tests, with the oracle | 891 |
+| compilers verified against the oracle | 2 |
+| Python tests | 577 |
+| Python functions exposed | 40 names, all 13 upstream-exposed covered |
+| XLL functions, verified in Excel | 24 |
+| `verify.py` gates | 15 |
+| ratified specs | 5 |
+
+The add-in has run. The package installs from TestPyPI on three platforms and
+prices a trade. The port matches upstream under two compilers.
+
+What is left is small and named: `/WX` on the Excel targets, two `XLOPER12`
+string cases nothing tests, and a second C8 run — all recorded in `CLAUDE.md`
+rather than in anyone's memory, because the Windows machine starts each session
+without one.
+
+And `0.1.0` sits in a GitHub environment waiting for a human to approve it,
+which is the only step in this whole project that cannot be taken back.
