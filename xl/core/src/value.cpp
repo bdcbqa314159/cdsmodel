@@ -133,6 +133,18 @@ double excel_serial_from_date(Date date) {
   return static_cast<double>(date.time_since_epoch().count() + kExcelEpochOffset);
 }
 
+std::string ascii_from_utf16(std::u16string_view units) {
+  std::string out;
+  out.reserve(units.size());
+  for (const char16_t unit : units) {
+    // Narrow deliberately and visibly: anything outside ASCII becomes '?'
+    // rather than being truncated silently. The full length is kept whatever
+    // it is, which is what XLOPER12 buys over XLOPER's 255-char ceiling.
+    out.push_back(unit < 128 ? static_cast<char>(unit) : '?');
+  }
+  return out;
+}
+
 Expected<XlGrid> XlValue::as_grid() const {
   if (const auto *g = std::get_if<XlGrid>(&storage_)) {
     return *g;

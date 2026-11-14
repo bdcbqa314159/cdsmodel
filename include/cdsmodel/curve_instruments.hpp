@@ -108,7 +108,7 @@ namespace cdsmodel {
 
 /// Upstream's `ZC_DEFAULT_BASIS`: the terms `JpmcdsZCCash` builds in whatever
 /// the input curve uses.
-inline constexpr double kCashCurveBasis = 1.0;
+inline constexpr long kCashCurveBasis = 1;
 inline constexpr DayCount kCashCurveDayCount = DayCount::Act365Fixed;
 
 /// Replaces `JpmcdsZCCash`: add money-market quotes to a curve.

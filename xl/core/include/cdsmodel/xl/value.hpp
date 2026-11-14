@@ -19,6 +19,7 @@
 
 #include <cstddef>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -124,5 +125,17 @@ inline constexpr long kExcelEpochOffset = 25569;
 
 /// A `Date` as an Excel serial.
 [[nodiscard]] double excel_serial_from_date(Date date);
+
+/// An Excel UTF-16 string's units, narrowed to a `std::string`.
+///
+/// Excel hands strings as length-counted UTF-16; the count is a 16-bit unit, so
+/// up to 32767 characters -- which is the whole reason the add-in uses
+/// `XLOPER12` over `XLOPER`, whose strings cap at 255. This maps every unit at
+/// or above 128 to `'?'` rather than truncating silently: every string this
+/// add-in reads is a convention name, a day count or a handle, all ASCII by
+/// construction (D10), so a non-ASCII unit is a user mistake worth showing, not
+/// data to preserve. The rule lives here, not in the `XLOPER12` adapter in
+/// `xl/sdk`, so CI tests it on every platform without Excel or the SDK (C2).
+[[nodiscard]] std::string ascii_from_utf16(std::u16string_view units);
 
 } // namespace cdsmodel::xl

@@ -24,7 +24,7 @@ target_include_directories(cdsmodel_xl_core PUBLIC
 target_link_libraries(cdsmodel_xl_core PUBLIC cdsmodel)
 
 if(MSVC)
-  target_compile_options(cdsmodel_xl_core PRIVATE /W4)
+  target_compile_options(cdsmodel_xl_core PRIVATE /W4 /WX)
 else()
   target_compile_options(cdsmodel_xl_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()

@@ -267,12 +267,16 @@ and none of them block the Python package, which ships no Excel code.
 
 | | what | how |
 |---|---|---|
-| **C1** | `/WX` is set on **no** target. `/W4` is on all three `xl/` ones, under `if(MSVC)`. The criterion in `specs/03_xll.md` asks for both, so C1 stays `partial` until it is added and the x64 build is clean | add it, rebuild, fix what it surfaces |
-| **C2** | `XLOPER12` has no test for strings over 255 characters or non-ASCII -- the two cases that justified choosing it over `XLOPER`. There is no `xl/sdk/tests/`, and there should not be: CI cannot compile `xl/sdk`, so the tests belong in `xl/core` | add to `xl/core/tests/` |
 | **C8** | Recorded **once**, 2026-11-11, on one machine. One run is evidence, not a habit | `pwsh tools/run_c8.ps1`, then append to `specs/reasoning/C8.md` |
 
-Do not mark any of these passing without the oracle result pasted into the
-spec's Progress table. "It built" is not a result.
+C1 and C2 are closed (`specs/03_xll.md` Progress). C1: `/W4 /WX` on all three
+`xl/` targets, x64 build clean, the one latent `C4244` it caught fixed at root.
+C2: the counted-string->ASCII rule lifted into `xl/core` as `ascii_from_utf16`
+and tested in CI (>255 chars survive, non-ASCII narrows to `'?'`); the criterion
+was amended to say the narrowing is deliberate (D10), which the code already was.
+
+Do not mark C8 passing without the oracle result pasted into the spec's
+Progress table. "It built" is not a result.
 
 ### What the add-in exposes
 

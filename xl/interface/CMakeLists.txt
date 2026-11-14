@@ -10,7 +10,7 @@ set_target_properties(cdsmodel_xll PROPERTIES
                       OUTPUT_NAME "cdsmodel"
                       SUFFIX ".xll")
 if(MSVC)
-  target_compile_options(cdsmodel_xll PRIVATE /W4)
+  target_compile_options(cdsmodel_xll PRIVATE /W4 /WX)
 else()
   target_compile_options(cdsmodel_xll PRIVATE -Wall -Wextra -Wpedantic)
 endif()
