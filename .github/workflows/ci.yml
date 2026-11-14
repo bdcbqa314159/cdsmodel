@@ -51,21 +51,6 @@ jobs:
       # when ANY header claims it, so 100% was reported either way.
       - run: python verify.py claims
       - run: python verify.py error-channel
-      # A1's second half, which had never run. `expected_test.cpp` guards the
-      # `std::expected` instantiation behind `__cplusplus > 202002L`, and every
-      # build here is C++20 -- so the one check enforcing CLAUDE.md's rule that
-      # `Expected` may not grow a member `std::expected` lacks was silently
-      # inactive. Syntax-only is the whole contract: it is a compile-time
-      # subset assertion, not a runtime test.
-      - name: Expected is still a strict subset of std::expected (A1)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          inc=$(find build -type d -name include -path "*googletest*" | head -1)
-          test -n "$inc" || { echo "::error::googletest headers not found"; exit 1; }
-          g++ -std=c++23 -Iinclude -I"$inc" -fsyntax-only tests/expected_test.cpp
-          echo "ok: compiles at -std=c++23, so both instantiations were built"
-
       - run: python verify.py umbrella
       # D23: python/ and xl/core/ are peers; neither may depend on the other.
       - run: python verify.py python-layer
@@ -90,6 +75,22 @@ jobs:
       # gtest_discover_tests, or a test file dropped from CMakeLists, reports
       # "all passed" over almost nothing.
       - run: python verify.py tests --preset release
+
+      # A1's second half, which had never run. `expected_test.cpp` guards the
+      # `std::expected` instantiation behind `__cplusplus > 202002L`, and every
+      # build here is C++20 -- so the one check enforcing CLAUDE.md's rule that
+      # `Expected` may not grow a member `std::expected` lacks was silently
+      # inactive. Syntax-only is the whole contract: it is a compile-time
+      # subset assertion, not a runtime test.
+      - name: Expected is still a strict subset of std::expected (A1)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          inc=$(find build -type d -name include -path "*googletest*" | head -1)
+          test -n "$inc" || { echo "::error::googletest headers not found"; exit 1; }
+          g++ -std=c++23 -Iinclude -I"$inc" -fsyntax-only tests/expected_test.cpp
+          echo "ok: compiles at -std=c++23, so both instantiations were built"
+
 
       # Artifact #2. The install tree and a real consumer -- "reading the
       # CMake and nodding is not an oracle". install-tree also enforces
