@@ -15,6 +15,7 @@ Run from the repo root:  python3 tools/check_consumer.py
 from __future__ import annotations
 
 import shutil
+import re
 import subprocess
 import sys
 import tempfile
@@ -228,7 +229,15 @@ def b4_version(prefix: Path) -> None:
             "project(v LANGUAGES CXX)\n"
             "find_package(cdsmodel ${WANT} REQUIRED)\n"
         )
-        for want, should_pass in (("0.1.0", True), ("99.0", False)):
+        # Read from CMakeLists rather than hardcoded. It said "0.1.0" through
+        # the 0.1.1 bump and kept passing, so it was asserting that a
+        # HISTORICAL version is findable -- and at 1.0.0 it would have failed
+        # for the wrong reason, because SameMajorVersion refuses a 0.x request
+        # from a 1.x package. Same bug as `version()` returning a literal.
+        project_version = re.search(
+            r"project\(cdsmodel VERSION ([0-9]+\.[0-9]+\.[0-9]+)",
+            (ROOT / "CMakeLists.txt").read_text()).group(1)
+        for want, should_pass in ((project_version, True), ("99.0", False)):
             r = run(["cmake", "-S", str(src), "-B", str(Path(tmp) / f"b{want}"),
                      f"-DCMAKE_PREFIX_PATH={prefix}", f"-DWANT={want}"])
             check(

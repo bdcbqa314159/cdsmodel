@@ -104,8 +104,8 @@ why they are the load-bearing criteria rather than inspection of the CMake.
 | B3 | **pass** | FetchContent consumer configures, our test targets are **not** generated, GoogleTest is **not** downloaded, builds and runs with `CDSMODEL_UPSTREAM_DIR=/nonexistent` | rewritten after a false pass -- see the note below |
 | B4 | **pass** | `find_package(cdsmodel 0.1.0)` succeeds; `find_package(cdsmodel 99.0)` refused | |
 | B5 | **pass** | the consumer includes only `<cdsmodel/cdsmodel.hpp>` and compiles under `-Wall -Wextra -Wpedantic -Werror` | also proves the error channel survives the package boundary: a refused CDS arrives as `bad argument: end must be on or after start when protection starts at start` |
-| B6 | **pass** | `verify.py umbrella`: all 45 public headers included, sorted, no stale entries | |
-| B7 | **pass** | `verify.py install-tree`: 51 files on both presets, expected content asserted, no GoogleTest, no upstream-derived file | strengthened mid-slice -- D5 |
+| B6 | **pass** | `verify.py umbrella`: every public header included, sorted, no stale entries — the gate reports the count, so it cannot drift from this row | |
+| B7 | **pass** | `verify.py install-tree`: the same file set on both presets, expected content asserted, no GoogleTest, no upstream-derived file | strengthened mid-slice -- D5 |
 
 ### Two false passes, both mine, both caught by looking
 

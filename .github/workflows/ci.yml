@@ -76,6 +76,28 @@ jobs:
       # "all passed" over almost nothing.
       - run: python verify.py tests --preset release
 
+      # A1's second half, which had never run. `expected_test.cpp` guards the
+      # `std::expected` instantiation behind `__cplusplus > 202002L`, and every
+      # build here is C++20 -- so the one check enforcing CLAUDE.md's rule that
+      # `Expected` may not grow a member `std::expected` lacks was silently
+      # inactive. Syntax-only is the whole contract: it is a compile-time
+      # subset assertion, not a runtime test.
+      - name: Expected is still a strict subset of std::expected (A1)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # Locate the header, not a directory whose name looks right:
+          # `-name include -path "*googletest*"` also matches googlemock's
+          # include dir, and which one `find` returns first is not defined.
+          # It picked googletest here and googlemock on the runner.
+          hdr=$(find build -type f -path "*/include/gtest/gtest.h" | head -1)
+          test -n "$hdr" || { echo "::error::gtest/gtest.h not found under build/"; exit 1; }
+          inc=$(dirname "$(dirname "$hdr")")
+          echo "using $inc"
+          g++ -std=c++23 -Iinclude -I"$inc" -fsyntax-only tests/expected_test.cpp
+          echo "ok: compiles at -std=c++23, so both instantiations were built"
+
+
       # Artifact #2. The install tree and a real consumer -- "reading the
       # CMake and nodding is not an oracle". install-tree also enforces
       # CLAUDE.md rule 2 mechanically now that install rules exist.

@@ -101,7 +101,7 @@ innermost reason gets lost.
 
 | ID | Criterion | Oracle | Rung |
 |----|-----------|--------|------|
-| A1 | `Expected<T>` compiles under `-std=c++20 -Wall -Wextra -Wpedantic` on all three CI compilers, and its API is a strict subset of `std::expected`'s | CI matrix green; a test asserting the identical call sequence compiles against `std::expected` under `-std=c++23` locally | 3 |
+| A1 | `Expected<T>` compiles under `-std=c++20 -Wall -Wextra -Wpedantic` on all three CI compilers, and **every member the port actually uses exists on `std::expected` too** | CI matrix green; `tests/expected_test.cpp` writes the call sequences once in a template and instantiates it against both types, so a member used here that `std::expected` lacks fails to compile. Run at `-std=c++23` in CI | 3 |
 | A2 | THE migration SHALL NOT change which inputs are accepted or refused, for any function | the full existing suite: 747 with oracle, 438 without, three presets, zero diffs | 3 |
 | A3 | WHEN bounds are reversed, THE solver SHALL report `bad_argument`; WHEN the bounds do not bracket, `no_solution`; WHEN iterations are exhausted, `no_convergence` | differential test against `rtbrent.c`, asserting upstream FAILS in each and the port's kind matches the upstream *message* at that site | 3 |
 | A4 | IF a callee fails, THEN the caller SHALL forward that error with its kind and message unchanged | test on the real 3-deep chain `cdsone` → `bootstrap` → `root_find`, asserting the innermost message reaches the outermost caller | — |
@@ -135,13 +135,13 @@ innermost reason gets lost.
 
 | ID | Status | Oracle result | Note |
 |----|--------|---------------|------|
-| A1 | **pass** | 7/7 unit tests; the identical call sequence compiles against BOTH `cdsmodel::Expected` and `std::expected` at `-std=c++23` | the subset property is what gives D2's debt its end date |
-| A2 | **pass** | 760/760 debug · 754/754 release · 754/754 asan, all with the oracle; **445/445 without it** (floor 438 → 445) | zero behavioural diffs across 341 migrated sites |
+| A1 | **pass** | the shared template instantiates against both types and compiles at `-std=c++23`, now in CI. **Amended 2026-11-14**: the row previously claimed the test proves the API is a *strict subset*. It does not, and cannot — a shared template exercises only the members it uses, so a surplus member on `Expected` is invisible to it. Measured: adding `is_ok()` to `Expected` produced **zero** compile errors. The check proves the used API is common to both; nothing mechanical proves the absence of extras | the end date on D2's debt now rests on review for surplus members, and on compilation for the rest — stated rather than implied |
+| A2 | **pass** | green on all three presets with the oracle and without it — see `verify.py tests` for the current counts, which grow as modules land; **445/445 without it** (floor 438 → 445) | zero behavioural diffs across 341 migrated sites |
 | A3 | **pass** | reversed bounds → `bad_argument`, no bracket → `no_root`, iterations → `no_convergence`, each matched to the message `rtbrent.c` logs at that site; all three messages mutually distinct | the conflation named in `root_find.hpp`'s own doc comment is gone |
 | A4 | **pass** | objective's `unsupported` + "the curve has no point at 2029-06-01" arrives at `root_find_brent`'s caller byte-identical; 3-deep curve refusal names ACT/365F at the surface | D5 held: no wrapper kind invented |
 | A5 | **pass** | `verify.py error-channel`: no namespace-scope function returns `std::optional`, with **2 named D7 exemptions** | exemptions listed individually, so a third is a deliberate act |
 | A6 | **pass** | all 4 kinds produced by real calls in one test; none dead | |
-| A7 | **pass** | 194 errors, **171 distinct messages** (88%), 0 empty | the distinct count is asserted, not just non-emptiness |
+| A7 | **pass** | `verify.py error-channel` reports the live counts and the distinct-message ratio; it was 88% distinct, 0 empty, when recorded | the distinct count is asserted, not just non-emptiness |
 
 ### What the slice actually cost
 
