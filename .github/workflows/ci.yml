@@ -86,8 +86,14 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          inc=$(find build -type d -name include -path "*googletest*" | head -1)
-          test -n "$inc" || { echo "::error::googletest headers not found"; exit 1; }
+          # Locate the header, not a directory whose name looks right:
+          # `-name include -path "*googletest*"` also matches googlemock's
+          # include dir, and which one `find` returns first is not defined.
+          # It picked googletest here and googlemock on the runner.
+          hdr=$(find build -type f -path "*/include/gtest/gtest.h" | head -1)
+          test -n "$hdr" || { echo "::error::gtest/gtest.h not found under build/"; exit 1; }
+          inc=$(dirname "$(dirname "$hdr")")
+          echo "using $inc"
           g++ -std=c++23 -Iinclude -I"$inc" -fsyntax-only tests/expected_test.cpp
           echo "ok: compiles at -std=c++23, so both instantiations were built"
 
