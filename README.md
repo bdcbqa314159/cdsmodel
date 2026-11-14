@@ -155,6 +155,52 @@ Two things are deliberately not claimed:
   spreads compared **bit for bit** against values emitted by a C++ program
   linking the same library.
 
+## Using it from C++
+
+The library is consumed as source. Nothing is prebuilt, and that is deliberate:
+`libcdsmodel.a` is 26 KB because most of the library is header-only, and a
+prebuilt archive would have to match your compiler, standard library and flags
+to be usable at all.
+
+**FetchContent** — the pin is the tag, so a build is reproducible:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(cdsmodel
+  GIT_REPOSITORY https://github.com/bdcbqa314159/cdsmodel.git
+  GIT_TAG        v0.1.0)
+FetchContent_MakeAvailable(cdsmodel)
+
+target_link_libraries(your_target PRIVATE cdsmodel::cdsmodel)
+```
+
+Tests, tools and the Excel layer do not build in this mode: `CDSMODEL_BUILD_TESTS`
+defaults to `PROJECT_IS_TOP_LEVEL`, so a consumer gets the library alone and
+needs no GoogleTest and no network beyond the clone.
+
+**An installed package**, if you would rather install once and find it:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+cmake --install build --prefix /your/prefix
+```
+
+```cmake
+find_package(cdsmodel REQUIRED)
+target_link_libraries(your_target PRIVATE cdsmodel::cdsmodel)
+```
+
+**Vendoring** — each release carries `cdsmodel-<version>-src.tar.gz`, which is
+the library and nothing else: `include/`, `src/`, the CMake files and the
+licences, about 175 KB against 1.5 MB for the full repository. The difference
+is 6.9 MB of recorded test vectors, the Excel layer and the documentation,
+none of which a consumer compiles.
+
+Both consumption modes are checked on every commit by
+`python tools/check_consumer.py`, which builds a throwaway project against the
+library and fails if either stops working.
+
 ## Installing the Python package
 
     pip install cdsmodel          # once published

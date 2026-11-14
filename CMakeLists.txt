@@ -6,7 +6,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-option(CDSMODEL_BUILD_TESTS "Build tests" ${PROJECT_IS_TOP_LEVEL})
+# Default ON only when the test sources are actually present. The consumer
+# source archive and the Python sdist both ship the library without `tests/`,
+# and both are top-level builds -- so keying this on PROJECT_IS_TOP_LEVEL
+# alone makes an archive that cannot configure. Same reasoning, and the same
+# fix, as the `xl/core` guard below.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/version_test.cpp")
+  set(CDSMODEL_TESTS_DEFAULT ${PROJECT_IS_TOP_LEVEL})
+else()
+  set(CDSMODEL_TESTS_DEFAULT OFF)
+endif()
+option(CDSMODEL_BUILD_TESTS "Build tests" ${CDSMODEL_TESTS_DEFAULT})
 option(CDSMODEL_BUILD_PYTHON "Build the nanobind extension" OFF)
 # The Excel layer. ON by default, but the Python wheel turns it OFF: D23
 # makes `python/` and `xl/core/` peers, so a wheel has no use for XlValue or

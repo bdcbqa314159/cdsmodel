@@ -96,6 +96,46 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
+  # The C++ consumer archive. GitHub attaches a tarball of the whole
+  # repository to every tag, which is 1.5 MB of which a consumer compiles
+  # about 175 KB -- the rest is recorded test vectors, the Excel layer and
+  # the documentation. This is the library and the licences, nothing else.
+  cpp-archive:
+    needs: check-version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # to attach the asset to the release
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 'project(cdsmodel VERSION' CMakeLists.txt \
+                    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          name="cdsmodel-${version}-src"
+          git archive --format=tar.gz --prefix="${name}/" -o "${name}.tar.gz" HEAD \
+            include src CMakeLists.txt cmake LICENSE NOTICE.md README.md
+          # A consumer archive that cannot be compiled is worse than none, so
+          # it is unpacked and built here rather than trusted.
+          tar xzf "${name}.tar.gz"
+          cmake -S "${name}" -B /tmp/consumer-build -DCMAKE_BUILD_TYPE=Release \
+                -DCDSMODEL_UPSTREAM_DIR=/nonexistent
+          cmake --build /tmp/consumer-build
+          echo "ARCHIVE=${name}.tar.gz" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpp-source-archive
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+      - name: Attach it to the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" "${ARCHIVE}" --clobber
+
   testpypi:
     needs: [wheels, sdist]
     runs-on: ubuntu-latest
